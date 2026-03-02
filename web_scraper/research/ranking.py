@@ -5,11 +5,14 @@ All functions are stateless module-level callables.
 
 import re
 from datetime import datetime
+from typing import Literal
 from urllib.parse import urlsplit
 
 from web_scraper.config import config
 from web_scraper.research.constants import BLACKLISTED_DOMAINS, TRUSTED_DOMAINS
 from web_scraper.research.url_utils import extract_result_domain, normalize_result_url
+
+ResearchProfile = Literal["technical", "news", "academic"]
 
 
 def tokenize_for_ranking(text: str) -> set[str]:
@@ -70,7 +73,11 @@ def get_freshness_score(result: dict) -> float:
         return -0.15
 
 
-def score_search_result(query: str, result: dict) -> float:
+def score_search_result(
+    query: str,
+    result: dict,
+    research_profile: ResearchProfile = "technical",
+) -> float:
     """Assign a lexical relevance score before diversity-aware reranking."""
     query_tokens = tokenize_for_ranking(query)
     searchable_tokens = (
@@ -110,8 +117,39 @@ def score_search_result(query: str, result: dict) -> float:
 
     freshness_score = get_freshness_score(result)
 
+    profile_adjustment = 0.0
+    source_name = str(result.get("source", "")).lower()
+    url = str(result.get("url", "")).lower()
+    is_academic = any(
+        token in url or token in source_name
+        for token in ["arxiv", "pubmed", "doi", "acm", "ieee", "springer"]
+    )
+    is_news = any(
+        token in url or token in source_name
+        for token in ["reuters", "apnews", "bbc", "cnn", "news", "bloomberg"]
+    )
+
+    if research_profile == "news":
+        profile_adjustment += freshness_score * 0.8
+        if is_news:
+            profile_adjustment += 0.15
+    elif research_profile == "academic":
+        if is_academic:
+            profile_adjustment += 0.2
+        if any(url.endswith(tld) for tld in [".edu", ".gov", ".org"]):
+            profile_adjustment += 0.08
+    else:
+        if any(token in url for token in ["docs", "developer", "api", "readthedocs"]):
+            profile_adjustment += 0.12
+
     return round(
-        overlap_score + exact_query_boost + provider_boost + domain_boost + freshness_score, 6
+        overlap_score
+        + exact_query_boost
+        + provider_boost
+        + domain_boost
+        + freshness_score
+        + profile_adjustment,
+        6,
     )
 
 
@@ -119,6 +157,7 @@ def merge_and_rank_search_results(
     query: str,
     result_sets: list[list[dict]],
     limit: int,
+    research_profile: ResearchProfile = "technical",
 ) -> list[dict]:
     """Dedupe multi-provider results and prefer a diverse, relevant shortlist."""
     by_url: dict[str, dict] = {}
@@ -159,7 +198,15 @@ def merge_and_rank_search_results(
             if any(token in path for token in query_tokens if len(token) > 3):
                 domain_boost += 0.05
 
-            candidate["rank_score"] = round(score_search_result(query, candidate) + domain_boost, 6)
+            candidate["rank_score"] = round(
+                score_search_result(
+                    query,
+                    candidate,
+                    research_profile=research_profile,
+                )
+                + domain_boost,
+                6,
+            )
             candidate.setdefault("search_provider", "unknown")
 
             existing = by_url.get(normalized_url)

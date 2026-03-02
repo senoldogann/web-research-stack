@@ -4,7 +4,6 @@ All functions are stateless module-level callables.
 Each returns a string ready to be sent to an LLM.
 """
 
-import re
 from collections import Counter
 from datetime import datetime
 from typing import Optional

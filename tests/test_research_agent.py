@@ -28,7 +28,12 @@ def test_deep_mode_clamps_requested_sources_to_maximum() -> None:
     assert target == 50
 
 
-def test_normal_mode_allows_single_source_when_ai_decides() -> None:
+def test_normal_mode_allows_single_source_when_ai_decides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "research_normal_auto_min_sources", 1, raising=False)
+    monkeypatch.setattr(config, "research_normal_auto_max_sources", 15, raising=False)
+
     # Normal mode: AI suggestion of 1 is respected (above minimum of 1)
     target = ResearchAgent._resolve_target_source_count(
         requested_max_sources=None,
@@ -237,6 +242,91 @@ def test_collect_search_results_falls_back_to_google_when_duckduckgo_is_insuffic
     assert collected["fallback_used"] is True
     assert set(collected["providers_used"]) == {"duckduckgo", "google"}
     assert len(collected["results"]) == 4
+
+
+def test_collect_search_results_skips_google_when_ddg_meets_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = ResearchAgent(model="demo-model", host="http://ollama.local")
+    monkeypatch.setattr(config, "research_enable_google_fallback", True, raising=False)
+    monkeypatch.setattr(config, "research_google_fallback_min_results", 2, raising=False)
+
+    async def fake_ddg(search_queries, search_pool_size, temporal_scope=None):
+        return [
+            {
+                "title": "DDG result 1",
+                "url": "https://one.example.com/ddg-1",
+                "snippet": "Result one",
+                "source": "ddg1",
+                "search_provider": "duckduckgo",
+                "search_query": search_queries[0],
+            },
+            {
+                "title": "DDG result 2",
+                "url": "https://two.example.com/ddg-2",
+                "snippet": "Result two",
+                "source": "ddg2",
+                "search_provider": "duckduckgo",
+                "search_query": search_queries[0],
+            },
+        ]
+
+    async def fake_google(search_queries, search_pool_size):
+        return [
+            {
+                "title": "Google result 1",
+                "url": "https://three.example.com/google-1",
+                "snippet": "Result three",
+                "source": "google1",
+                "search_provider": "google",
+                "search_query": search_queries[0],
+            }
+        ]
+
+    monkeypatch.setattr(agent, "_collect_duckduckgo_results", fake_ddg)
+    monkeypatch.setattr(agent, "_collect_google_results", fake_google)
+
+    collected = asyncio.run(
+        agent._collect_search_results(
+            query="ai agents framework",
+            search_queries=["ai agents framework"],
+            search_pool_size=3,
+            target_count=3,
+        )
+    )
+
+    assert collected["fallback_used"] is False
+    assert set(collected["providers_used"]) == {"duckduckgo"}
+
+
+def test_profile_aware_ranking_favors_academic_sources() -> None:
+    ranked = ResearchAgent._merge_and_rank_search_results(
+        query="retrieval augmented generation evaluation",
+        result_sets=[
+            [
+                {
+                    "title": "General blog post",
+                    "url": "https://blog.example.com/rag-eval",
+                    "snippet": "overview and tutorial",
+                    "source": "blog",
+                    "search_provider": "duckduckgo",
+                    "search_query": "retrieval augmented generation evaluation",
+                },
+                {
+                    "title": "arXiv paper on retrieval evaluation",
+                    "url": "https://arxiv.org/abs/2501.12345",
+                    "snippet": "benchmark and methodology",
+                    "source": "arxiv",
+                    "search_provider": "duckduckgo",
+                    "search_query": "retrieval augmented generation evaluation",
+                },
+            ]
+        ],
+        limit=2,
+        research_profile="academic",
+    )
+
+    assert ranked[0]["url"].startswith("https://arxiv.org/")
 
 
 # ---------------------------------------------------------------------------

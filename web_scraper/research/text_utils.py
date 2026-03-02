@@ -9,7 +9,6 @@ from typing import Optional
 
 from web_scraper.research.constants import DATE_PATTERNS
 
-
 # ---------------------------------------------------------------------------
 # Language detection
 # ---------------------------------------------------------------------------

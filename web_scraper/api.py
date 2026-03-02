@@ -510,6 +510,7 @@ async def _run_research(
                 payload.query,
                 max_sources=payload.max_sources,
                 deep_mode=payload.deep_mode,
+                research_profile=payload.research_profile,
             )
     except Exception as exc:
         breaker.record_failure(type(exc).__name__)
@@ -640,6 +641,7 @@ async def _stream_research(
                 payload.query,
                 max_sources=payload.max_sources,
                 deep_mode=payload.deep_mode,
+                research_profile=payload.research_profile,
             ):
                 if await request.is_disconnected():
                     logger.info("client_disconnected", extra={"trace_id": request.state.trace_id})

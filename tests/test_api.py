@@ -26,6 +26,7 @@ class DummyResearchAgent:
         query: str,
         max_sources: int | None = None,
         deep_mode: bool = False,
+        research_profile: str = "technical",
     ) -> ResearchReport:
         source = ResearchResult(
             source="docs",
@@ -50,6 +51,7 @@ class DummyResearchAgent:
         query: str,
         max_sources: int | None = None,
         deep_mode: bool = False,
+        research_profile: str = "technical",
     ):
         yield 'data: {"type":"status","message":"starting"}\n\n'
         yield f'data: {{"type":"result","data":{{"query":"{query}","summary":"done"}}}}\n\n'
@@ -122,6 +124,19 @@ def test_web_research_accepts_up_to_fifty_sources(client: TestClient) -> None:
         "/api/v1/tools/web-research",
         headers={"X-API-Key": "test-key"},
         json={"query": "latest ai agents", "max_sources": 50, "deep_mode": True},
+    )
+
+    assert response.status_code == 200
+
+
+def test_web_research_accepts_research_profile(client: TestClient) -> None:
+    response = client.post(
+        "/api/v1/tools/web-research",
+        headers={"X-API-Key": "test-key"},
+        json={
+            "query": "latest ai agents",
+            "research_profile": "academic",
+        },
     )
 
     assert response.status_code == 200

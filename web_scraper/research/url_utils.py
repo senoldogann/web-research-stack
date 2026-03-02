@@ -4,7 +4,6 @@ All functions are stateless module-level callables.
 """
 
 import re
-from typing import Optional
 from urllib.parse import urlsplit, urlunsplit
 
 from web_scraper.research.constants import SOURCE_TIERS, TECH_DOC_URLS

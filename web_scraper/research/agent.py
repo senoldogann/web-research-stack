@@ -14,8 +14,8 @@ import math
 import re
 from collections.abc import Callable
 from datetime import datetime
-from typing import Any, Dict, List, Optional
-from urllib.parse import quote_plus, urlsplit
+from typing import Any, Dict, List, Literal, Optional
+from urllib.parse import quote_plus
 
 import httpx
 
@@ -52,6 +52,7 @@ from web_scraper.research.url_utils import (
 )
 
 logger = logging.getLogger(__name__)
+ResearchProfile = Literal["technical", "news", "academic"]
 
 # Code-query keywords re-used in _plan_research_with_results for official-docs injection
 _CODE_SOURCE_KW: frozenset[str] = frozenset(
@@ -93,9 +94,17 @@ class ResearchAgent(LLMClient):
 
     @staticmethod
     def _merge_and_rank_search_results(
-        query: str, result_sets: list, limit: int
+        query: str,
+        result_sets: list,
+        limit: int,
+        research_profile: ResearchProfile = "technical",
     ) -> list:
-        return merge_and_rank_search_results(query, result_sets, limit)
+        return merge_and_rank_search_results(
+            query,
+            result_sets,
+            limit,
+            research_profile=research_profile,
+        )
 
     @staticmethod
     def _build_synthesis_prompt(
@@ -139,6 +148,13 @@ class ResearchAgent(LLMClient):
         )
         # Language detected from the current query — set during research()
         self._query_lang: str = "en"
+
+    @staticmethod
+    def _normalize_profile(research_profile: str) -> ResearchProfile:
+        allowed: set[str] = {"technical", "news", "academic"}
+        if research_profile in allowed:
+            return research_profile  # type: ignore[return-value]
+        return "technical"
 
     # ------------------------------------------------------------------
     # I18n helpers
@@ -414,6 +430,7 @@ class ResearchAgent(LLMClient):
         search_pool_size: int,
         target_count: int,
         temporal_scope: Optional[dict] = None,
+        research_profile: ResearchProfile = "technical",
     ) -> dict:
         """Collect DDG and Google results concurrently, then merge and rank."""
         ddg_results: list[dict] = []
@@ -455,10 +472,18 @@ class ResearchAgent(LLMClient):
             else:
                 google_results = list(google_outcome)  # type: ignore[arg-type]
 
+        min_google_fallback = min(
+            max(1, config.research_google_fallback_min_results),
+            max(1, search_pool_size),
+        )
+        if ddg_results and len(ddg_results) >= min_google_fallback:
+            google_results = []
+
         ranked = merge_and_rank_search_results(
             query=query,
             result_sets=[ddg_results, google_results],
             limit=search_pool_size,
+            research_profile=research_profile,
         )
         providers_used = sorted(
             {
@@ -1032,6 +1057,7 @@ class ResearchAgent(LLMClient):
         max_sources: Optional[int] = None,
         deep_mode: bool = False,
         no_synthesis: bool = False,
+        research_profile: ResearchProfile = "technical",
         progress_sink: Optional[Callable[[str], None]] = None,
     ) -> ResearchReport:
         """Perform comprehensive research on *query*.
@@ -1047,6 +1073,7 @@ class ResearchAgent(LLMClient):
             :class:`ResearchReport` populated with findings.
         """
         self._query_lang = detect_query_language(query)
+        selected_profile = self._normalize_profile(research_profile)
 
         if progress_sink:
             progress_sink(self._msg("starting_research", query=query))
@@ -1087,6 +1114,7 @@ class ResearchAgent(LLMClient):
                 search_pool_size=preliminary_pool_size,
                 target_count=preliminary_max,
                 temporal_scope=None,
+                research_profile=selected_profile,
             )
         )
 
@@ -1109,6 +1137,7 @@ class ResearchAgent(LLMClient):
                     search_pool_size=preliminary_pool_size,
                     target_count=preliminary_max,
                     temporal_scope=temporal_scope,
+                    research_profile=selected_profile,
                 )
                 seen_urls = {r.get("url") for r in early_results if r.get("url")}
                 for r in extra_collection["results"]:
@@ -1248,11 +1277,13 @@ class ResearchAgent(LLMClient):
         query: str,
         max_sources: Optional[int] = None,
         deep_mode: bool = False,
+        research_profile: ResearchProfile = "technical",
     ):
         """Yield Server-Sent Event strings while researching *query*."""
         import json as _json
 
         self._query_lang = detect_query_language(query)
+        selected_profile = self._normalize_profile(research_profile)
 
         yield (
             f"data: {_json.dumps({'type': 'status', 'message': self._msg('starting_research', query=query)})}\n\n"
@@ -1293,6 +1324,7 @@ class ResearchAgent(LLMClient):
                     search_pool_size=preliminary_pool_size,
                     target_count=preliminary_max,
                     temporal_scope=None,
+                    research_profile=selected_profile,
                 )
             )
 
@@ -1315,6 +1347,7 @@ class ResearchAgent(LLMClient):
                         search_pool_size=preliminary_pool_size,
                         target_count=preliminary_max,
                         temporal_scope=temporal_scope,
+                        research_profile=selected_profile,
                     )
                     seen_urls = {r.get("url") for r in early_results if r.get("url")}
                     for r in extra_collection["results"]:

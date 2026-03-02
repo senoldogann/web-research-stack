@@ -8,6 +8,7 @@ import json
 from urllib.parse import urlsplit
 
 from web_scraper.config import config
+from web_scraper.research.text_utils import clean_query_text
 from web_scraper.research_agent import ResearchAgent
 
 DEFAULT_BENCHMARK_QUERIES = [
@@ -40,9 +41,10 @@ async def _evaluate_query(
     deep_mode: bool,
     use_query_rewrite: bool,
     search_pool_size: int | None,
+    research_profile: str,
 ) -> dict:
     """Evaluate retrieval quality for a single query."""
-    cleaned_query = agent._clean_query_text(query)
+    cleaned_query = clean_query_text(query)
     if use_query_rewrite:
         search_context = await agent._prepare_search_queries(cleaned_query, deep_mode=deep_mode)
         normalized_query = search_context["normalized_query"] or cleaned_query
@@ -66,6 +68,7 @@ async def _evaluate_query(
         search_queries=search_queries,
         search_pool_size=effective_search_pool_size,
         target_count=target_count,
+        research_profile=research_profile,
     )
     results = search_collection["results"]
     unique_domains = sorted(
@@ -106,6 +109,7 @@ async def _async_main(args: argparse.Namespace) -> int:
                 deep_mode=args.deep_mode,
                 use_query_rewrite=args.use_query_rewrite,
                 search_pool_size=args.search_pool_size,
+                research_profile=args.research_profile,
             )
         )
 
@@ -153,6 +157,12 @@ def main() -> int:
         "--search-pool-size",
         type=int,
         help="Override the number of candidates collected before reranking.",
+    )
+    parser.add_argument(
+        "--research-profile",
+        choices=["technical", "news", "academic"],
+        default="technical",
+        help="Select profile-aware retrieval weighting.",
     )
     args = parser.parse_args()
     return asyncio.run(_async_main(args))

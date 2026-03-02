@@ -41,6 +41,10 @@ def main():
 
     # 1. Custom Scripts
     for script, name in scripts_to_run:
+        script_path = os.path.join("scripts", script)
+        if not os.path.exists(script_path):
+            print_info(f"Skipping {name} (missing: {script_path}).")
+            continue
         if not run_command([sys.executable, f"scripts/{script}"], name):
             all_success = False
 

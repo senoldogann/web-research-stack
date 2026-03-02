@@ -1,0 +1,54 @@
+# Git
+.git/
+.github/
+.gitignore
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Node / Frontend build artifacts
+node_modules/
+web-ui/.next/
+web-ui/node_modules/
+
+# Environment & Secrets
+.env
+.env.local
+.env.*.local
+
+# Databases
+*.sqlite3
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# AI Coding Assistant configs
+.agent/
+.agents/
+.amazonq/
+.codex/
+.qoder/
+.opencode/
+.kilocode/
+
+# Docs & misc (not needed in Docker image)
+docs/
+examples/
+tests/
+CONTRIBUTING.md
+LICENSE

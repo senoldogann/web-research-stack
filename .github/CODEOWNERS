@@ -1,0 +1,26 @@
+# CODEOWNERS - Tüm değişikliklerin @senoldogan tarafından onaylanması gerekir
+# CODEOWNERS - All changes must be approved by @senoldogan
+
+# Global rule - All files
+* @senoldogann
+
+# Backend Python files
+/web_scraper/ @senoldogan
+/tests/ @senoldogan
+/scripts/ @senoldogan
+
+# Frontend React/TypeScript files  
+/web-ui/ @senoldogann
+
+# Documentation
+/docs/ @senoldogann
+*.md @senoldogann
+
+# Configuration files
+pyproject.toml @senoldogann
+docker-compose*.yml @senoldogann
+Dockerfile* @senoldogann
+.env* @senoldogann
+
+# GitHub-specific files
+/.github/ @senoldogann

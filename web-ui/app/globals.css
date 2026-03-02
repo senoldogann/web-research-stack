@@ -1,0 +1,211 @@
+@import 'tailwindcss';
+
+/* ================================================================
+   THEME: CSS Custom Properties for Light / Dark mode
+   Applied via data-theme attribute on <html>
+   ================================================================ */
+
+/* Dark theme (default) */
+:root,
+[data-theme='dark'] {
+    --bg-primary: #0A0A0A;
+    --bg-secondary: #141414;
+    --bg-elevated: #1e1e20;
+    --bg-surface: #3B3B3B;
+    --border: #3C3C3C;
+    --border-muted: rgba(60, 60, 60, 0.4);
+    --border-subtle: rgba(60, 60, 60, 0.3);
+    --border-faint: rgba(60, 60, 60, 0.2);
+    --text-primary: #D3D3D3;
+    --text-secondary: rgba(211, 211, 211, 0.85);
+    --text-muted: rgba(211, 211, 211, 0.5);
+    --text-faint: rgba(211, 211, 211, 0.4);
+    --text-ghost: rgba(211, 211, 211, 0.3);
+    --text-placeholder: rgba(211, 211, 211, 0.25);
+    --accent: #A89070;
+    --accent-muted: rgba(168, 144, 112, 0.7);
+    --accent-bg: rgba(168, 144, 112, 0.2);
+    --accent-bg-hover: rgba(168, 144, 112, 0.3);
+    --accent-border: rgba(168, 144, 112, 0.3);
+    --accent-border-active: rgba(168, 144, 112, 0.6);
+    --surface-hover: rgba(60, 60, 60, 0.2);
+    --surface-active: rgba(60, 60, 60, 0.4);
+    --surface-overlay: rgba(60, 60, 60, 0.4);
+    --surface-overlay-hover: rgba(60, 60, 60, 0.7);
+    --selection-bg: rgba(217, 119, 6, 0.2);
+    --selection-text: #ffffff;
+    --scrollbar-thumb: #D1D1D1;
+    --scrollbar-thumb-hover: #B1B1B1;
+    --scrollbar-container-thumb: rgba(255, 255, 255, 0.1);
+    --scrollbar-container-thumb-hover: rgba(255, 255, 255, 0.2);
+    --code-bg: rgba(60, 60, 60, 0.4);
+    --code-block-header: #3B3B3B;
+    --code-block-bg: #0A0A0A;
+    --citation-ring: #0A0A0A;
+    --citation-bg: #1e1e1e;
+    --error-text: rgba(248, 113, 113, 0.7);
+    --shimmer-edge: rgba(230, 229, 227, 0.6);
+    --shimmer-center: rgba(255, 255, 255, 1);
+    --shine-warm: rgba(255, 215, 100, 0.08);
+    --shine-bright: rgba(255, 255, 255, 0.18);
+}
+
+/* Light theme */
+[data-theme='light'] {
+    --bg-primary: #FAFAFA;
+    --bg-secondary: #FFFFFF;
+    --bg-elevated: #F5F5F5;
+    --bg-surface: #F0F0F0;
+    --border: #E0E0E0;
+    --border-muted: rgba(0, 0, 0, 0.1);
+    --border-subtle: rgba(0, 0, 0, 0.08);
+    --border-faint: rgba(0, 0, 0, 0.05);
+    --text-primary: #1A1A1A;
+    --text-secondary: rgba(26, 26, 26, 0.8);
+    --text-muted: rgba(26, 26, 26, 0.5);
+    --text-faint: rgba(26, 26, 26, 0.4);
+    --text-ghost: rgba(26, 26, 26, 0.3);
+    --text-placeholder: rgba(26, 26, 26, 0.3);
+    --accent: #8B7355;
+    --accent-muted: rgba(139, 115, 85, 0.7);
+    --accent-bg: rgba(139, 115, 85, 0.12);
+    --accent-bg-hover: rgba(139, 115, 85, 0.2);
+    --accent-border: rgba(139, 115, 85, 0.3);
+    --accent-border-active: rgba(139, 115, 85, 0.6);
+    --surface-hover: rgba(0, 0, 0, 0.04);
+    --surface-active: rgba(0, 0, 0, 0.08);
+    --surface-overlay: rgba(0, 0, 0, 0.04);
+    --surface-overlay-hover: rgba(0, 0, 0, 0.08);
+    --selection-bg: rgba(139, 115, 85, 0.2);
+    --selection-text: #1A1A1A;
+    --scrollbar-thumb: #C0C0C0;
+    --scrollbar-thumb-hover: #A0A0A0;
+    --scrollbar-container-thumb: rgba(0, 0, 0, 0.1);
+    --scrollbar-container-thumb-hover: rgba(0, 0, 0, 0.2);
+    --code-bg: rgba(0, 0, 0, 0.06);
+    --code-block-header: #EEEEEE;
+    --code-block-bg: #F8F8F8;
+    --citation-ring: #FAFAFA;
+    --citation-bg: #EEEEEE;
+    --error-text: rgba(220, 38, 38, 0.7);
+    --shimmer-edge: rgba(26, 26, 26, 0.4);
+    --shimmer-center: rgba(26, 26, 26, 0.9);
+    --shine-warm: rgba(139, 115, 85, 0.06);
+    --shine-bright: rgba(0, 0, 0, 0.06);
+}
+
+body {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+/* Theme-aware form element colors */
+textarea,
+input,
+select {
+    color: var(--text-primary);
+}
+
+textarea::placeholder,
+input::placeholder {
+    color: var(--text-placeholder);
+}
+
+select option {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+}
+
+/* Custom scrollbar - minimal */
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--scrollbar-thumb-hover);
+}
+
+/* Selection */
+::selection {
+    background: var(--selection-bg);
+    color: var(--selection-text);
+}
+
+/* Shimmer animation */
+@keyframes shimmer {
+    0% {
+        background-position: 200% 0;
+    }
+
+    100% {
+        background-position: -200% 0;
+    }
+}
+
+.animate-shimmer-text {
+    background: linear-gradient(90deg,
+            var(--shimmer-edge) 0%,
+            var(--shimmer-center) 50%,
+            var(--shimmer-edge) 100%);
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: shimmer 2s infinite linear;
+}
+
+/* Custom scrollbar for overflow containers */
+.custom-scrollbar::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-container-thumb);
+    border-radius: 10px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: var(--scrollbar-container-thumb-hover);
+}
+
+/* Source card shine sweep animation */
+@keyframes shine-sweep {
+    0%   { transform: translateX(-100%); }
+    100% { transform: translateX(300%); }
+}
+
+.source-shine-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: linear-gradient(
+        90deg,
+        transparent 0%,
+        var(--shine-warm) 35%,
+        var(--shine-bright) 50%,
+        var(--shine-warm) 65%,
+        transparent 100%
+    );
+    animation: shine-sweep 2.8s ease-in-out infinite;
+    pointer-events: none;
+}

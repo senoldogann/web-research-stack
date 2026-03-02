@@ -1,0 +1,69 @@
+# Development compose — hot reload, direct port exposure, no resource limits.
+# Usage: docker compose up
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: web-research-backend-dev
+    env_file:
+      - .env
+    environment:
+      OLLAMA_HOST: http://host.docker.internal:11434
+      APP_ENV: development
+      HISTORY_DB_PATH: /app/data/history.sqlite3
+    ports:
+      - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./web_scraper:/app/web_scraper
+      - ./scripts:/app/scripts
+      - sqlite-data-dev:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ./web-ui
+      dockerfile: Dockerfile
+    container_name: web-research-frontend-dev
+    env_file:
+      - web-ui/.env.local
+    environment:
+      BACKEND_BASE_URL: http://backend:8000
+      NEXT_PUBLIC_BACKEND_URL: http://localhost:8000/api/v1
+      NEXT_PUBLIC_OLLAMA_URL: http://host.docker.internal:11434
+      HOSTNAME: 0.0.0.0
+      NODE_ENV: development
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    volumes:
+      - ./web-ui/src:/app/src
+      - ./web-ui/public:/app/public
+    restart: unless-stopped
+
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: web-research-flaresolverr-dev
+    platform: linux/amd64
+    environment:
+      - LOG_LEVEL=debug
+      - LOG_HTML=false
+      - CAPTCHA_SOLVER=none
+      - TZ=Europe/Istanbul
+    ports:
+      - "8191:8191"
+    restart: unless-stopped
+
+volumes:
+  sqlite-data-dev:

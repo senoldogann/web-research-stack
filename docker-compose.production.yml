@@ -1,0 +1,186 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: web-research-backend
+    env_file:
+      - .env
+    environment:
+      OLLAMA_HOST: http://host.docker.internal:11434
+      HISTORY_DB_PATH: /app/data/history.sqlite3
+    restart: unless-stopped
+    expose:
+      - "8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - sqlite-data:/app/data
+    networks:
+      - web
+      - internal
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "2.0"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  # 3. FlareSolverr: Cloudflare / DDoS Bypass
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: web-research-flaresolverr
+    platform: linux/amd64
+    environment:
+      - LOG_LEVEL=info
+      - LOG_HTML=false
+      - CAPTCHA_SOLVER=none
+      - TZ=Europe/Istanbul
+    expose:
+      - "8191"
+    restart: unless-stopped
+    networks:
+      - internal
+      - web
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "2.0"
+
+  frontend:
+    build:
+      context: ./web-ui
+      dockerfile: Dockerfile
+    container_name: web-research-frontend
+    env_file:
+      - web-ui/.env.local
+    environment:
+      BACKEND_BASE_URL: http://backend:8000
+      NEXT_PUBLIC_BACKEND_URL: /api/v1
+      OLLAMA_URL: http://host.docker.internal:11434
+      HOSTNAME: 0.0.0.0
+    restart: unless-stopped
+    expose:
+      - "3000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - web
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "1.0"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  nginx:
+    build:
+      context: ./ops/nginx
+      dockerfile: Dockerfile
+    container_name: web-research-nginx
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      NGINX_SERVER_NAME: ${NGINX_SERVER_NAME:-localhost}
+    volumes:
+      - ./ops/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - nginx-certs:/etc/nginx/certs
+    networks:
+      - web
+      - internal
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: "0.5"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "--no-check-certificate", "https://127.0.0.1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  prometheus:
+    image: prom/prometheus:v3.7.1
+    container_name: web-research-prometheus
+    env_file:
+      - .env
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    entrypoint: ["/init.sh"]
+    volumes:
+      - ./ops/prometheus/init.sh:/init.sh:ro
+      - ./ops/prometheus/prometheus.yml.tmpl:/etc/prometheus/prometheus.yml.tmpl:ro
+      - ./ops/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - internal
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "1.0"
+
+  grafana:
+    image: grafana/grafana:12.2.0
+    container_name: web-research-grafana
+    env_file:
+      - .env
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    volumes:
+      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./ops/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3001:3000"
+    networks:
+      - internal
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.5"
+
+networks:
+  web:
+    driver: bridge
+  internal:
+    driver: bridge
+    internal: true
+
+volumes:
+  prometheus-data:
+  grafana-data:
+  sqlite-data:
+  nginx-certs:

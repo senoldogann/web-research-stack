@@ -1,0 +1,87 @@
+# ──────────────────────────────────────────
+# OS
+# ──────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# ──────────────────────────────────────────
+# Python
+# ──────────────────────────────────────────
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# ──────────────────────────────────────────
+# Node / Frontend
+# ──────────────────────────────────────────
+node_modules/
+.next/
+web-ui/.next/
+web-ui/node_modules/
+tsconfig.tsbuildinfo
+
+# ──────────────────────────────────────────
+# Environment & Secrets
+# ──────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+.env.production
+.env.staging
+.env.test
+
+# ──────────────────────────────────────────
+# IDE / Editor
+# ──────────────────────────────────────────
+.idea/
+.vscode/
+
+# ──────────────────────────────────────────
+# Databases (runtime)
+# ──────────────────────────────────────────
+*.sqlite3
+
+# ──────────────────────────────────────────
+# Logs & Temp
+# ──────────────────────────────────────────
+*.log
+logs/
+*.tmp
+*.temp
+
+# ──────────────────────────────────────────
+# AI Coding Assistant configs (personal)
+# ──────────────────────────────────────────
+.agent/
+.agents/
+.amazonq/
+.codex/
+.qoder/
+.opencode/
+.clinerules
+.kilocode/
+opencode.json
+AGENTS.md
+.maestro.state.json
+.guardian/
+
+# ──────────────────────────────────────────
+# Generated reports
+# ──────────────────────────────────────────
+validation-report-*.md

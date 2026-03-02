@@ -1,0 +1,33 @@
+groups:
+  - name: web-research-alerts
+    rules:
+      - alert: WebResearchBackendDown
+        expr: up{job="web_research_backend"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Web research backend is down
+          description: Prometheus cannot scrape the backend metrics endpoint.
+
+      - alert: WebResearchErrorRateHigh
+        expr: >
+          sum(increase(web_scraper_requests_total{status=~"5.."}[5m]))
+          /
+          sum(increase(web_scraper_requests_total[5m])) * 100 > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Elevated 5xx rate on the web research API
+          description: The backend 5xx error rate exceeded 10% over the last 5 minutes.
+
+      - alert: ResearchBackendBreakerOpen
+        expr: max_over_time(web_scraper_circuit_breaker_state[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: Circuit breaker is open
+          description: The research backend circuit breaker opened within the last 5 minutes.
+

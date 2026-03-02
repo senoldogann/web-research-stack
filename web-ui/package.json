@@ -1,0 +1,33 @@
+{
+    "name": "web-scraper-ui",
+    "version": "1.0.0",
+    "private": true,
+    "scripts": {
+        "dev": "next dev",
+        "build": "next build",
+        "start": "next start",
+        "lint": "next lint"
+    },
+    "dependencies": {
+        "@tailwindcss/postcss": "^4.0.0",
+        "framer-motion": "^11.0.0",
+        "lucide-react": "^0.460.0",
+        "next": "^15.0.0",
+        "react": "^19.0.0",
+        "react-dom": "^19.0.0",
+        "react-markdown": "^9.0.0",
+        "react-syntax-highlighter": "^16.1.1",
+        "remark-breaks": "^4.0.0",
+        "remark-gfm": "^4.0.0",
+        "tailwindcss": "^4.0.0"
+    },
+    "devDependencies": {
+        "@types/node": "^20.0.0",
+        "@types/react": "^19.0.0",
+        "@types/react-dom": "^19.0.0",
+        "@types/react-syntax-highlighter": "^15.5.13",
+        "eslint": "9.39.3",
+        "eslint-config-next": "15.5.12",
+        "typescript": "^5.0.0"
+    }
+}

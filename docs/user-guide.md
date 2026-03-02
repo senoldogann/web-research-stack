@@ -112,7 +112,25 @@ Open your browser and navigate to: **http://localhost:3000**
 ---
 
 ### Research Features
+#### Research Profiles (Deep Mode)
 
+When Deep Mode is enabled, a three-button toggle appears to select the source profile. Each profile activates dedicated OSS collectors in addition to standard web search:
+
+| Profile | Extra Sources | Best For |
+|---------|--------------|----------|
+| **Technical** | Wikipedia + StackExchange | Programming, engineering, tools |
+| **News** | HackerNews Algolia + Reuters/BBC/AP/AlJazeera RSS | Current events, market news |
+| **Academic** | arXiv + PubMed E-utilities | Scientific research, papers |
+
+The profile is also sent to the API as `research_profile` and can be set directly via the REST API.
+
+#### Citation Faithfulness
+
+Every synthesized response includes a `citation_audit` block that checks whether `[N]` citation markers in the answer are supported by the referenced source using keyword overlap (Jaccard similarity). A `faithfulness_score` of `1.0` means all citations are well-supported.
+
+#### Network Resilience
+
+All web searches (DuckDuckGo and Google) are automatically retried with exponential back-off and jitter when transient network errors occur. Additionally, if a page returns fewer than 250 characters via the standard HTTP scraper, the system automatically escalates to a headless Playwright (Chromium) browser to handle JavaScript-rendered pages.
 #### Normal Mode vs Deep Mode
 
 | Feature | Normal Mode | Deep Mode |
@@ -276,7 +294,8 @@ Tarayıcınızı açın ve gidin: **http://localhost:3000**
 
 1. **Araştırma Sorgusu**: Araştırma sorunuzu girin
 2. **Derin Mod**: Kapsamlı araştırma için toggle
-3. **Ayarlar**:
+3. **Araştırma Profili**: Derin mod için kaynak profili seçin — **Teknik**, **Haber** veya **Akademik**
+4. **Ayarlar**:
    - AI Sağlayıcı seçimi (Ollama/OpenAI)
    - Model seçimi
    - API anahtarı yapılandırması
@@ -292,7 +311,9 @@ Tarayıcınızı açın ve gidin: **http://localhost:3000**
 │  │ Yapay zeka son gelişmeler neler?      ││
 │  └─────────────────────────────────────────┘│
 │                                             │
-│  [⚡ Derin Mod]  [🔍 Araştır]              │
+│  [⚡ Derin Mod]  [Teknik] [Haber] [Akademik]│
+│                         [Profil]           │
+│  [🔍 Araştır]                               │
 │                                             │
 │  Ayarlar (Tema | Dil | AI Sağlayıcı)       │
 └─────────────────────────────────────────────┘
@@ -310,6 +331,24 @@ Tarayıcınızı açın ve gidin: **http://localhost:3000**
 | Kaynak Başına İçerik | 2,500 karakter | 8,000 karakter |
 | Analiz Derinliği | Özet | Kapsamlı |
 | Timeout | 120s | 240s |
+
+#### Araştırma Profilleri (Derin Mod)
+
+Derin Mod etkinleştirildiğinde, kaynak profili seçmek için üç düğmeli bir toggle belirir. Her profil, standart web aramasına ek olarak özel OSS kolektörlerini devreye sokar:
+
+| Profil | Ekstra Kaynaklar | En İyi Olduğu Alan |
+|--------|-----------------|--------------------|
+| **Teknik** | Wikipedia + StackExchange | Programlama, mühendislik, araçlar |
+| **Haber** | HackerNews Algolia + Reuters/BBC/AP/AlJazeera RSS | Güncel olaylar, piyasa haberleri |
+| **Akademik** | arXiv + PubMed E-utilities | Bilimsel araştırma, makaleler |
+
+#### Alıntı Dürüstlüğü (Citation Faithfulness)
+
+Her sentezlenmiş yanıt, cevapta yer alan `[N]` alıntı işaretlerinin anahtar kelime örtüşmesi (Jaccard benzerliği) ile referans alınan kaynak tarafından desteklenip desteklenmediğini kontrol eden bir `citation_audit` bloğu içerir. `faithfulness_score` değeri `1.0` ise tüm alıntılar iyi desteklenmektedir.
+
+#### Ağ Dayanıklılığı
+
+Tüm web aramaları (DuckDuckGo ve Google), geçici ağ hatalarında otomatik olarak üstel geri çekilme ve titreme (jitter) ile yeniden denenir. Ayrıca bir sayfa standart HTTP kazıyıcı aracılığıyla 250 karakterden az döndürdüğünde, sistem JavaScript ile render edilen sayfaları işlemek için otomatik olarak başsız Playwright (Chromium) tarayıcısına yükseltir.
 
 #### Araştırma Akışı
 

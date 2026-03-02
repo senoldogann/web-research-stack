@@ -106,6 +106,18 @@ Returns Prometheus-formatted metrics for monitoring.
 
 **Response:** `text/plain` (Prometheus exposition format)
 
+Key metrics exported:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `web_scraper_requests_total` | counter | Total requests by method/endpoint/status |
+| `web_scraper_request_duration_seconds` | histogram | Request duration in seconds by endpoint/method |
+| `web_scraper_upstream_failures_total` | counter | Upstream (5xx) failures by reason/endpoint |
+| `web_scraper_circuit_breaker_state` | gauge | Circuit breaker open (1) / closed (0) by breaker name |
+| `web_scraper_active_requests` | gauge | In-flight requests |
+| `web_scraper_cache_hits_total` | counter | Cache hit count |
+| `web_scraper_cache_misses_total` | counter | Cache miss count |
+
 ---
 
 #### 4. Tools Manifest
@@ -134,6 +146,7 @@ Returns the available tools for LLM integration.
           "query": { "type": "string" },
           "max_sources": { "type": "integer" },
           "deep_mode": { "type": "boolean" },
+          "research_profile": { "type": "string", "enum": ["technical", "news", "academic"] },
           "model": { "type": "string" },
           "provider": { "type": "string", "enum": ["ollama", "openai"] },
           "include_source_content": { "type": "boolean" }
@@ -238,6 +251,7 @@ Run AI-powered web research with citations.
   "query": "Latest developments in AI",
   "max_sources": 5,
   "deep_mode": false,
+  "research_profile": "technical",
   "model": "gpt-oss:120b-cloud",
   "provider": "ollama",
   "include_source_content": false,
@@ -246,14 +260,20 @@ Run AI-powered web research with citations.
 ```
 
 | Field | Type | Required | Description |
-|-------|------|----------|-------------|
+|-------|------|----------|--------------|
 | `query` | string | ✅ | Research query (3-500 chars) |
 | `max_sources` | integer | ❌ | Maximum sources to check (1-50) |
 | `deep_mode` | boolean | ❌ | Enable deep research mode (default: false) |
+| `research_profile` | string | ❌ | Source profile: `"technical"`, `"news"`, or `"academic"` (default: `"technical"`) |
 | `model` | string | ❌ | Override default LLM model |
 | `provider` | string | ❌ | `"ollama"` or `"openai"` (default: `"ollama"`) |
 | `include_source_content` | boolean | ❌ | Include raw scraped text in sources (default: false) |
 | `openai_api_key` | string | ❌ | OpenAI API key (when provider is `"openai"`) |
+
+> **Research Profiles:** When `deep_mode` is enabled, the profile selects dedicated OSS collectors in addition to DuckDuckGo/Google:
+> - `technical` — Wikipedia + StackExchange
+> - `news` — HackerNews Algolia + Reuters/BBC/AP/AlJazeera RSS feeds
+> - `academic` — arXiv + PubMed E-utilities
 
 **Response:**
 ```json
@@ -281,6 +301,12 @@ Run AI-powered web research with citations.
   ],
   "confidence_level": "High",
   "confidence_reason": "Multiple authoritative sources agree...",
+  "citation_audit": {
+    "total_citations": 4,
+    "supported_citations": 3,
+    "weak_citations": 1,
+    "faithfulness_score": 0.75
+  },
   "citations": [
     {
       "source": "docs",
@@ -317,7 +343,16 @@ Run AI-powered web research with citations.
 }
 ```
 
-> **Note:** For programming-related queries, `answer`, `detailed_analysis`, and `key_findings` may contain markdown fenced code blocks (`` ```language ... ``` ``).
+**`citation_audit` fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `total_citations` | integer | Number of `[N]` citation markers found in the synthesized answer |
+| `supported_citations` | integer | Citations with sufficient keyword overlap with the referenced source |
+| `weak_citations` | integer | Citations with low keyword overlap (faithfulness concern) |
+| `faithfulness_score` | float | Fraction of supported citations (0–1). `1.0` when no citations exist |
+
+> **Note:** For programming-related queries, `answer`, `detailed_analysis`, and `key_findings` may contain markdown fenced code blocks (`` ```language ... `` `).
 
 ---
 
@@ -547,6 +582,18 @@ API'nin sağlık durumunu ve bağımlılıklarını kontrol eder.
 
 **Yanıt:** `text/plain` (Prometheus exposition formatı)
 
+Dile getirilen temel metrikler:
+
+| Metrik | Tip | Açıklama |
+|--------|-----|----------|
+| `web_scraper_requests_total` | counter | Metod/endpoint/durum koduna göre toplam istek |
+| `web_scraper_request_duration_seconds` | histogram | Endpoint/metoda göre istek süresi (saniye) |
+| `web_scraper_upstream_failures_total` | counter | Neden/endpoint'e göre upstream (5xx) hataları |
+| `web_scraper_circuit_breaker_state` | gauge | Devre kesici açık (1) / kapalı (0) |
+| `web_scraper_active_requests` | gauge | Devam eden istek sayısı |
+| `web_scraper_cache_hits_total` | counter | Önbelleğe isabet sayısı |
+| `web_scraper_cache_misses_total` | counter | Önbelleğ kaçırma sayısı |
+
 ---
 
 #### 4. Araçlar Manifestosu
@@ -575,6 +622,7 @@ LLM entegrasyonu için mevcut araçları döndürür.
           "query": { "type": "string" },
           "max_sources": { "type": "integer" },
           "deep_mode": { "type": "boolean" },
+          "research_profile": { "type": "string", "enum": ["technical", "news", "academic"] },
           "model": { "type": "string" },
           "provider": { "type": "string", "enum": ["ollama", "openai"] },
           "include_source_content": { "type": "boolean" }
@@ -679,6 +727,7 @@ Alıntılarla AI destekli web araştırması çalıştırır.
   "query": "Yapay zeka son gelişmeler",
   "max_sources": 5,
   "deep_mode": false,
+  "research_profile": "technical",
   "model": "gpt-oss:120b-cloud",
   "provider": "ollama",
   "include_source_content": false,
@@ -691,10 +740,16 @@ Alıntılarla AI destekli web araştırması çalıştırır.
 | `query` | string | ✅ | Araştırma sorgusu (3-500 karakter) |
 | `max_sources` | integer | ❌ | Kontrol edilecek maksimum kaynak (1-50) |
 | `deep_mode` | boolean | ❌ | Derin araştırma modunu etkinleştir (varsayılan: false) |
+| `research_profile` | string | ❌ | Kaynak profili: `"technical"`, `"news"` veya `"academic"` (varsayılan: `"technical"`) |
 | `model` | string | ❌ | Varsayılan LLM modelini geçersiz kıl |
 | `provider` | string | ❌ | `"ollama"` veya `"openai"` (varsayılan: `"ollama"`) |
 | `include_source_content` | boolean | ❌ | Kaynaklarda ham kazınmış metin dahil et (varsayılan: false) |
 | `openai_api_key` | string | ❌ | OpenAI API anahtarı (sağlayıcı `"openai"` olduğunda) |
+
+> **Araştırma Profilleri:** `deep_mode` etkinleştirildiğinde profil, DuckDuckGo/Google'a ek olarak özel kolektörleri devreye sokar:
+> - `technical` — Wikipedia + StackExchange
+> - `news` — HackerNews Algolia + Reuters/BBC/AP/AlJazeera RSS beslemeleri
+> - `academic` — arXiv + PubMed E-utilities
 
 **Yanıt:**
 ```json
@@ -722,6 +777,12 @@ Alıntılarla AI destekli web araştırması çalıştırır.
   ],
   "confidence_level": "High",
   "confidence_reason": "Birden fazla yetkili kaynak hemfikir...",
+  "citation_audit": {
+    "total_citations": 4,
+    "supported_citations": 3,
+    "weak_citations": 1,
+    "faithfulness_score": 0.75
+  },
   "citations": [
     {
       "source": "docs",

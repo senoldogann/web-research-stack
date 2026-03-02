@@ -98,6 +98,7 @@ Typical response:
           "query": { "type": "string" },
           "max_sources": { "type": "integer" },
           "deep_mode": { "type": "boolean" },
+          "research_profile": { "type": "string", "enum": ["technical", "news", "academic"] },
           "model": { "type": "string" },
           "provider": { "type": "string", "enum": ["ollama", "openai"] },
           "include_source_content": { "type": "boolean" }
@@ -118,6 +119,7 @@ Typical response:
   "query": "Latest developments in AI coding agents",
   "max_sources": 5,
   "deep_mode": false,
+  "research_profile": "technical",
   "model": "gpt-oss:120b-cloud",
   "provider": "ollama",
   "include_source_content": false,
@@ -152,6 +154,12 @@ Typical response:
   ],
   "confidence_level": "High",
   "confidence_reason": "Multiple authoritative sources agree.",
+  "citation_audit": {
+    "total_citations": 4,
+    "supported_citations": 4,
+    "weak_citations": 0,
+    "faithfulness_score": 1.0
+  },
   "citations": [
     {
       "source": "docs",
@@ -372,8 +380,37 @@ else:
 
 - Use `deep_mode=false` for fast factual lookups and standard research
 - Use `deep_mode=true` for comparisons, due diligence, market scans, technical investigations, or long-form analysis
+- Use `research_profile` to steer deep-mode source collection toward the right domain (`technical`, `news`, or `academic`)
 - Let the backend choose `max_sources` automatically unless your product has a strict cost or latency budget
 - Set `include_source_content=true` only if the downstream system really needs raw source text
+- Monitor `citation_audit.faithfulness_score` in production; scores below `0.5` indicate a response that may contain unsupported citations
+
+## Research Profile Behavior
+
+When `deep_mode=true`, the `research_profile` field selects dedicated OSS collectors that run in parallel alongside DuckDuckGo/Google:
+
+| Profile | Extra Sources |
+|---------|---------------|
+| `technical` (default) | Wikipedia + StackExchange |
+| `news` | HackerNews Algolia + Reuters/BBC/AP/AlJazeera RSS feeds |
+| `academic` | arXiv + PubMed E-utilities |
+
+In normal mode the profile field is accepted but the extra collectors are not triggered.
+
+## Citation Faithfulness Audit
+
+Every response includes a `citation_audit` object:
+
+```json
+{
+  "total_citations": 4,
+  "supported_citations": 3,
+  "weak_citations": 1,
+  "faithfulness_score": 0.75
+}
+```
+
+Use `faithfulness_score` to detect potentially hallucinated citations before presenting results to end-users. A score of `1.0` means all `[N]` markers are backed by keyword evidence in the referenced source.
 
 ## Query Rewrite Behavior
 

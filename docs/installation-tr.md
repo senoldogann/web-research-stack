@@ -63,9 +63,10 @@ pip install -e .
 # Or install with dev dependencies
 pip install -e ".[dev]"
 
-# Install playwright dependencies (optional)
+# Install playwright dependencies (includes headless Chromium for JS-rendered page fallback)
 pip install -e ".[playwright]"
-playwright install chromium
+playwright install --with-deps chromium
+# The --with-deps flag also installs required OS-level libraries (libnss3, etc.)
 ```
 
 #### Method 2: Docker (Recommended for Production)
@@ -81,6 +82,8 @@ docker compose up --build
 # Or for production
 docker compose -f docker-compose.production.yml up --build
 ```
+
+> **Note:** The production Docker image (`Dockerfile.backend`) automatically installs Playwright and downloads the Chromium browser binary during the build step (`pip install ".[playwright]"` + `playwright install --with-deps chromium`). No manual Playwright setup is required when using Docker.
 
 ---
 
@@ -316,9 +319,10 @@ pip install -e .
 # Geliştirme bağımlılıklarıyla yükle
 pip install -e ".[dev]"
 
-# Playwright bağımlılıklarını yükle (opsiyonel)
+# Playwright bağımlılıklarını yükle (JS ile render edilen sayfalar için headless Chromium)
 pip install -e ".[playwright]"
-playwright install chromium
+playwright install --with-deps chromium
+# --with-deps bayrağı OS düzeyindeki kütüphaneleri de (libnss3 vb.) yükler
 ```
 
 #### Yöntem 2: Docker (Üretim için Önerilen)
@@ -334,6 +338,8 @@ docker compose up --build
 # Veya üretim için
 docker compose -f docker-compose.production.yml up --build
 ```
+
+> **Not:** Üretim Docker image'ı (`Dockerfile.backend`) build adımında Playwright'ı ve Chromium tarayıcı binary'sini otomatik olarak yükler (`pip install ".[playwright]"` + `playwright install --with-deps chromium`). Docker kullanırken manuel Playwright kurulumu gerekmez.
 
 ---
 

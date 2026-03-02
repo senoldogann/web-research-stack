@@ -67,9 +67,24 @@ ResearchProfile = Literal["technical", "news", "academic"]
 # Code-query keywords re-used in _plan_research_with_results for official-docs injection
 _CODE_SOURCE_KW: frozenset[str] = frozenset(
     {
-        "code", "example", "how to", "api", "library", "framework", "implement",
-        "tutorial", "usage", "syntax", "function", "class", "method",
-        "kod", "örnek", "nasıl", "kütüphane", "kullanım",
+        "code",
+        "example",
+        "how to",
+        "api",
+        "library",
+        "framework",
+        "implement",
+        "tutorial",
+        "usage",
+        "syntax",
+        "function",
+        "class",
+        "method",
+        "kod",
+        "örnek",
+        "nasıl",
+        "kütüphane",
+        "kullanım",
     }
 )
 
@@ -280,9 +295,7 @@ class ResearchAgent(LLMClient):
             )
             payload = extract_json_payload(ai_response)
 
-            normalized_query = clean_query_text(
-                payload.get("normalized_query") or cleaned_query
-            )
+            normalized_query = clean_query_text(payload.get("normalized_query") or cleaned_query)
             rewritten_queries = payload.get("search_queries", [])
             if not isinstance(rewritten_queries, list):
                 rewritten_queries = []
@@ -290,9 +303,7 @@ class ResearchAgent(LLMClient):
             search_queries = self._normalize_search_queries(
                 original_query=cleaned_query,
                 normalized_query=normalized_query,
-                search_queries=[
-                    c for c in rewritten_queries if isinstance(c, str)
-                ],
+                search_queries=[c for c in rewritten_queries if isinstance(c, str)],
             )
 
             if not search_queries:
@@ -325,10 +336,7 @@ class ResearchAgent(LLMClient):
         if not year or not queries:
             return queries
         year_pattern = re.compile(r"\b(19|20)\d{2}\b")
-        return [
-            q if year_pattern.search(q) else f"{q} {year}"
-            for q in queries
-        ]
+        return [q if year_pattern.search(q) else f"{q} {year}" for q in queries]
 
     # ------------------------------------------------------------------
     # Search collection
@@ -706,9 +714,7 @@ class ResearchAgent(LLMClient):
                 )
 
         except Exception as e:
-            return ResearchResult(
-                source=source_type, url=url, title="", content="", error=str(e)
-            )
+            return ResearchResult(source=source_type, url=url, title="", content="", error=str(e))
 
     # ------------------------------------------------------------------
     # Research planning
@@ -803,9 +809,7 @@ class ResearchAgent(LLMClient):
 
         if not ddg_results:
             logger.warning("No search results found, using fallback strategy")
-            return self._default_strategy(
-                query, deep_mode=deep_mode, target_count=max_to_check
-            )
+            return self._default_strategy(query, deep_mode=deep_mode, target_count=max_to_check)
 
         if progress_sink:
             progress_sink(self._msg("ranking_results", count=len(ddg_results)))
@@ -826,14 +830,13 @@ class ResearchAgent(LLMClient):
             strategy = json.loads(ai_response[start:end])
 
             valid_sources = [
-                s for s in strategy.get("sources", [])
+                s
+                for s in strategy.get("sources", [])
                 if s.get("url") and s["url"].startswith("http")
             ]
 
             if valid_sources:
-                target_count = (
-                    max_to_check if deep_mode else min(max_to_check, len(valid_sources))
-                )
+                target_count = max_to_check if deep_mode else min(max_to_check, len(valid_sources))
                 strategy["sources"] = expand_selected_sources(
                     selected_sources=valid_sources[:max_to_check],
                     fallback_results=ddg_results,
@@ -890,9 +893,7 @@ class ResearchAgent(LLMClient):
 
         if not ddg_results:
             logger.warning("No search results found, using fallback strategy")
-            return self._default_strategy(
-                query, deep_mode=deep_mode, target_count=max_to_check
-            )
+            return self._default_strategy(query, deep_mode=deep_mode, target_count=max_to_check)
 
         if progress_sink:
             progress_sink(self._msg("ranking_results", count=len(ddg_results)))
@@ -913,7 +914,8 @@ class ResearchAgent(LLMClient):
             strategy = json.loads(ai_response[start:end])
 
             valid_sources = [
-                s for s in strategy.get("sources", [])
+                s
+                for s in strategy.get("sources", [])
                 if s.get("url") and s["url"].startswith("http")
             ]
 
@@ -941,9 +943,7 @@ class ResearchAgent(LLMClient):
                     valid_sources = injected + valid_sources
 
             if valid_sources:
-                target_count = (
-                    max_to_check if deep_mode else min(max_to_check, len(valid_sources))
-                )
+                target_count = max_to_check if deep_mode else min(max_to_check, len(valid_sources))
                 strategy["sources"] = expand_selected_sources(
                     selected_sources=valid_sources[:max_to_check],
                     fallback_results=ddg_results,
@@ -1050,8 +1050,7 @@ class ResearchAgent(LLMClient):
             key=lambda r: (r.source_tier, -r.relevance_score),
         )
         cited_sources_list = [
-            {"url": r.url, "title": r.title, "source": r.source}
-            for r in citation_ordered
+            {"url": r.url, "title": r.title, "source": r.source} for r in citation_ordered
         ]
 
         if not successful_results:
@@ -1083,9 +1082,7 @@ class ResearchAgent(LLMClient):
             for line in lines:
                 stripped = line.strip()
                 if stripped and (
-                    stripped[0].isdigit()
-                    or stripped.startswith("-")
-                    or stripped.startswith("•")
+                    stripped[0].isdigit() or stripped.startswith("-") or stripped.startswith("•")
                 ):
                     if fixed and fixed[-1].strip():
                         fixed.append("")
@@ -1162,9 +1159,7 @@ class ResearchAgent(LLMClient):
                     return _build_report_from_data(data)
                 except (ValueError, json.JSONDecodeError):
                     repaired_retry = repair_truncated_json(ai_response_retry)
-                    if repaired_retry and isinstance(
-                        repaired_retry.get("executive_summary"), str
-                    ):
+                    if repaired_retry and isinstance(repaired_retry.get("executive_summary"), str):
                         logger.info("JSON repair succeeded on retry")
                         return _build_report_from_data(repaired_retry)
             except Exception as retry_err:
@@ -1249,9 +1244,7 @@ class ResearchAgent(LLMClient):
         cleaned_query = clean_query_text(query)
 
         # Fire query-rewrite and early search concurrently
-        rewrite_task = asyncio.create_task(
-            self._prepare_search_queries(query, deep_mode=deep_mode)
-        )
+        rewrite_task = asyncio.create_task(self._prepare_search_queries(query, deep_mode=deep_mode))
 
         early_search_queries = [cleaned_query] if cleaned_query else [query]
         preliminary_max = self._resolve_target_source_count(
@@ -1292,9 +1285,7 @@ class ResearchAgent(LLMClient):
         early_search_collection = await early_search_task
         early_results = early_search_collection["results"]
 
-        new_variant_queries = [
-            q for q in search_queries if q != cleaned_query and q != query
-        ]
+        new_variant_queries = [q for q in search_queries if q != cleaned_query and q != query]
         if new_variant_queries:
             try:
                 extra_collection = await self._collect_search_results(
@@ -1359,10 +1350,8 @@ class ResearchAgent(LLMClient):
         successful = 0
 
         for i, result in enumerate(raw_results):
-            if isinstance(result, Exception):
-                logger.error(
-                    f"Source failed: {sources_to_check[i]['url']} - {result}"
-                )
+            if isinstance(result, BaseException):
+                logger.error(f"Source failed: {sources_to_check[i]['url']} - {result}")
                 if progress_sink:
                     progress_sink(
                         self._msg(
@@ -1395,9 +1384,7 @@ class ResearchAgent(LLMClient):
 
         if progress_sink:
             progress_sink("")
-            progress_sink(
-                self._msg("results_summary", successful=successful, total=num_sources)
-            )
+            progress_sink(self._msg("results_summary", successful=successful, total=num_sources))
             total_chars = sum(len(r.content) for r in research_results if not r.error)
             progress_sink(self._msg("total_content", chars=f"{total_chars:,}"))
             progress_sink("")
@@ -1504,9 +1491,7 @@ class ResearchAgent(LLMClient):
             early_search_collection = await early_search_task
             early_results = early_search_collection["results"]
 
-            new_variant_queries = [
-                q for q in search_queries if q != cleaned_query and q != query
-            ]
+            new_variant_queries = [q for q in search_queries if q != cleaned_query and q != query]
             if new_variant_queries:
                 try:
                     extra_collection = await self._collect_search_results(
@@ -1756,13 +1741,9 @@ class ResearchAgent(LLMClient):
         for result in report.sources:
             status = "✅" if not result.error else "❌"
             relevance = (
-                f"({result.relevance_score:.0%} relevant)"
-                if result.relevance_score > 0
-                else ""
+                f"({result.relevance_score:.0%} relevant)" if result.relevance_score > 0 else ""
             )
-            lines.append(
-                f"{status} {result.source}: {result.title[:60]}... {relevance}"
-            )
+            lines.append(f"{status} {result.source}: {result.title[:60]}... {relevance}")
             if result.error:
                 lines.append(f"   Error: {result.error[:80]}")
         lines.append("")

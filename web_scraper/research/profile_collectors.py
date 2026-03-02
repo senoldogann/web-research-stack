@@ -302,7 +302,7 @@ async def collect_pubmed_results(
                 root = ET.fromstring(summary_resp.text)
                 for article in root.iter("PubmedArticle"):
                     pmid_el = article.find(".//PMID")
-                    pmid = pmid_el.text.strip() if pmid_el is not None else None
+                    pmid = pmid_el.text.strip() if (pmid_el is not None and pmid_el.text) else None
                     if not pmid or pmid in seen_pmids:
                         continue
 
@@ -314,11 +314,7 @@ async def collect_pubmed_results(
                     )
 
                     ab_el = article.find(".//AbstractText")
-                    snippet = (
-                        "".join(ab_el.itertext())[:300].strip()
-                        if ab_el is not None
-                        else ""
-                    )
+                    snippet = "".join(ab_el.itertext())[:300].strip() if ab_el is not None else ""
 
                     pub_year_el = article.find(".//PubDate/Year")
                     pub_year = pub_year_el.text if pub_year_el is not None else None

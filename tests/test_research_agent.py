@@ -480,7 +480,10 @@ def test_citation_audit_summary_has_faithfulness_between_0_and_1() -> None:
     from web_scraper.research.citation_verifier import citation_audit_summary
 
     synthesis = "Rust uses ownership model [1]. Python is interpreted [2]."
-    sources = ["Rust programming language uses ownership and borrowing.", "Python is a scripting language."]
+    sources = [
+        "Rust programming language uses ownership and borrowing.",
+        "Python is a scripting language.",
+    ]
     audit = citation_audit_summary(synthesis, sources)
     assert 0.0 <= audit["faithfulness_score"] <= 1.0
     assert audit["total_citations"] >= 2

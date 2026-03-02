@@ -235,7 +235,20 @@ class MetricsRegistry:
 
     # Default latency buckets in seconds (matches prometheus_client defaults)
     DEFAULT_BUCKETS: Tuple[float, ...] = (
-        0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, float("inf")
+        0.005,
+        0.01,
+        0.025,
+        0.05,
+        0.1,
+        0.25,
+        0.5,
+        1.0,
+        2.5,
+        5.0,
+        10.0,
+        30.0,
+        60.0,
+        float("inf"),
     )
 
     def __init__(self) -> None:
@@ -243,7 +256,9 @@ class MetricsRegistry:
         self._gauges: Dict[MetricPoint, float] = {}
         # histogram: name → { label_key → [bucket_counts, sum, count] }
         # bucket_counts is a list of ints aligned with DEFAULT_BUCKETS
-        self._histograms: Dict[str, Dict[Tuple[Tuple[str, str], ...], List[float]]] = defaultdict(dict)
+        self._histograms: Dict[str, Dict[Tuple[Tuple[str, str], ...], List[float]]] = defaultdict(
+            dict
+        )
         self._lock = threading.Lock()
 
     def increment(self, name: str, amount: float = 1.0, **labels: Any) -> None:
@@ -285,8 +300,7 @@ class MetricsRegistry:
             counters = list(self._counters.items())
             gauges = list(self._gauges.items())
             histograms_snapshot = {
-                name: dict(label_rows)
-                for name, label_rows in self._histograms.items()
+                name: dict(label_rows) for name, label_rows in self._histograms.items()
             }
 
         counter_names = sorted({point.name for point, _ in counters})

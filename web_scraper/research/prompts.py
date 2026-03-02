@@ -18,50 +18,187 @@ from web_scraper.research.models import ResearchResult
 _CODE_KEYWORDS: frozenset[str] = frozenset(
     {
         # English
-        "code", "code example", "code snippet", "function", "class", "method",
-        "algorithm", "syntax", "how to implement", "how to write", "how to create",
-        "how to use", "how to call", "programming", "coding", "developer", "software",
-        "api", "endpoint", "library", "framework", "module", "import", "variable",
-        "loop", "array", "dictionary", "tuple", "struct", "interface", "decorator",
-        "annotation", "async", "await", "promise", "callback", "closure",
-        "inheritance", "polymorphism", "encapsulation", "compile", "runtime",
-        "debug", "exception", "error handling", "type hint", "generic", "template",
+        "code",
+        "code example",
+        "code snippet",
+        "function",
+        "class",
+        "method",
+        "algorithm",
+        "syntax",
+        "how to implement",
+        "how to write",
+        "how to create",
+        "how to use",
+        "how to call",
+        "programming",
+        "coding",
+        "developer",
+        "software",
+        "api",
+        "endpoint",
+        "library",
+        "framework",
+        "module",
+        "import",
+        "variable",
+        "loop",
+        "array",
+        "dictionary",
+        "tuple",
+        "struct",
+        "interface",
+        "decorator",
+        "annotation",
+        "async",
+        "await",
+        "promise",
+        "callback",
+        "closure",
+        "inheritance",
+        "polymorphism",
+        "encapsulation",
+        "compile",
+        "runtime",
+        "debug",
+        "exception",
+        "error handling",
+        "type hint",
+        "generic",
+        "template",
         # Turkish
-        "kod", "kod örneği", "fonksiyon", "sınıf", "metod", "algoritma",
-        "söz dizimi", "nasıl yazılır", "nasıl kullanılır", "nasıl yapılır",
-        "nasıl çağrılır", "nasil yazilir", "nasil kullanilir", "nasil yapilir",
-        "programlama", "yazılım", "geliştirici", "kütüphane", "değişken",
-        "döngü", "dizi", "sözlük", "hata yakalama", "kod ver", "kod göster",
-        "örnek kod", "kod örnegi", "kod yaz", "kodla", "kodlama",
+        "kod",
+        "kod örneği",
+        "fonksiyon",
+        "sınıf",
+        "metod",
+        "algoritma",
+        "söz dizimi",
+        "nasıl yazılır",
+        "nasıl kullanılır",
+        "nasıl yapılır",
+        "nasıl çağrılır",
+        "nasil yazilir",
+        "nasil kullanilir",
+        "nasil yapilir",
+        "programlama",
+        "yazılım",
+        "geliştirici",
+        "kütüphane",
+        "değişken",
+        "döngü",
+        "dizi",
+        "sözlük",
+        "hata yakalama",
+        "kod ver",
+        "kod göster",
+        "örnek kod",
+        "kod örnegi",
+        "kod yaz",
+        "kodla",
+        "kodlama",
         # Language / framework names
-        "python", "javascript", "typescript", "java", "c++", "c#", "golang",
-        "rust", "ruby", "php", "swift", "kotlin", "scala", "react", "vue",
-        "angular", "node.js", "nodejs", "django", "flask", "fastapi", "express",
-        "spring", "nextjs", "next.js", "html", "css", "sql", "bash", "shell",
-        "powershell", "docker", "kubernetes", "terraform", "ansible",
+        "python",
+        "javascript",
+        "typescript",
+        "java",
+        "c++",
+        "c#",
+        "golang",
+        "rust",
+        "ruby",
+        "php",
+        "swift",
+        "kotlin",
+        "scala",
+        "react",
+        "vue",
+        "angular",
+        "node.js",
+        "nodejs",
+        "django",
+        "flask",
+        "fastapi",
+        "express",
+        "spring",
+        "nextjs",
+        "next.js",
+        "html",
+        "css",
+        "sql",
+        "bash",
+        "shell",
+        "powershell",
+        "docker",
+        "kubernetes",
+        "terraform",
+        "ansible",
     }
 )
 
 _TABLE_KEYWORDS: frozenset[str] = frozenset(
     {
-        "table", "tablo", "tables", "tablolar", "list", "liste", "listing",
-        "tabulate", "tabular", "grid", "in a table", "as a table",
-        "tablo olarak", "liste olarak", "tablo şeklinde", "liste şeklinde",
+        "table",
+        "tablo",
+        "tables",
+        "tablolar",
+        "list",
+        "liste",
+        "listing",
+        "tabulate",
+        "tabular",
+        "grid",
+        "in a table",
+        "as a table",
+        "tablo olarak",
+        "liste olarak",
+        "tablo şeklinde",
+        "liste şeklinde",
     }
 )
 
 _CODE_QUERY_SOURCE_KEYWORDS: frozenset[str] = frozenset(
     {
-        "code", "example", "how to", "api", "library", "framework", "implement",
-        "tutorial", "usage", "syntax", "function", "class", "method",
-        "kod", "örnek", "nasıl", "kütüphane", "kullanım",
+        "code",
+        "example",
+        "how to",
+        "api",
+        "library",
+        "framework",
+        "implement",
+        "tutorial",
+        "usage",
+        "syntax",
+        "function",
+        "class",
+        "method",
+        "kod",
+        "örnek",
+        "nasıl",
+        "kütüphane",
+        "kullanım",
     }
 )
 
 _OFFICIAL_DOC_URL_PATTERNS: tuple[str, ...] = (
-    "docs.", "developer.", "developers.", "documentation.", "dev.", "api.",
-    "reference.", "learn.", "guide.", "/docs/", "/doc/", "/reference/", "/api/",
-    "/guide/", "/tutorial/", "/manual/", "/en/stable/", "/en/latest/",
+    "docs.",
+    "developer.",
+    "developers.",
+    "documentation.",
+    "dev.",
+    "api.",
+    "reference.",
+    "learn.",
+    "guide.",
+    "/docs/",
+    "/doc/",
+    "/reference/",
+    "/api/",
+    "/guide/",
+    "/tutorial/",
+    "/manual/",
+    "/en/stable/",
+    "/en/latest/",
 )
 
 
@@ -81,38 +218,39 @@ def is_code_source_query(query: str) -> bool:
 # Prompt builders
 # ---------------------------------------------------------------------------
 
+
 def build_source_count_decision_prompt(query: str, deep_mode: bool) -> str:
     """Build the prompt used to decide how many links to inspect."""
     if deep_mode:
         return (
-            f'Given this research query, decide how many different sources should be checked '
-            f'for a deep, highly detailed answer.\n\n'
+            f"Given this research query, decide how many different sources should be checked "
+            f"for a deep, highly detailed answer.\n\n"
             f'Query: "{query}"\n\n'
-            f'Deep mode is active. The answer must be comprehensive and evidence-heavy.\n\n'
-            f'Guidance:\n'
-            f'- Stay near the lower bound only if the topic is narrow but still important\n'
-            f'- Use the middle of the range for broad comparative topics\n'
-            f'- Move near the upper bound for fast-moving, disputed, or evidence-heavy topics\n\n'
-            f'IMPORTANT: You must understand the language of the Query '
-            f'(e.g. if it is Turkish, it is Turkish).\n\n'
-            f'Return ONLY a number between {config.research_deep_min_sources} '
-            f'and {config.research_deep_max_sources}.'
+            f"Deep mode is active. The answer must be comprehensive and evidence-heavy.\n\n"
+            f"Guidance:\n"
+            f"- Stay near the lower bound only if the topic is narrow but still important\n"
+            f"- Use the middle of the range for broad comparative topics\n"
+            f"- Move near the upper bound for fast-moving, disputed, or evidence-heavy topics\n\n"
+            f"IMPORTANT: You must understand the language of the Query "
+            f"(e.g. if it is Turkish, it is Turkish).\n\n"
+            f"Return ONLY a number between {config.research_deep_min_sources} "
+            f"and {config.research_deep_max_sources}."
         )
 
     return (
-        f'Given this research query, decide how many sources should be checked '
-        f'for a comprehensive answer.\n\n'
+        f"Given this research query, decide how many sources should be checked "
+        f"for a comprehensive answer.\n\n"
         f'Query: "{query}"\n\n'
-        f'Consider:\n'
-        f'- Very simple factual query: stay near the lower bound\n'
-        f'- Small factual confirmation: use only a few sources\n'
-        f'- Standard overview: use a middle-of-range count\n'
-        f'- Comparative or nuanced topic: broaden coverage\n'
-        f'- Complex technical topic: move close to the upper bound\n\n'
-        f'IMPORTANT: You must understand the language of the Query '
-        f'(e.g. if it is Turkish, it is Turkish).\n\n'
-        f'Return ONLY a number between {config.research_normal_auto_min_sources} '
-        f'and {config.research_normal_auto_max_sources}.'
+        f"Consider:\n"
+        f"- Very simple factual query: stay near the lower bound\n"
+        f"- Small factual confirmation: use only a few sources\n"
+        f"- Standard overview: use a middle-of-range count\n"
+        f"- Comparative or nuanced topic: broaden coverage\n"
+        f"- Complex technical topic: move close to the upper bound\n\n"
+        f"IMPORTANT: You must understand the language of the Query "
+        f"(e.g. if it is Turkish, it is Turkish).\n\n"
+        f"Return ONLY a number between {config.research_normal_auto_min_sources} "
+        f"and {config.research_normal_auto_max_sources}."
     )
 
 
@@ -287,9 +425,7 @@ def build_synthesis_prompt(
         f"  [{i}] {r.title or r.source} — {r.url} ({r.publication_date or 'date unknown'})"
         for i, r in enumerate(successful_results, 1)
     ]
-    source_index_block = (
-        "\n".join(source_index_lines) if source_index_lines else "  (no sources)"
-    )
+    source_index_block = "\n".join(source_index_lines) if source_index_lines else "  (no sources)"
 
     total_chars = sum(len(r.content) for r in successful_results)
 
@@ -332,9 +468,24 @@ def build_synthesis_prompt(
     code_query_detected = is_code_query(query)
     if code_query_detected:
         official_doc_url_patterns = (
-            "docs.", "developer.", "developers.", "documentation.", "dev.", "api.",
-            "reference.", "learn.", "guide.", "/docs/", "/doc/", "/reference/",
-            "/api/", "/guide/", "/tutorial/", "/manual/", "/en/stable/", "/en/latest/",
+            "docs.",
+            "developer.",
+            "developers.",
+            "documentation.",
+            "dev.",
+            "api.",
+            "reference.",
+            "learn.",
+            "guide.",
+            "/docs/",
+            "/doc/",
+            "/reference/",
+            "/api/",
+            "/guide/",
+            "/tutorial/",
+            "/manual/",
+            "/en/stable/",
+            "/en/latest/",
         )
         official_doc_urls = [
             r.url

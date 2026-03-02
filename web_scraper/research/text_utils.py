@@ -16,12 +16,58 @@ from web_scraper.research.constants import DATE_PATTERNS
 _TURKISH_CHARS: frozenset[str] = frozenset("çğıöşüÇĞİÖŞÜ")
 _TURKISH_WORDS: frozenset[str] = frozenset(
     {
-        "ve", "bir", "bu", "ile", "için", "da", "de", "ne", "nedir", "nasıl",
-        "neden", "kaç", "hangi", "bana", "benim", "olan", "var", "yok", "ama",
-        "veya", "gibi", "daha", "çok", "hakkında", "haber", "haberleri", "neler",
-        "oldu", "yapay", "zeka", "araştır", "anlat", "açıkla", "karşılaştır",
-        "listele", "özetle", "tablo", "son", "güncel", "bugün", "yarın", "dün",
-        "geçen", "gelecek", "mı", "mi", "mu", "mü", "ki", "dan", "den", "dir",
+        "ve",
+        "bir",
+        "bu",
+        "ile",
+        "için",
+        "da",
+        "de",
+        "ne",
+        "nedir",
+        "nasıl",
+        "neden",
+        "kaç",
+        "hangi",
+        "bana",
+        "benim",
+        "olan",
+        "var",
+        "yok",
+        "ama",
+        "veya",
+        "gibi",
+        "daha",
+        "çok",
+        "hakkında",
+        "haber",
+        "haberleri",
+        "neler",
+        "oldu",
+        "yapay",
+        "zeka",
+        "araştır",
+        "anlat",
+        "açıkla",
+        "karşılaştır",
+        "listele",
+        "özetle",
+        "tablo",
+        "son",
+        "güncel",
+        "bugün",
+        "yarın",
+        "dün",
+        "geçen",
+        "gelecek",
+        "mı",
+        "mi",
+        "mu",
+        "mü",
+        "ki",
+        "dan",
+        "den",
+        "dir",
     }
 )
 
@@ -40,6 +86,7 @@ def detect_query_language(query: str) -> str:
 # ---------------------------------------------------------------------------
 # JSON utilities
 # ---------------------------------------------------------------------------
+
 
 def repair_truncated_json(raw_text: str) -> Optional[dict]:
     """Attempt to repair truncated / malformed JSON from LLM output.
@@ -149,6 +196,7 @@ def extract_json_payload(response_text: str) -> dict:
 # ---------------------------------------------------------------------------
 # Text / content utilities
 # ---------------------------------------------------------------------------
+
 
 def clean_query_text(query: str) -> str:
     """Normalize whitespace so query comparisons stay stable."""

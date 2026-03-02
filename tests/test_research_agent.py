@@ -329,6 +329,46 @@ def test_profile_aware_ranking_favors_academic_sources() -> None:
     assert ranked[0]["url"].startswith("https://arxiv.org/")
 
 
+def test_collect_search_results_uses_profile_collector_in_deep_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = ResearchAgent(model="demo-model", host="http://ollama.local")
+    monkeypatch.setattr(config, "research_enable_google_fallback", False, raising=False)
+
+    async def fake_ddg(search_queries, search_pool_size, temporal_scope=None):
+        return []
+
+    async def fake_arxiv(search_queries, search_pool_size, timeout_seconds):
+        return [
+            {
+                "title": "A paper",
+                "url": "https://arxiv.org/abs/2501.00001",
+                "snippet": "paper summary",
+                "source": "arxiv",
+                "search_provider": "arxiv",
+                "search_query": search_queries[0],
+            }
+        ]
+
+    monkeypatch.setattr(agent, "_collect_duckduckgo_results", fake_ddg)
+    monkeypatch.setattr("web_scraper.research.agent.collect_arxiv_results", fake_arxiv)
+
+    collected = asyncio.run(
+        agent._collect_search_results(
+            query="rag evaluation",
+            search_queries=["rag evaluation"],
+            search_pool_size=5,
+            target_count=3,
+            research_profile="academic",
+            deep_mode=True,
+        )
+    )
+
+    assert collected["profile_provider_used"] is True
+    assert "arxiv" in collected["providers_used"]
+    assert len(collected["results"]) >= 1
+
+
 # ---------------------------------------------------------------------------
 # FAZ 6 — Source tier classification
 # ---------------------------------------------------------------------------

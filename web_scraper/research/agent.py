@@ -27,6 +27,11 @@ from web_scraper.google_search import get_best_sources
 from web_scraper.research.constants import SOURCE_TEMPLATES, STATUS_MESSAGES
 from web_scraper.research.llm_client import LLMClient
 from web_scraper.research.models import ResearchReport, ResearchResult
+from web_scraper.research.profile_collectors import (
+    collect_arxiv_results,
+    collect_hackernews_results,
+    collect_wikipedia_results,
+)
 from web_scraper.research.prompts import (
     build_query_rewrite_prompt,
     build_source_count_decision_prompt,
@@ -431,46 +436,104 @@ class ResearchAgent(LLMClient):
         target_count: int,
         temporal_scope: Optional[dict] = None,
         research_profile: ResearchProfile = "technical",
+        deep_mode: bool = False,
     ) -> dict:
         """Collect DDG and Google results concurrently, then merge and rank."""
         ddg_results: list[dict] = []
         google_results: list[dict] = []
+        profile_results: list[dict] = []
         ddg_error: Optional[str] = None
         google_error: Optional[str] = None
+        profile_error: Optional[str] = None
+        selected_profile = self._normalize_profile(research_profile)
 
-        tasks: list[asyncio.Task] = [
-            asyncio.create_task(
-                self._collect_duckduckgo_results(
-                    search_queries=search_queries,
-                    search_pool_size=search_pool_size,
-                    temporal_scope=temporal_scope,
-                )
+        labeled_tasks: list[tuple[str, asyncio.Task]] = [
+            (
+                "duckduckgo",
+                asyncio.create_task(
+                    self._collect_duckduckgo_results(
+                        search_queries=search_queries,
+                        search_pool_size=search_pool_size,
+                        temporal_scope=temporal_scope,
+                    )
+                ),
             )
         ]
         if config.research_enable_google_fallback:
-            tasks.append(
-                asyncio.create_task(
-                    self._collect_google_results(
-                        search_queries=search_queries,
-                        search_pool_size=search_pool_size,
-                    )
+            labeled_tasks.append(
+                (
+                    "google",
+                    asyncio.create_task(
+                        self._collect_google_results(
+                            search_queries=search_queries,
+                            search_pool_size=search_pool_size,
+                        )
+                    ),
                 )
             )
 
-        raw_results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        ddg_outcome = raw_results[0]
-        if isinstance(ddg_outcome, BaseException):
-            ddg_error = str(ddg_outcome)
-        else:
-            ddg_results = list(ddg_outcome)  # type: ignore[arg-type]
-
-        if len(raw_results) > 1:
-            google_outcome = raw_results[1]
-            if isinstance(google_outcome, BaseException):
-                google_error = str(google_outcome)
+        if deep_mode:
+            if selected_profile == "academic":
+                labeled_tasks.append(
+                    (
+                        "profile",
+                        asyncio.create_task(
+                            collect_arxiv_results(
+                                search_queries=search_queries,
+                                search_pool_size=search_pool_size,
+                                timeout_seconds=config.duckduckgo_request_timeout_seconds,
+                            )
+                        ),
+                    )
+                )
+            elif selected_profile == "news":
+                labeled_tasks.append(
+                    (
+                        "profile",
+                        asyncio.create_task(
+                            collect_hackernews_results(
+                                search_queries=search_queries,
+                                search_pool_size=search_pool_size,
+                                timeout_seconds=config.duckduckgo_request_timeout_seconds,
+                            )
+                        ),
+                    )
+                )
             else:
-                google_results = list(google_outcome)  # type: ignore[arg-type]
+                labeled_tasks.append(
+                    (
+                        "profile",
+                        asyncio.create_task(
+                            collect_wikipedia_results(
+                                search_queries=search_queries,
+                                search_pool_size=search_pool_size,
+                                timeout_seconds=config.duckduckgo_request_timeout_seconds,
+                            )
+                        ),
+                    )
+                )
+
+        raw_results = await asyncio.gather(
+            *[task for _, task in labeled_tasks],
+            return_exceptions=True,
+        )
+
+        for (label, _), outcome in zip(labeled_tasks, raw_results):
+            if isinstance(outcome, BaseException):
+                if label == "duckduckgo":
+                    ddg_error = str(outcome)
+                elif label == "google":
+                    google_error = str(outcome)
+                else:
+                    profile_error = str(outcome)
+                continue
+
+            if label == "duckduckgo":
+                ddg_results = list(outcome)  # type: ignore[arg-type]
+            elif label == "google":
+                google_results = list(outcome)  # type: ignore[arg-type]
+            else:
+                profile_results = list(outcome)  # type: ignore[arg-type]
 
         min_google_fallback = min(
             max(1, config.research_google_fallback_min_results),
@@ -481,7 +544,7 @@ class ResearchAgent(LLMClient):
 
         ranked = merge_and_rank_search_results(
             query=query,
-            result_sets=[ddg_results, google_results],
+            result_sets=[ddg_results, google_results, profile_results],
             limit=search_pool_size,
             research_profile=research_profile,
         )
@@ -500,6 +563,8 @@ class ResearchAgent(LLMClient):
             "fallback_used": bool(google_results),
             "ddg_error": ddg_error,
             "google_error": google_error,
+            "profile_error": profile_error,
+            "profile_provider_used": bool(profile_results),
         }
 
     # ------------------------------------------------------------------
@@ -1115,6 +1180,7 @@ class ResearchAgent(LLMClient):
                 target_count=preliminary_max,
                 temporal_scope=None,
                 research_profile=selected_profile,
+                deep_mode=deep_mode,
             )
         )
 
@@ -1138,6 +1204,7 @@ class ResearchAgent(LLMClient):
                     target_count=preliminary_max,
                     temporal_scope=temporal_scope,
                     research_profile=selected_profile,
+                    deep_mode=deep_mode,
                 )
                 seen_urls = {r.get("url") for r in early_results if r.get("url")}
                 for r in extra_collection["results"]:
@@ -1325,6 +1392,7 @@ class ResearchAgent(LLMClient):
                     target_count=preliminary_max,
                     temporal_scope=None,
                     research_profile=selected_profile,
+                    deep_mode=deep_mode,
                 )
             )
 
@@ -1348,6 +1416,7 @@ class ResearchAgent(LLMClient):
                         target_count=preliminary_max,
                         temporal_scope=temporal_scope,
                         research_profile=selected_profile,
+                        deep_mode=deep_mode,
                     )
                     seen_urls = {r.get("url") for r in early_results if r.get("url")}
                     for r in extra_collection["results"]:

@@ -162,6 +162,7 @@ class ResearchAgent(LLMClient):
         timeout_per_source: Optional[float] = None,
         provider: str = "ollama",
         openai_api_key: Optional[str] = None,
+        ollama_api_key: Optional[str] = None,
     ) -> None:
         super().__init__(
             model=model,
@@ -170,6 +171,7 @@ class ResearchAgent(LLMClient):
             timeout_per_source=timeout_per_source,
             provider=provider,
             openai_api_key=openai_api_key,
+            ollama_api_key=ollama_api_key,
         )
         # Language detected from the current query — set during research()
         self._query_lang: str = "en"

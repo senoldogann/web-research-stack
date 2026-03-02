@@ -26,6 +26,10 @@ interface SettingsModalProps {
     openaiApiKey: string
     setOpenaiApiKey: (k: string) => void
     ollamaModels: string[]
+    ollamaBaseUrl: string
+    setOllamaBaseUrl: (url: string) => void
+    ollamaApiKey: string
+    setOllamaApiKey: (k: string) => void
 }
 
 export default function SettingsModal({
@@ -40,8 +44,13 @@ export default function SettingsModal({
     openaiApiKey,
     setOpenaiApiKey,
     ollamaModels,
+    ollamaBaseUrl,
+    setOllamaBaseUrl,
+    ollamaApiKey,
+    setOllamaApiKey,
 }: SettingsModalProps) {
     const [showKey, setShowKey] = useState(false)
+    const [showOllamaKey, setShowOllamaKey] = useState(false)
     const [openaiModels, setOpenaiModels] = useState<string[]>(OPENAI_MODELS_FALLBACK)
     const [fetchingModels, setFetchingModels] = useState(false)
     const [fetchError, setFetchError] = useState<string | null>(null)
@@ -238,6 +247,7 @@ export default function SettingsModal({
                 {/* ── Ollama settings ── */}
                 {provider === 'ollama' && (
                     <div className="space-y-4">
+                        {/* Model */}
                         <div>
                             <label
                                 className="block text-xs uppercase tracking-widest mb-2"
@@ -263,6 +273,61 @@ export default function SettingsModal({
                                     {t.noOllamaModels}
                                 </p>
                             )}
+                        </div>
+
+                        {/* Ollama Host URL */}
+                        <div>
+                            <label
+                                className="block text-xs uppercase tracking-widest mb-2"
+                                style={sectionLabelStyle}
+                            >
+                                {t.ollamaBaseUrl}
+                            </label>
+                            <input
+                                type="text"
+                                value={ollamaBaseUrl}
+                                onChange={(e) => setOllamaBaseUrl(e.target.value)}
+                                placeholder={t.ollamaBaseUrlPlaceholder}
+                                className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none"
+                                style={inputStyle}
+                            />
+                            <p className="text-[0.65rem] mt-1.5" style={{ color: 'var(--text-placeholder)' }}>
+                                {t.ollamaBaseUrlHelp}
+                            </p>
+                        </div>
+
+                        {/* Ollama API Key */}
+                        <div>
+                            <label
+                                className="block text-xs uppercase tracking-widest mb-2"
+                                style={sectionLabelStyle}
+                            >
+                                {t.ollamaApiKey}
+                            </label>
+                            <div className="relative">
+                                <input
+                                    type={showOllamaKey ? 'text' : 'password'}
+                                    value={ollamaApiKey}
+                                    onChange={(e) => setOllamaApiKey(e.target.value)}
+                                    placeholder={t.ollamaApiKeyPlaceholder}
+                                    className="w-full rounded-lg px-3 py-2 pr-10 text-sm focus:outline-none"
+                                    style={inputStyle}
+                                />
+                                <button
+                                    type="button"
+                                    onClick={() => setShowOllamaKey(!showOllamaKey)}
+                                    className="absolute right-3 top-1/2 -translate-y-1/2 transition-colors"
+                                    style={{ color: 'var(--text-ghost)' }}
+                                    onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--text-muted)' }}
+                                    onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-ghost)' }}
+                                    aria-label={showOllamaKey ? t.hideApiKey : t.showApiKey}
+                                >
+                                    {showOllamaKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                                </button>
+                            </div>
+                            <p className="text-[0.65rem] mt-1.5" style={{ color: 'var(--text-placeholder)' }}>
+                                {t.ollamaApiKeyHelp}
+                            </p>
                         </div>
                     </div>
                 )}

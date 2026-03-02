@@ -61,6 +61,13 @@ const tr: Translations = {
     profileTechnical: 'Teknik',
     profileNews: 'Haber',
     profileAcademic: 'Akademik',
+
+    ollamaBaseUrl: 'Ollama Sunucu URL\'si',
+    ollamaBaseUrlPlaceholder: 'http://localhost:11434',
+    ollamaBaseUrlHelp: 'Yerel Ollama için boş bırakın. Uzak/bulut Ollama URL\'si girin (ör. https://my-ollama.example.com).',
+    ollamaApiKey: 'Ollama API Anahtarı',
+    ollamaApiKeyPlaceholder: 'Bearer token (isteğe bağlı)',
+    ollamaApiKeyHelp: 'Yalnızca kimlik doğrulamalı Ollama uç noktaları için gereklidir. localStorage\'da saklanır.',
 }
 
 export default tr

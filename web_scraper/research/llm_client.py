@@ -29,6 +29,7 @@ class LLMClient:
         timeout_per_source: Optional[float] = None,
         provider: str = "ollama",
         openai_api_key: Optional[str] = None,
+        ollama_api_key: Optional[str] = None,
     ) -> None:
         """Initialise the LLM transport.
 
@@ -39,9 +40,11 @@ class LLMClient:
             timeout_per_source: Per-source timeout in seconds (passed through to agent).
             provider: ``"ollama"`` or ``"openai"``.
             openai_api_key: Required when *provider* is ``"openai"``.
+            ollama_api_key: Optional Bearer token for authenticated Ollama endpoints (cloud/self-hosted with auth).
         """
         self.provider = provider
         self.openai_api_key = openai_api_key
+        self.ollama_api_key = ollama_api_key
         self.model = model or config.default_research_model
         self.host = host or config.ollama_host
         self.api_url = f"{self.host}/api/generate"
@@ -86,10 +89,14 @@ class LLMClient:
         timeout: float,
         max_output_tokens: int = 2048,
     ) -> str:
-        """Call ``/api/generate`` on the local Ollama server."""
+        """Call ``/api/generate`` on the Ollama server (local or cloud)."""
         client = self._get_http_client()
+        headers: dict[str, str] = {}
+        if self.ollama_api_key:
+            headers["Authorization"] = f"Bearer {self.ollama_api_key}"
         response = await client.post(
             self.api_url,
+            headers=headers,
             json={
                 "model": self.model,
                 "prompt": prompt,

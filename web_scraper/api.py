@@ -398,15 +398,18 @@ def _build_research_agent(
     requested_model: Optional[str],
     provider: str = "ollama",
     openai_api_key: Optional[str] = None,
+    ollama_api_key: Optional[str] = None,
+    ollama_base_url: Optional[str] = None,
 ):
     model_name = requested_model or settings.default_research_model
     agent = research_module.ResearchAgent(
         model=model_name,
-        host=settings.ollama_host,
+        host=ollama_base_url or settings.ollama_host,
         max_concurrent=settings.research_max_concurrent_sources,
         timeout_per_source=settings.research_timeout_per_source,
         provider=provider,
         openai_api_key=openai_api_key,
+        ollama_api_key=ollama_api_key,
     )
     return agent, model_name
 
@@ -485,6 +488,8 @@ async def _run_research(
         payload.model,
         provider=getattr(payload, "provider", "ollama"),
         openai_api_key=getattr(payload, "openai_api_key", None),
+        ollama_api_key=getattr(payload, "ollama_api_key", None),
+        ollama_base_url=getattr(payload, "ollama_base_url", None),
     )
 
     available = await asyncio.to_thread(agent.is_available)
@@ -620,6 +625,8 @@ async def _stream_research(
         payload.model,
         provider=getattr(payload, "provider", "ollama"),
         openai_api_key=getattr(payload, "openai_api_key", None),
+        ollama_api_key=getattr(payload, "ollama_api_key", None),
+        ollama_base_url=getattr(payload, "ollama_base_url", None),
     )
     available = await asyncio.to_thread(agent.is_available)
     if not available:

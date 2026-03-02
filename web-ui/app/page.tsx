@@ -417,6 +417,14 @@ export default function Home() {
         if (typeof window === 'undefined') return 'gpt-oss:120b-cloud'
         return localStorage.getItem('ollamaModel') || 'gpt-oss:120b-cloud'
     })
+    const [ollamaBaseUrl, setOllamaBaseUrl] = useState(() => {
+        if (typeof window === 'undefined') return ''
+        return localStorage.getItem('ollamaBaseUrl') || ''
+    })
+    const [ollamaApiKey, setOllamaApiKey] = useState(() => {
+        if (typeof window === 'undefined') return ''
+        return localStorage.getItem('ollamaApiKey') || ''
+    })
 
     const [showSettings, setShowSettings] = useState(false)
     const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -427,11 +435,20 @@ export default function Home() {
     useEffect(() => { localStorage.setItem('openaiApiKey', openaiApiKey) }, [openaiApiKey])
     useEffect(() => { localStorage.setItem('openaiModel', openaiModel) }, [openaiModel])
     useEffect(() => { localStorage.setItem('ollamaModel', selectedModel) }, [selectedModel])
+    useEffect(() => { localStorage.setItem('ollamaBaseUrl', ollamaBaseUrl) }, [ollamaBaseUrl])
+    useEffect(() => { localStorage.setItem('ollamaApiKey', ollamaApiKey) }, [ollamaApiKey])
 
     useEffect(() => {
         async function fetchModels() {
             try {
-                const res = await fetch('/api/ollama/models')
+                const res = await fetch('/api/ollama/models', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        ollamaUrl: ollamaBaseUrl || undefined,
+                        ollamaApiKey: ollamaApiKey || undefined,
+                    }),
+                })
                 if (!res.ok) return
                 const data: OllamaTagsResponse = await res.json()
                 if (Array.isArray(data.models)) {
@@ -446,7 +463,7 @@ export default function Home() {
             }
         }
         fetchModels()
-    }, [])
+    }, [ollamaBaseUrl, ollamaApiKey])
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -504,6 +521,8 @@ export default function Home() {
                     model: provider === 'openai' ? openaiModel : selectedModel,
                     provider,
                     openaiApiKey: provider === 'openai' ? openaiApiKey : undefined,
+                    ollamaApiKey: provider === 'ollama' && ollamaApiKey ? ollamaApiKey : undefined,
+                    ollamaBaseUrl: provider === 'ollama' && ollamaBaseUrl ? ollamaBaseUrl : undefined,
                 }),
             })
 
@@ -876,6 +895,10 @@ export default function Home() {
                 openaiApiKey={openaiApiKey}
                 setOpenaiApiKey={setOpenaiApiKey}
                 ollamaModels={models}
+                ollamaBaseUrl={ollamaBaseUrl}
+                setOllamaBaseUrl={setOllamaBaseUrl}
+                ollamaApiKey={ollamaApiKey}
+                setOllamaApiKey={setOllamaApiKey}
             />
         </main>
     )

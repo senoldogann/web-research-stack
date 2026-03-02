@@ -70,6 +70,14 @@ export interface Translations {
     profileTechnical: string
     profileNews: string
     profileAcademic: string
+
+    // Ollama settings
+    ollamaBaseUrl: string
+    ollamaBaseUrlPlaceholder: string
+    ollamaBaseUrlHelp: string
+    ollamaApiKey: string
+    ollamaApiKeyPlaceholder: string
+    ollamaApiKeyHelp: string
 }
 
 const en: Translations = {
@@ -133,6 +141,13 @@ const en: Translations = {
     profileTechnical: 'Technical',
     profileNews: 'News',
     profileAcademic: 'Academic',
+
+    ollamaBaseUrl: 'Ollama Host URL',
+    ollamaBaseUrlPlaceholder: 'http://localhost:11434',
+    ollamaBaseUrlHelp: 'Leave empty for local Ollama. Set to a cloud/remote Ollama URL (e.g. https://my-ollama.example.com).',
+    ollamaApiKey: 'Ollama API Key',
+    ollamaApiKeyPlaceholder: 'Bearer token (optional)',
+    ollamaApiKeyHelp: 'Required only for authenticated Ollama endpoints. Stored in localStorage.',
 }
 
 export default en

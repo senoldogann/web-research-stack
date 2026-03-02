@@ -7,7 +7,7 @@ export const runtime = 'nodejs'
 export async function POST(request: NextRequest) {
     try {
         const body = await request.json()
-        const { query, maxSources, deepMode, research_profile, model, provider, openaiApiKey } = body
+        const { query, maxSources, deepMode, research_profile, model, provider, openaiApiKey, ollamaApiKey, ollamaBaseUrl } = body
 
         if (!query || typeof query !== 'string') {
             return NextResponse.json(
@@ -41,6 +41,8 @@ export async function POST(request: NextRequest) {
                 model,
                 provider: provider || 'ollama',
                 openai_api_key: openaiApiKey || null,
+                ollama_api_key: ollamaApiKey || null,
+                ollama_base_url: ollamaBaseUrl || null,
             }),
         })
 

@@ -6,7 +6,7 @@ export const maxDuration = 300
 export async function POST(request: NextRequest) {
     try {
         const body = await request.json()
-        const { query, maxSources, deepMode, research_profile } = body
+        const { query, maxSources, deepMode, research_profile, ollamaApiKey, ollamaBaseUrl } = body
 
         if (!query || typeof query !== 'string') {
             return NextResponse.json(
@@ -36,6 +36,8 @@ export async function POST(request: NextRequest) {
                 max_sources: maxSources,
                 deep_mode: deepMode,
                 research_profile: research_profile || 'technical',
+                ollama_api_key: ollamaApiKey || null,
+                ollama_base_url: ollamaBaseUrl || null,
             }),
         })
 

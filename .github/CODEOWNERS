@@ -1,13 +1,13 @@
-# CODEOWNERS - Tüm değişikliklerin @senoldogan tarafından onaylanması gerekir
-# CODEOWNERS - All changes must be approved by @senoldogan
+# CODEOWNERS - Tüm değişikliklerin @senoldogann tarafından onaylanması gerekir
+# CODEOWNERS - All changes must be approved by @senoldogann
 
 # Global rule - All files
 * @senoldogann
 
 # Backend Python files
-/web_scraper/ @senoldogan
-/tests/ @senoldogan
-/scripts/ @senoldogan
+/web_scraper/ @senoldogann
+/tests/ @senoldogann
+/scripts/ @senoldogann
 
 # Frontend React/TypeScript files  
 /web-ui/ @senoldogann

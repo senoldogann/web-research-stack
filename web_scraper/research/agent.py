@@ -24,12 +24,16 @@ from web_scraper.config import config
 from web_scraper.content_safety import sanitize_scraped_text
 from web_scraper.duckduckgo_search import get_best_sources_ddg
 from web_scraper.google_search import get_best_sources
+from web_scraper.research.citation_verifier import citation_audit_summary
 from web_scraper.research.constants import SOURCE_TEMPLATES, STATUS_MESSAGES
 from web_scraper.research.llm_client import LLMClient
 from web_scraper.research.models import ResearchReport, ResearchResult
 from web_scraper.research.profile_collectors import (
     collect_arxiv_results,
     collect_hackernews_results,
+    collect_pubmed_results,
+    collect_rss_feed_results,
+    collect_stackexchange_results,
     collect_wikipedia_results,
 )
 from web_scraper.research.prompts import (
@@ -42,6 +46,7 @@ from web_scraper.research.ranking import (
     expand_selected_sources,
     merge_and_rank_search_results,
 )
+from web_scraper.research.retry_utils import async_retry
 from web_scraper.research.text_utils import (
     clean_query_text,
     detect_query_language,
@@ -349,10 +354,15 @@ class ResearchAgent(LLMClient):
             date_filter = "year"
 
         async def _search_variant(search_query: str) -> tuple[str, list[dict]]:
-            results = await get_best_sources_ddg(
-                search_query,
-                max_sources=per_query_budget,
-                date_filter=date_filter,
+            results = await async_retry(
+                lambda: get_best_sources_ddg(
+                    search_query,
+                    max_sources=per_query_budget,
+                    date_filter=date_filter,
+                ),
+                max_attempts=3,
+                base_delay=1.5,
+                label=f"DDG:{search_query[:40]}",
             )
             return search_query, results
 
@@ -400,7 +410,12 @@ class ResearchAgent(LLMClient):
         )
 
         async def _search_variant(search_query: str) -> tuple[str, list[dict]]:
-            results = await get_best_sources(search_query, max_sources=per_query_budget)
+            results = await async_retry(
+                lambda: get_best_sources(search_query, max_sources=per_query_budget),
+                max_attempts=2,
+                base_delay=2.0,
+                label=f"Google:{search_query[:40]}",
+            )
             return search_query, results
 
         variant_outcomes = await asyncio.gather(
@@ -473,44 +488,85 @@ class ResearchAgent(LLMClient):
             )
 
         if deep_mode:
+            _profile_timeout = config.duckduckgo_request_timeout_seconds
+            _profile_pool = search_pool_size
             if selected_profile == "academic":
-                labeled_tasks.append(
-                    (
-                        "profile",
-                        asyncio.create_task(
-                            collect_arxiv_results(
-                                search_queries=search_queries,
-                                search_pool_size=search_pool_size,
-                                timeout_seconds=config.duckduckgo_request_timeout_seconds,
-                            )
+                # arXiv + PubMed in parallel for academic deep mode
+                labeled_tasks.extend(
+                    [
+                        (
+                            "profile",
+                            asyncio.create_task(
+                                collect_arxiv_results(
+                                    search_queries=search_queries,
+                                    search_pool_size=_profile_pool,
+                                    timeout_seconds=_profile_timeout,
+                                )
+                            ),
                         ),
-                    )
+                        (
+                            "profile",
+                            asyncio.create_task(
+                                collect_pubmed_results(
+                                    search_queries=search_queries,
+                                    search_pool_size=_profile_pool,
+                                    timeout_seconds=_profile_timeout,
+                                )
+                            ),
+                        ),
+                    ]
                 )
             elif selected_profile == "news":
-                labeled_tasks.append(
-                    (
-                        "profile",
-                        asyncio.create_task(
-                            collect_hackernews_results(
-                                search_queries=search_queries,
-                                search_pool_size=search_pool_size,
-                                timeout_seconds=config.duckduckgo_request_timeout_seconds,
-                            )
+                # HN Algolia + RSS news feeds in parallel for news deep mode
+                labeled_tasks.extend(
+                    [
+                        (
+                            "profile",
+                            asyncio.create_task(
+                                collect_hackernews_results(
+                                    search_queries=search_queries,
+                                    search_pool_size=_profile_pool,
+                                    timeout_seconds=_profile_timeout,
+                                )
+                            ),
                         ),
-                    )
+                        (
+                            "profile",
+                            asyncio.create_task(
+                                collect_rss_feed_results(
+                                    search_queries=search_queries,
+                                    search_pool_size=_profile_pool,
+                                    timeout_seconds=_profile_timeout,
+                                )
+                            ),
+                        ),
+                    ]
                 )
             else:
-                labeled_tasks.append(
-                    (
-                        "profile",
-                        asyncio.create_task(
-                            collect_wikipedia_results(
-                                search_queries=search_queries,
-                                search_pool_size=search_pool_size,
-                                timeout_seconds=config.duckduckgo_request_timeout_seconds,
-                            )
+                # Wikipedia + StackExchange in parallel for technical deep mode
+                labeled_tasks.extend(
+                    [
+                        (
+                            "profile",
+                            asyncio.create_task(
+                                collect_wikipedia_results(
+                                    search_queries=search_queries,
+                                    search_pool_size=_profile_pool,
+                                    timeout_seconds=_profile_timeout,
+                                )
+                            ),
                         ),
-                    )
+                        (
+                            "profile",
+                            asyncio.create_task(
+                                collect_stackexchange_results(
+                                    search_queries=search_queries,
+                                    search_pool_size=_profile_pool,
+                                    timeout_seconds=_profile_timeout,
+                                )
+                            ),
+                        ),
+                    ]
                 )
 
         raw_results = await asyncio.gather(
@@ -525,7 +581,9 @@ class ResearchAgent(LLMClient):
                 elif label == "google":
                     google_error = str(outcome)
                 else:
-                    profile_error = str(outcome)
+                    # Accumulate profile errors; use the first one for reporting
+                    if profile_error is None:
+                        profile_error = str(outcome)
                 continue
 
             if label == "duckduckgo":
@@ -533,7 +591,8 @@ class ResearchAgent(LLMClient):
             elif label == "google":
                 google_results = list(outcome)  # type: ignore[arg-type]
             else:
-                profile_results = list(outcome)  # type: ignore[arg-type]
+                # Accumulate from multiple profile collectors
+                profile_results.extend(list(outcome))  # type: ignore[arg-type]
 
         min_google_fallback = min(
             max(1, config.research_google_fallback_min_results),
@@ -571,10 +630,17 @@ class ResearchAgent(LLMClient):
     # Source scraping
     # ------------------------------------------------------------------
 
+    # Minimum content length before we escalate to Playwright scraper
+    _PLAYWRIGHT_ESCALATION_MIN_CHARS: int = 250
+
     async def _scrape_source(
         self, source_config: dict, original_query: str, deep_mode: bool = False
     ) -> ResearchResult:
-        """Scrape a single source and return a ``ResearchResult``."""
+        """Scrape a single source and return a ``ResearchResult``.
+
+        Falls back to Playwright if the HTTP scraper returns fewer than
+        ``_PLAYWRIGHT_ESCALATION_MIN_CHARS`` characters of meaningful content.
+        """
         source_type = source_config["type"]
         url = source_config["url"]
 
@@ -595,6 +661,32 @@ class ResearchAgent(LLMClient):
                     data.content,
                     max_chars=config.max_source_content_chars,
                 )
+
+                # Playwright escalation: if HTTP scrape returned thin content,
+                # try Playwright to handle JS-rendered pages.
+                if len(content.strip()) < self._PLAYWRIGHT_ESCALATION_MIN_CHARS:
+                    try:
+                        from web_scraper.playwright_scrapers import PlaywrightScraper
+
+                        pw_timeout_ms = int(self.timeout_per_source * 1000)
+                        async with PlaywrightScraper(timeout=pw_timeout_ms) as pw:
+                            pw_data = await pw.scrape(url)
+                        if pw_data.content and not pw_data.error:
+                            pw_content = sanitize_scraped_text(
+                                pw_data.content,
+                                max_chars=config.max_source_content_chars,
+                            )
+                            if len(pw_content.strip()) > len(content.strip()):
+                                logger.debug(
+                                    "Playwright escalation yielded %d chars for %s",
+                                    len(pw_content),
+                                    url,
+                                )
+                                data = pw_data
+                                content = pw_content
+                    except Exception as pw_err:
+                        logger.debug("Playwright escalation failed for %s: %s", url, pw_err)
+
                 if not deep_mode and len(content) > config.research_non_deep_source_char_cap:
                     content = (
                         content[: config.research_non_deep_source_char_cap]
@@ -1013,6 +1105,11 @@ class ResearchAgent(LLMClient):
                 data.get("executive_summary", "") or data.get("summary", "")
             )
 
+            # Build citation audit from the executive summary + detailed analysis
+            analysis_text = executive_summary + "\n" + detailed_analysis
+            source_contents = [r.content or "" for r in citation_ordered]
+            audit = citation_audit_summary(analysis_text, source_contents)
+
             return {
                 "executive_summary": executive_summary,
                 "summary": executive_summary,
@@ -1024,6 +1121,7 @@ class ResearchAgent(LLMClient):
                 "detailed_analysis": detailed_analysis,
                 "recommendations": recommendations,
                 "cited_sources": cited_sources_list,
+                "citation_audit": audit,
             }
 
         synthesis_timeout = (
@@ -1095,6 +1193,7 @@ class ResearchAgent(LLMClient):
                 "detailed_analysis": "",
                 "recommendations": "",
                 "cited_sources": cited_sources_list,
+                "citation_audit": {"total_citations": 0, "faithfulness_score": 1.0},
             }
 
         except Exception as e:
@@ -1110,6 +1209,7 @@ class ResearchAgent(LLMClient):
                 "detailed_analysis": "",
                 "recommendations": "",
                 "cited_sources": cited_sources_list,
+                "citation_audit": {"total_citations": 0, "faithfulness_score": 1.0},
             }
 
     # ------------------------------------------------------------------

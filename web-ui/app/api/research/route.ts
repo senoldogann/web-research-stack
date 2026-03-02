@@ -6,7 +6,7 @@ export const maxDuration = 300
 export async function POST(request: NextRequest) {
     try {
         const body = await request.json()
-        const { query, maxSources, deepMode } = body
+        const { query, maxSources, deepMode, research_profile } = body
 
         if (!query || typeof query !== 'string') {
             return NextResponse.json(
@@ -35,6 +35,7 @@ export async function POST(request: NextRequest) {
                 query,
                 max_sources: maxSources,
                 deep_mode: deepMode,
+                research_profile: research_profile || 'technical',
             }),
         })
 

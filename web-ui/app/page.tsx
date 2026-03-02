@@ -362,6 +362,7 @@ export default function Home() {
     const [statusLogs, setStatusLogs] = useState<StatusLog[]>([])
     const [models, setModels] = useState<string[]>([])
     const [deepMode, setDeepMode] = useState(false)
+    const [researchProfile, setResearchProfile] = useState<'technical' | 'news' | 'academic'>('technical')
     const [abortController, setAbortController] = useState<AbortController | null>(null)
     const [activeSources, setActiveSources] = useState<SourceStatus[]>([])
 
@@ -499,6 +500,7 @@ export default function Home() {
                 body: JSON.stringify({
                     query: userMessage.content,
                     deepMode: deepMode,
+                    research_profile: researchProfile,
                     model: provider === 'openai' ? openaiModel : selectedModel,
                     provider,
                     openaiApiKey: provider === 'openai' ? openaiApiKey : undefined,
@@ -738,6 +740,8 @@ export default function Home() {
                                     isLoading={isLoading}
                                     deepMode={deepMode}
                                     setDeepMode={setDeepMode}
+                                    researchProfile={researchProfile}
+                                    setResearchProfile={setResearchProfile}
                                     provider={provider}
                                     openaiModel={openaiModel}
                                     selectedModel={selectedModel}
@@ -840,6 +844,8 @@ export default function Home() {
                                     isLoading={isLoading}
                                     deepMode={deepMode}
                                     setDeepMode={setDeepMode}
+                                    researchProfile={researchProfile}
+                                    setResearchProfile={setResearchProfile}
                                     provider={provider}
                                     openaiModel={openaiModel}
                                     selectedModel={selectedModel}

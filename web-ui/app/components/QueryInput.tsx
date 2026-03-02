@@ -10,6 +10,8 @@ interface QueryInputProps {
     isLoading: boolean
     deepMode: boolean
     setDeepMode: (val: boolean) => void
+    researchProfile: 'technical' | 'news' | 'academic'
+    setResearchProfile: (val: 'technical' | 'news' | 'academic') => void
     provider: string
     openaiModel: string
     selectedModel: string
@@ -26,6 +28,8 @@ export default function QueryInput({
     isLoading,
     deepMode,
     setDeepMode,
+    researchProfile,
+    setResearchProfile,
     provider,
     openaiModel,
     selectedModel,
@@ -36,6 +40,12 @@ export default function QueryInput({
 }: QueryInputProps) {
     const { t } = useLanguage()
     const isHero = variant === 'hero'
+
+    const profiles: { value: 'technical' | 'news' | 'academic'; label: string }[] = [
+        { value: 'technical', label: t.profileTechnical },
+        { value: 'news', label: t.profileNews },
+        { value: 'academic', label: t.profileAcademic },
+    ]
 
     return (
         <form
@@ -134,6 +144,32 @@ export default function QueryInput({
                         <Sparkles className={`w-3.5 h-3.5 ${deepMode ? 'opacity-100' : 'opacity-50'}`} />
                         {t.deepMode}
                     </button>
+
+                    {/* Research profile selector */}
+                    <div className="flex items-center rounded-lg overflow-hidden" style={{ border: '1px solid var(--border-subtle)' }}>
+                        {profiles.map((p) => (
+                            <button
+                                key={p.value}
+                                type="button"
+                                onClick={() => setResearchProfile(p.value)}
+                                className={`${isHero ? 'px-2.5 text-xs' : 'px-2 text-[0.65rem]'} py-1.5 font-semibold transition-all`}
+                                style={
+                                    researchProfile === p.value
+                                        ? {
+                                              backgroundColor: 'var(--accent-bg)',
+                                              color: 'var(--accent)',
+                                          }
+                                        : {
+                                              backgroundColor: 'transparent',
+                                              color: 'var(--text-ghost)',
+                                          }
+                                }
+                                title={`${t.researchProfile}: ${p.label}`}
+                            >
+                                {p.label}
+                            </button>
+                        ))}
+                    </div>
                 </div>
 
                 <div className="flex items-center gap-3 relative">

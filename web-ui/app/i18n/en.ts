@@ -64,6 +64,12 @@ export interface Translations {
     researchStatusGatheringData: string
     researchStatusAnalyzingFindings: string
     researchStatusGeneratingQueries: string
+
+    // Research Profile
+    researchProfile: string
+    profileTechnical: string
+    profileNews: string
+    profileAcademic: string
 }
 
 const en: Translations = {
@@ -122,6 +128,11 @@ const en: Translations = {
     researchStatusGatheringData: 'Gathering data from sources...',
     researchStatusAnalyzingFindings: 'Analyzing and synthesizing findings...',
     researchStatusGeneratingQueries: 'Generated {count} search query variants for better retrieval.',
+
+    researchProfile: 'Profile',
+    profileTechnical: 'Technical',
+    profileNews: 'News',
+    profileAcademic: 'Academic',
 }
 
 export default en

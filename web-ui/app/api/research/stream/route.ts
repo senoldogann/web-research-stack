@@ -7,7 +7,7 @@ export const runtime = 'nodejs'
 export async function POST(request: NextRequest) {
     try {
         const body = await request.json()
-        const { query, maxSources, deepMode, model, provider, openaiApiKey } = body
+        const { query, maxSources, deepMode, research_profile, model, provider, openaiApiKey } = body
 
         if (!query || typeof query !== 'string') {
             return NextResponse.json(
@@ -37,6 +37,7 @@ export async function POST(request: NextRequest) {
                 query,
                 max_sources: maxSources,
                 deep_mode: deepMode,
+                research_profile: research_profile || 'technical',
                 model,
                 provider: provider || 'ollama',
                 openai_api_key: openaiApiKey || null,

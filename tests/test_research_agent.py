@@ -441,3 +441,174 @@ def test_extract_publication_date_finds_json_metadata_date() -> None:
 def test_extract_publication_date_returns_none_when_absent() -> None:
     date = ResearchAgent._extract_publication_date("No dates here at all.")
     assert date is None
+
+
+# ---------------------------------------------------------------------------
+# Citation verifier tests
+# ---------------------------------------------------------------------------
+
+
+def test_citation_verifier_supported_when_overlap_sufficient() -> None:
+    from web_scraper.research.citation_verifier import verify_citations
+
+    synthesis = "The Eiffel Tower is located in Paris [1]."
+    sources = ["The Eiffel Tower is a wrought-iron lattice tower located in Paris, France."]
+    results = verify_citations(synthesis, sources)
+    assert len(results) == 1
+    assert results[0]["citation_num"] == 1
+    assert results[0]["supported"] is True
+
+
+def test_citation_verifier_flags_out_of_range_citation() -> None:
+    from web_scraper.research.citation_verifier import verify_citations
+
+    synthesis = "Some fact [5]."
+    sources = ["Only one source here."]
+    results = verify_citations(synthesis, sources)
+    assert any(r["reason"] == "out_of_range" for r in results)
+
+
+def test_citation_audit_summary_returns_perfect_score_with_no_citations() -> None:
+    from web_scraper.research.citation_verifier import citation_audit_summary
+
+    audit = citation_audit_summary("No citations in this text at all.", [])
+    assert audit["total_citations"] == 0
+    assert audit["faithfulness_score"] == 1.0
+
+
+def test_citation_audit_summary_has_faithfulness_between_0_and_1() -> None:
+    from web_scraper.research.citation_verifier import citation_audit_summary
+
+    synthesis = "Rust uses ownership model [1]. Python is interpreted [2]."
+    sources = ["Rust programming language uses ownership and borrowing.", "Python is a scripting language."]
+    audit = citation_audit_summary(synthesis, sources)
+    assert 0.0 <= audit["faithfulness_score"] <= 1.0
+    assert audit["total_citations"] >= 2
+
+
+# ---------------------------------------------------------------------------
+# Retry utils tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_async_retry_succeeds_on_first_attempt() -> None:
+    from web_scraper.research.retry_utils import async_retry
+
+    counter = {"calls": 0}
+
+    async def succeed():
+        counter["calls"] += 1
+        return "ok"
+
+    result = await async_retry(succeed, max_attempts=3, base_delay=0.01, label="test")
+    assert result == "ok"
+    assert counter["calls"] == 1
+
+
+@pytest.mark.asyncio
+async def test_async_retry_retries_on_failure_then_succeeds() -> None:
+    from web_scraper.research.retry_utils import async_retry
+
+    attempts = {"n": 0}
+
+    async def fail_twice():
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise ConnectionError("transient")
+        return "recovered"
+
+    result = await async_retry(
+        fail_twice,
+        max_attempts=3,
+        base_delay=0.01,
+        retryable_exceptions=(ConnectionError,),
+        label="test",
+    )
+    assert result == "recovered"
+    assert attempts["n"] == 3
+
+
+@pytest.mark.asyncio
+async def test_async_retry_raises_after_max_attempts() -> None:
+    from web_scraper.research.retry_utils import async_retry
+
+    async def always_fail():
+        raise ValueError("permanent")
+
+    with pytest.raises(ValueError, match="permanent"):
+        await async_retry(
+            always_fail,
+            max_attempts=2,
+            base_delay=0.01,
+            retryable_exceptions=(ValueError,),
+            label="test",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Profile collectors — new adapters
+# ---------------------------------------------------------------------------
+
+
+def test_parse_rss_items_rss2_format() -> None:
+    from web_scraper.research.profile_collectors import _parse_rss_items
+
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+    <rss version="2.0">
+      <channel>
+        <item>
+          <title>Test Article</title>
+          <link>https://example.com/article</link>
+          <description>Test description</description>
+          <pubDate>Mon, 01 Jan 2026 00:00:00 GMT</pubDate>
+        </item>
+      </channel>
+    </rss>"""
+    items = _parse_rss_items(xml)
+    assert len(items) == 1
+    assert items[0]["title"] == "Test Article"
+    assert items[0]["url"] == "https://example.com/article"
+
+
+def test_parse_rss_items_returns_empty_on_invalid_xml() -> None:
+    from web_scraper.research.profile_collectors import _parse_rss_items
+
+    items = _parse_rss_items("not xml at all <><")
+    assert items == []
+
+
+# ---------------------------------------------------------------------------
+# MetricsRegistry histogram tests
+# ---------------------------------------------------------------------------
+
+
+def test_metrics_registry_histogram_renders_buckets() -> None:
+    from web_scraper.api_runtime import MetricsRegistry
+
+    registry = MetricsRegistry()
+    registry.observe_histogram("test_latency_seconds", 0.1)
+    registry.observe_histogram("test_latency_seconds", 0.5)
+    registry.observe_histogram("test_latency_seconds", 5.0)
+
+    output = registry.render_prometheus()
+    assert "# TYPE test_latency_seconds histogram" in output
+    assert "test_latency_seconds_bucket" in output
+    assert "test_latency_seconds_sum" in output
+    assert "test_latency_seconds_count" in output
+    # 3 observations total
+    assert "_count{} 3" in output or "_count 3" in output
+
+
+def test_metrics_registry_histogram_cumulative_buckets_are_monotonic() -> None:
+    from web_scraper.api_runtime import MetricsRegistry
+
+    registry = MetricsRegistry()
+    for v in [0.01, 0.1, 1.0, 10.0]:
+        registry.observe_histogram("req_dur", v)
+
+    output = registry.render_prometheus()
+    bucket_lines = [ln for ln in output.splitlines() if "req_dur_bucket" in ln]
+    counts = [float(ln.split()[-1]) for ln in bucket_lines]
+    # Bucket counts must be non-decreasing (cumulative histogram)
+    assert all(counts[i] <= counts[i + 1] for i in range(len(counts) - 1))

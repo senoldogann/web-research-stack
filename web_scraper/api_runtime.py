@@ -225,11 +225,25 @@ class MetricPoint:
 
 
 class MetricsRegistry:
-    """Tiny in-memory metrics store with Prometheus rendering."""
+    """Tiny in-memory metrics store with Prometheus rendering.
+
+    Supports counters, gauges, and histograms without a heavy dependency on
+    the official prometheus_client library.  Histograms emit the standard
+    ``_bucket``, ``_sum``, and ``_count`` suffixes so they work with
+    Grafana ``histogram_quantile()`` queries.
+    """
+
+    # Default latency buckets in seconds (matches prometheus_client defaults)
+    DEFAULT_BUCKETS: Tuple[float, ...] = (
+        0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, float("inf")
+    )
 
     def __init__(self) -> None:
         self._counters: Dict[MetricPoint, float] = defaultdict(float)
         self._gauges: Dict[MetricPoint, float] = {}
+        # histogram: name → { label_key → [bucket_counts, sum, count] }
+        # bucket_counts is a list of ints aligned with DEFAULT_BUCKETS
+        self._histograms: Dict[str, Dict[Tuple[Tuple[str, str], ...], List[float]]] = defaultdict(dict)
         self._lock = threading.Lock()
 
     def increment(self, name: str, amount: float = 1.0, **labels: Any) -> None:
@@ -244,12 +258,36 @@ class MetricsRegistry:
         with self._lock:
             self._gauges[point] = value
 
+    def observe_histogram(self, name: str, value: float, **labels: Any) -> None:
+        """Record one *value* observation for a named histogram.
+
+        Creates the histogram lazily with ``DEFAULT_BUCKETS`` on first call.
+        Thread-safe.
+        """
+        label_key = self._normalize_labels(labels)
+        with self._lock:
+            if label_key not in self._histograms[name]:
+                # [bucket_0_count, …, bucket_n_count, _sum, _count]
+                self._histograms[name][label_key] = [0.0] * (len(self.DEFAULT_BUCKETS) + 2)
+            row = self._histograms[name][label_key]
+            for i, bound in enumerate(self.DEFAULT_BUCKETS):
+                if value <= bound:
+                    row[i] += 1.0
+            # cumulative sums are built at render time; here we store raw counts
+            # store _sum at index -2, _count at index -1
+            row[-2] += value
+            row[-1] += 1.0
+
     def render_prometheus(self) -> str:
-        """Render counters and gauges in Prometheus text format."""
+        """Render counters, gauges, and histograms in Prometheus text format."""
         lines: List[str] = []
         with self._lock:
             counters = list(self._counters.items())
             gauges = list(self._gauges.items())
+            histograms_snapshot = {
+                name: dict(label_rows)
+                for name, label_rows in self._histograms.items()
+            }
 
         counter_names = sorted({point.name for point, _ in counters})
         gauge_names = sorted({point.name for point, _ in gauges})
@@ -267,6 +305,19 @@ class MetricsRegistry:
                 if point.name != name:
                     continue
                 lines.append(f"{name}{self._format_labels(point.labels)} {value}")
+
+        for hist_name in sorted(histograms_snapshot):
+            lines.append(f"# TYPE {hist_name} histogram")
+            for label_key, row in histograms_snapshot[hist_name].items():
+                labels_str = self._format_labels(label_key)
+                cumulative = 0.0
+                for i, bound in enumerate(self.DEFAULT_BUCKETS):
+                    cumulative += row[i]
+                    le_str = "+Inf" if bound == float("inf") else str(bound)
+                    bucket_labels = self._format_labels(label_key + (("le", le_str),))
+                    lines.append(f"{hist_name}_bucket{bucket_labels} {cumulative}")
+                lines.append(f"{hist_name}_sum{labels_str} {row[-2]}")
+                lines.append(f"{hist_name}_count{labels_str} {row[-1]}")
 
         return "\n".join(lines) + "\n"
 

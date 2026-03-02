@@ -56,6 +56,11 @@ const tr: Translations = {
     researchStatusGatheringData: 'Kaynaklardan veriler toplanıyor...',
     researchStatusAnalyzingFindings: 'Bulgular analiz edilip sentezleniyor...',
     researchStatusGeneratingQueries: 'Daha iyi alma için {count} arama sorgusu varyantı oluşturuldu.',
+
+    researchProfile: 'Profil',
+    profileTechnical: 'Teknik',
+    profileNews: 'Haber',
+    profileAcademic: 'Akademik',
 }
 
 export default tr

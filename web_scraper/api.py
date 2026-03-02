@@ -834,8 +834,29 @@ def create_app(settings: Optional[Config] = None) -> FastAPI:
             method=request.method,
             status=str(response.status_code),
         )
+        # Prometheus histogram for request latency (used by Grafana histogram_quantile)
+        app.state.metrics.observe_histogram(
+            "web_scraper_request_duration_seconds",
+            duration_ms / 1000.0,
+            endpoint=request.url.path,
+            method=request.method,
+        )
+        # Emit upstream failure counter for 5xx responses from tracked research routes
+        if response.status_code >= 500 and "research" in request.url.path:
+            app.state.metrics.increment(
+                "web_scraper_upstream_failures_total",
+                reason="server_error",
+                endpoint=request.url.path,
+            )
         concurrency = await app.state.concurrency_gate.snapshot()
         app.state.metrics.set_gauge("web_scraper_active_requests", concurrency["active"])
+        # Emit circuit breaker state for each tracked breaker (0=closed/healthy, 1=open)
+        for cb_name, cb in getattr(app.state, "circuit_breakers", {}).items():
+            app.state.metrics.set_gauge(
+                "web_scraper_circuit_breaker_state",
+                1.0 if getattr(cb, "state", "closed") == "open" else 0.0,
+                breaker=cb_name,
+            )
         logger.info(
             "request_complete",
             extra={

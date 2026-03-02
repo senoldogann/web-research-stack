@@ -2,17 +2,25 @@ FROM python:3.13-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    # Store Playwright browser binaries inside /app so they are
+    # accessible by the non-root appuser after chown below.
+    PLAYWRIGHT_BROWSERS_PATH=/app/.playwright
 
 WORKDIR /app
 
 COPY pyproject.toml README.md /app/
 COPY web_scraper /app/web_scraper
 
-RUN pip install --upgrade pip && pip install . \
+RUN pip install --upgrade pip \
+    # Install base deps + playwright optional group
+    && pip install ".[playwright]" \
+    # Download Chromium + its system-level OS dependencies in one step
+    && playwright install --with-deps chromium \
     && addgroup --system appgroup \
     && adduser --system --ingroup appgroup --no-create-home appuser \
     && mkdir -p /app/data \
+    # chown covers /app/.playwright so appuser can launch the browser
     && chown -R appuser:appgroup /app
 
 USER appuser

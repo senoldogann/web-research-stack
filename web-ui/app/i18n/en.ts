@@ -143,8 +143,8 @@ const en: Translations = {
     profileAcademic: 'Academic',
 
     ollamaBaseUrl: 'Ollama Host URL',
-    ollamaBaseUrlPlaceholder: 'http://localhost:11434',
-    ollamaBaseUrlHelp: 'Leave empty for local Ollama. Set to a cloud/remote Ollama URL (e.g. https://my-ollama.example.com).',
+    ollamaBaseUrlPlaceholder: 'https://ollama.com  or  http://localhost:11434',
+    ollamaBaseUrlHelp: 'Use https://ollama.com to browse the public model library. Set a custom URL for your self-hosted or cloud Ollama instance.',
     ollamaApiKey: 'Ollama API Key',
     ollamaApiKeyPlaceholder: 'Bearer token (optional)',
     ollamaApiKeyHelp: 'Required only for authenticated Ollama endpoints. Stored in localStorage.',

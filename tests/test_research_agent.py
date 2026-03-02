@@ -29,13 +29,13 @@ def test_deep_mode_clamps_requested_sources_to_maximum() -> None:
 
 
 def test_normal_mode_allows_single_source_when_ai_decides() -> None:
-    # Normal mode bypasses AI suggestion and uses default
+    # Normal mode: AI suggestion of 1 is respected (above minimum of 1)
     target = ResearchAgent._resolve_target_source_count(
         requested_max_sources=None,
         ai_suggested_sources=1,
         deep_mode=False,
     )
-    assert target == 3
+    assert target == 1
 
 
 def test_normal_mode_caps_ai_decision_to_fifteen_sources() -> None:

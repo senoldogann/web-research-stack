@@ -7,7 +7,7 @@ import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from bs4 import BeautifulSoup, Tag
+    from bs4 import BeautifulSoup
 
 CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 WHITESPACE_RE = re.compile(r"[ \t]{2,}")
@@ -72,7 +72,7 @@ def _detect_language_from_classes(classes: list[str]) -> str:
     return ""
 
 
-def preserve_code_blocks(soup: "BeautifulSoup") -> None:
+def preserve_code_blocks(soup: BeautifulSoup) -> None:
     """Convert <pre>/<code> HTML elements to markdown fenced code blocks in-place.
 
     Must be called BEFORE ``get_text()`` so that code structure survives

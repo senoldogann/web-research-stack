@@ -1,7 +1,44 @@
 'use client'
 
+import React, { useRef, useState, useEffect } from 'react'
 import { ArrowUpRight, Sparkles, Square, Settings, Plus } from 'lucide-react'
 import { useLanguage } from '../contexts/LanguageProvider'
+
+// ── Inline SVG icons for research profiles ──────────────────────────────────
+
+function IconTechnical({ className }: { className?: string }) {
+    return (
+        <svg className={className} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="4 5 1 8 4 11" />
+            <polyline points="12 5 15 8 12 11" />
+            <line x1="9.5" y1="3" x2="6.5" y2="13" />
+        </svg>
+    )
+}
+
+function IconNews({ className }: { className?: string }) {
+    return (
+        <svg className={className} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="1" y="3" width="14" height="11" rx="1.5" />
+            <line x1="1" y1="6.5" x2="7.5" y2="6.5" />
+            <line x1="1" y1="9" x2="7.5" y2="9" />
+            <line x1="1" y1="11.5" x2="7.5" y2="11.5" />
+            <rect x="9" y="6.5" width="4.5" height="5" rx="0.5" />
+        </svg>
+    )
+}
+
+function IconAcademic({ className }: { className?: string }) {
+    return (
+        <svg className={className} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <polygon points="8 2 15 5.5 8 9 1 5.5" />
+            <path d="M4 7.5v4c0 1.1 1.8 2 4 2s4-.9 4-2v-4" />
+            <line x1="15" y1="5.5" x2="15" y2="9.5" />
+        </svg>
+    )
+}
+
+// ── Component ────────────────────────────────────────────────────────────────
 
 interface QueryInputProps {
     variant: 'hero' | 'chat'
@@ -40,12 +77,32 @@ export default function QueryInput({
 }: QueryInputProps) {
     const { t } = useLanguage()
     const isHero = variant === 'hero'
+    const [plusOpen, setPlusOpen] = useState(false)
+    const dropdownRef = useRef<HTMLDivElement>(null)
 
-    const profiles: { value: 'technical' | 'news' | 'academic'; label: string; emoji: string }[] = [
-        { value: 'technical', label: t.profileTechnical, emoji: '⚙️' },
-        { value: 'news', label: t.profileNews, emoji: '📰' },
-        { value: 'academic', label: t.profileAcademic, emoji: '🎓' },
+    // Close dropdown on outside click
+    useEffect(() => {
+        if (!plusOpen) return
+        const handler = (e: MouseEvent) => {
+            if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+                setPlusOpen(false)
+            }
+        }
+        document.addEventListener('mousedown', handler)
+        return () => document.removeEventListener('mousedown', handler)
+    }, [plusOpen])
+
+    const profiles: {
+        value: 'technical' | 'news' | 'academic'
+        label: string
+        Icon: ({ className }: { className?: string }) => React.ReactElement
+    }[] = [
+        { value: 'technical', label: t.profileTechnical, Icon: IconTechnical },
+        { value: 'news',      label: t.profileNews,      Icon: IconNews },
+        { value: 'academic',  label: t.profileAcademic,  Icon: IconAcademic },
     ]
+
+    const activeProfile = profiles.find((p) => p.value === researchProfile)!
 
     return (
         <form
@@ -71,9 +128,6 @@ export default function QueryInput({
                             ? 'w-full text-[1.05rem]'
                             : 'flex-1 text-[1rem] min-h-[52px] max-h-[160px]'
                     } bg-transparent resize-none outline-none py-4 px-4`}
-                    // Use inline styles for theme-aware colors
-                    // Tailwind placeholder-* classes use hardcoded colors, so we override via CSS
-                    // The placeholder color is handled by globals.css textarea::placeholder rule
                 />
                 <div className="flex items-center gap-2 mb-2 mr-2">
                     {isLoading ? (
@@ -107,58 +161,118 @@ export default function QueryInput({
                 </div>
             </div>
 
-            {/* Bottom toolbar — + Deep Mode + Profiles INSIDE the input box */}
+            {/* Bottom toolbar */}
             <div className="flex items-center justify-between px-3 pb-2.5 gap-2">
-                <div className="flex items-center gap-1.5 flex-wrap">
+                <div className="flex items-center gap-2 flex-wrap">
 
-                    {/* + anchor */}
-                    <span
-                        className="flex items-center justify-center w-6 h-6 rounded-lg shrink-0"
-                        style={{ backgroundColor: 'var(--surface-hover)', color: 'var(--text-muted)', border: '1px solid var(--border-subtle)' }}
-                    >
-                        <Plus className="w-3 h-3" />
-                    </span>
+                    {/* + button — opens dropdown */}
+                    <div className="relative" ref={dropdownRef}>
+                        <button
+                            type="button"
+                            onClick={() => setPlusOpen((o) => !o)}
+                            className="flex items-center gap-1 pl-1.5 pr-2 py-1 rounded-lg text-xs font-semibold transition-all"
+                            style={plusOpen || deepMode ? {
+                                backgroundColor: 'var(--accent-bg)',
+                                color: 'var(--accent)',
+                                borderWidth: '1px', borderStyle: 'solid', borderColor: 'var(--accent-border)',
+                            } : {
+                                backgroundColor: 'var(--surface-hover)',
+                                color: 'var(--text-muted)',
+                                borderWidth: '1px', borderStyle: 'solid', borderColor: 'var(--border-subtle)',
+                            }}
+                            title="Options"
+                        >
+                            <Plus className="w-3 h-3" />
+                            {/* Show active profile icon + deep badge as hints */}
+                            <activeProfile.Icon className="w-3 h-3 opacity-70" />
+                            {deepMode && <Sparkles className="w-3 h-3" />}
+                        </button>
 
-                    {/* Deep Mode toggle */}
-                    <button
-                        type="button"
-                        onClick={() => setDeepMode(!deepMode)}
-                        className={`flex items-center gap-1 ${isHero ? 'px-2.5' : 'px-2'} py-1 rounded-lg ${
-                            isHero ? 'text-xs' : 'text-[0.68rem]'
-                        } font-semibold transition-all`}
-                        style={deepMode ? {
-                            backgroundColor: 'var(--accent-bg)', color: 'var(--accent)',
-                            borderWidth: '1px', borderStyle: 'solid', borderColor: 'var(--accent-border)',
-                        } : {
-                            backgroundColor: 'var(--surface-hover)', color: 'var(--text-muted)',
-                            borderWidth: '1px', borderStyle: 'solid', borderColor: 'var(--border-subtle)',
-                        }}
-                        title={t.deepMode}
-                    >
-                        <Sparkles className={`w-3 h-3 ${deepMode ? 'opacity-100' : 'opacity-50'}`} />
-                        {t.deepMode}
-                    </button>
-
-                    <span style={{ color: 'var(--border-subtle)', fontSize: '0.5rem' }}>●</span>
-
-                    {/* Profile pills */}
-                    <div className="flex items-center rounded-lg overflow-hidden" style={{ border: '1px solid var(--border-subtle)' }}>
-                        {profiles.map((p) => (
-                            <button
-                                key={p.value}
-                                type="button"
-                                onClick={() => setResearchProfile(p.value)}
-                                className={`${isHero ? 'px-2.5 text-xs' : 'px-2 text-[0.65rem]'} py-1 font-semibold transition-all`}
-                                style={researchProfile === p.value ? {
-                                    backgroundColor: 'var(--accent-bg)', color: 'var(--accent)',
-                                } : {
-                                    backgroundColor: 'transparent', color: 'var(--text-ghost)',
+                        {/* Dropdown panel */}
+                        {plusOpen && (
+                            <div
+                                className="absolute bottom-full left-0 mb-2 rounded-xl shadow-xl overflow-hidden z-50"
+                                style={{
+                                    minWidth: '200px',
+                                    backgroundColor: 'var(--bg-secondary)',
+                                    border: '1px solid var(--border)',
                                 }}
-                                title={`${t.researchProfile}: ${p.label}`}
                             >
-                                <span className="mr-0.5">{p.emoji}</span>{p.label}
-                            </button>
-                        ))}
+                                {/* Deep Mode row */}
+                                <div className="px-2 pt-2 pb-1">
+                                    <p className="text-[0.6rem] font-semibold uppercase tracking-widest px-1 pb-1" style={{ color: 'var(--text-faint)' }}>
+                                        Mode
+                                    </p>
+                                    <button
+                                        type="button"
+                                        onClick={() => { setDeepMode(!deepMode) }}
+                                        className="w-full flex items-center justify-between px-2.5 py-2 rounded-lg text-xs font-semibold transition-all"
+                                        style={deepMode ? {
+                                            backgroundColor: 'var(--accent-bg)',
+                                            color: 'var(--accent)',
+                                        } : {
+                                            backgroundColor: 'transparent',
+                                            color: 'var(--text-secondary)',
+                                        }}
+                                        onMouseEnter={(e) => { if (!deepMode) e.currentTarget.style.backgroundColor = 'var(--surface-hover)' }}
+                                        onMouseLeave={(e) => { if (!deepMode) e.currentTarget.style.backgroundColor = 'transparent' }}
+                                    >
+                                        <span className="flex items-center gap-2">
+                                            <Sparkles className="w-3.5 h-3.5" />
+                                            {t.deepMode}
+                                        </span>
+                                        {/* Toggle pill */}
+                                        <span
+                                            className="w-7 h-4 rounded-full flex items-center transition-all shrink-0"
+                                            style={{
+                                                backgroundColor: deepMode ? 'var(--accent)' : 'var(--border)',
+                                                padding: '2px',
+                                            }}
+                                        >
+                                            <span
+                                                className="w-3 h-3 rounded-full bg-white shadow transition-transform"
+                                                style={{ transform: deepMode ? 'translateX(12px)' : 'translateX(0)' }}
+                                            />
+                                        </span>
+                                    </button>
+                                </div>
+
+                                {/* Divider */}
+                                <div style={{ height: '1px', backgroundColor: 'var(--border-subtle)', margin: '4px 8px' }} />
+
+                                {/* Profile section */}
+                                <div className="px-2 pb-2">
+                                    <p className="text-[0.6rem] font-semibold uppercase tracking-widest px-1 pt-1 pb-1" style={{ color: 'var(--text-faint)' }}>
+                                        {t.researchProfile ?? 'Profile'}
+                                    </p>
+                                    {profiles.map(({ value, label, Icon }) => (
+                                        <button
+                                            key={value}
+                                            type="button"
+                                            onClick={() => { setResearchProfile(value); setPlusOpen(false) }}
+                                            className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-xs font-semibold transition-all"
+                                            style={researchProfile === value ? {
+                                                backgroundColor: 'var(--accent-bg)',
+                                                color: 'var(--accent)',
+                                            } : {
+                                                backgroundColor: 'transparent',
+                                                color: 'var(--text-secondary)',
+                                            }}
+                                            onMouseEnter={(e) => { if (researchProfile !== value) e.currentTarget.style.backgroundColor = 'var(--surface-hover)' }}
+                                            onMouseLeave={(e) => { if (researchProfile !== value) e.currentTarget.style.backgroundColor = 'transparent' }}
+                                        >
+                                            <Icon className="w-3.5 h-3.5 shrink-0" />
+                                            {label}
+                                            {researchProfile === value && (
+                                                <svg className="w-3 h-3 ml-auto shrink-0" viewBox="0 0 12 12" fill="currentColor">
+                                                    <path d="M10.28 2.28L4.5 8.06 1.72 5.28a1 1 0 0 0-1.44 1.44l3.5 3.5a1 1 0 0 0 1.44 0l6.5-6.5A1 1 0 0 0 10.28 2.28z" />
+                                                </svg>
+                                            )}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
                     </div>
                 </div>
 

@@ -267,20 +267,46 @@ def expand_selected_sources(
     pages from polluting the source list.
     """
     # Build a set of meaningful query keywords (ignore short stop-words)
-    _STOP = {"a", "an", "the", "is", "are", "of", "in", "on", "for",
-             "and", "or", "to", "vs", "ne", "mi", "ve", "ile", "da", "de"}
-    topic_keywords: set[str] = {
-        w.lower() for w in query.replace("-", " ").split()
-        if len(w) > 2 and w.lower() not in _STOP
-    } if query else set()
+    _STOP = {
+        "a",
+        "an",
+        "the",
+        "is",
+        "are",
+        "of",
+        "in",
+        "on",
+        "for",
+        "and",
+        "or",
+        "to",
+        "vs",
+        "ne",
+        "mi",
+        "ve",
+        "ile",
+        "da",
+        "de",
+    }
+    topic_keywords: set[str] = (
+        {
+            w.lower()
+            for w in query.replace("-", " ").split()
+            if len(w) > 2 and w.lower() not in _STOP
+        }
+        if query
+        else set()
+    )
 
     def _is_relevant(result: dict) -> bool:
         if not topic_keywords:
             return True
         haystack = (
-            (result.get("title") or "") + " " +
-            (result.get("snippet") or "") + " " +
-            (result.get("url") or "")
+            (result.get("title") or "")
+            + " "
+            + (result.get("snippet") or "")
+            + " "
+            + (result.get("url") or "")
         ).lower()
         return any(kw in haystack for kw in topic_keywords)
 

@@ -50,10 +50,10 @@ from web_scraper.async_scrapers import WebScraperAsync
 from web_scraper.config import Config, config
 from web_scraper.content_safety import sanitize_scraped_text, summarize_snippet
 from web_scraper.redis_cache import (
+    _REDIS_AVAILABLE,
     RedisCache,
     RedisRateLimiter,
     RedisUnavailable,
-    _REDIS_AVAILABLE,
 )
 from web_scraper.scrapers import ScrapedData, WebScraper
 
@@ -462,6 +462,7 @@ async def _run_research(
 ) -> WebResearchResponse:
     settings: Config = request.app.state.settings
     cache: InMemoryTTLCache = request.app.state.cache
+    cache_fallback: InMemoryTTLCache = request.app.state.cache_fallback
     metrics: MetricsRegistry = request.app.state.metrics
     breaker: CircuitBreaker = request.app.state.circuit_breaker
     gate: ConcurrencyGate = request.app.state.concurrency_gate

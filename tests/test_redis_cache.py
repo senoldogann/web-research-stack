@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from web_scraper.redis_cache import RedisCache, RedisRateLimiter, RedisUnavailable
-
 
 # ---------------------------------------------------------------------------
 # RedisCache

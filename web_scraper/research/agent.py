@@ -186,23 +186,67 @@ class ResearchAgent(LLMClient):
 
         _ACADEMIC_KW: frozenset[str] = frozenset(
             {
-                "paper", "study", "research", "journal", "arxiv", "pubmed",
-                "doi", "citation", "abstract", "hypothesis", "experiment",
-                "peer review", "peer-review", "literature review", "methodology",
-                "meta-analysis", "clinical trial", "dissertation", "thesis",
+                "paper",
+                "study",
+                "research",
+                "journal",
+                "arxiv",
+                "pubmed",
+                "doi",
+                "citation",
+                "abstract",
+                "hypothesis",
+                "experiment",
+                "peer review",
+                "peer-review",
+                "literature review",
+                "methodology",
+                "meta-analysis",
+                "clinical trial",
+                "dissertation",
+                "thesis",
                 # Turkish
-                "makale", "araştırma", "çalışma", "tez", "yayın", "akademik",
-                "bilimsel", "dergi", "atıf", "deneysel",
+                "makale",
+                "araştırma",
+                "çalışma",
+                "tez",
+                "yayın",
+                "akademik",
+                "bilimsel",
+                "dergi",
+                "atıf",
+                "deneysel",
             }
         )
         _NEWS_KW: frozenset[str] = frozenset(
             {
-                "news", "breaking", "latest", "today", "yesterday", "this week",
-                "this month", "current", "update", "announcement", "headline",
-                "report", "journalist", "press", "coverage", "incident",
+                "news",
+                "breaking",
+                "latest",
+                "today",
+                "yesterday",
+                "this week",
+                "this month",
+                "current",
+                "update",
+                "announcement",
+                "headline",
+                "report",
+                "journalist",
+                "press",
+                "coverage",
+                "incident",
                 # Turkish
-                "haber", "son dakika", "güncel", "bugün", "dün", "bu hafta",
-                "bu ay", "gelişme", "açıklama", "basın",
+                "haber",
+                "son dakika",
+                "güncel",
+                "bugün",
+                "dün",
+                "bu hafta",
+                "bu ay",
+                "gelişme",
+                "açıklama",
+                "basın",
             }
         )
 
@@ -766,11 +810,37 @@ class ResearchAgent(LLMClient):
     # File extensions that are never worth scraping as content pages
     _SKIP_EXTENSIONS: frozenset[str] = frozenset(
         {
-            ".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp", ".ico",
-            ".css", ".js", ".woff", ".woff2", ".ttf", ".otf", ".eot",
-            ".pdf", ".zip", ".tar", ".gz", ".rar", ".exe", ".dmg",
-            ".mp4", ".mp3", ".avi", ".mov", ".wmv", ".flv",
-            ".xml", ".json", ".txt", ".csv",
+            ".jpg",
+            ".jpeg",
+            ".png",
+            ".gif",
+            ".svg",
+            ".webp",
+            ".ico",
+            ".css",
+            ".js",
+            ".woff",
+            ".woff2",
+            ".ttf",
+            ".otf",
+            ".eot",
+            ".pdf",
+            ".zip",
+            ".tar",
+            ".gz",
+            ".rar",
+            ".exe",
+            ".dmg",
+            ".mp4",
+            ".mp3",
+            ".avi",
+            ".mov",
+            ".wmv",
+            ".flv",
+            ".xml",
+            ".json",
+            ".txt",
+            ".csv",
         }
     )
 
@@ -788,11 +858,31 @@ class ResearchAgent(LLMClient):
 
         _SKIP_PATH_SEGMENTS: frozenset[str] = frozenset(
             {
-                "login", "logout", "register", "signup", "sign-up",
-                "cart", "basket", "checkout", "payment", "order",
-                "print", "share", "embed", "feed", "rss",
-                "giris", "cikis", "uye-ol", "kayit", "sepet", "odeme",
-                "search", "ara", "tag", "etiket",
+                "login",
+                "logout",
+                "register",
+                "signup",
+                "sign-up",
+                "cart",
+                "basket",
+                "checkout",
+                "payment",
+                "order",
+                "print",
+                "share",
+                "embed",
+                "feed",
+                "rss",
+                "giris",
+                "cikis",
+                "uye-ol",
+                "kayit",
+                "sepet",
+                "odeme",
+                "search",
+                "ara",
+                "tag",
+                "etiket",
             }
         )
 
@@ -827,6 +917,7 @@ class ResearchAgent(LLMClient):
 
             # Bonus for descriptive slug (letters + hyphens, no digits)
             import re as _re
+
             if last_seg and _re.match(r"^[a-z\-\u00c0-\u024f]+$", last_seg):
                 score += 4
 
@@ -946,9 +1037,7 @@ class ResearchAgent(LLMClient):
         )
 
         if progress_sink and selected:
-            progress_sink(
-                self._msg("sources_to_check", count=len(selected) + 1)
-            )
+            progress_sink(self._msg("sources_to_check", count=len(selected) + 1))
 
         for lnk in selected:
             source_configs.append({"type": "subpage", "url": lnk, "title": lnk})
@@ -1501,7 +1590,11 @@ class ResearchAgent(LLMClient):
             progress_sink(self._msg("gathering_data"))
 
         # Max subpages: honour explicit max_sources from caller if supplied
-        subpage_budget = (max_sources - 1) if max_sources and max_sources > 1 else self._DIRECT_CRAWL_MAX_SUBPAGES
+        subpage_budget = (
+            (max_sources - 1)
+            if max_sources and max_sources > 1
+            else self._DIRECT_CRAWL_MAX_SUBPAGES
+        )
 
         sources_to_check = await self._crawl_direct_url(
             root_url=root_url,
@@ -1538,7 +1631,9 @@ class ResearchAgent(LLMClient):
 
         for i, result in enumerate(raw_results):
             if isinstance(result, BaseException):
-                logger.error("Direct-URL source failed: %s — %s", sources_to_check[i]["url"], result)
+                logger.error(
+                    "Direct-URL source failed: %s — %s", sources_to_check[i]["url"], result
+                )
                 research_results.append(
                     ResearchResult(
                         source=sources_to_check[i]["type"],
@@ -1837,7 +1932,11 @@ class ResearchAgent(LLMClient):
 
         include_subpages = has_subpage_crawl_intent(query)
         root_url = direct_urls[0]
-        subpage_budget = (max_sources - 1) if max_sources and max_sources > 1 else self._DIRECT_CRAWL_MAX_SUBPAGES
+        subpage_budget = (
+            (max_sources - 1)
+            if max_sources and max_sources > 1
+            else self._DIRECT_CRAWL_MAX_SUBPAGES
+        )
 
         yield f"data: {_json.dumps({'type': 'status', 'message': self._msg('gathering_data')})}\n\n"
 
@@ -1884,7 +1983,9 @@ class ResearchAgent(LLMClient):
             if scraped["error"]:
                 yield f"data: {_json.dumps({'type': 'source_complete', 'url': url, 'title': title, 'success': False})}\n\n"
                 research_results.append(
-                    ResearchResult(source=sc["type"], url=url, title="", content="", error=scraped["error"])
+                    ResearchResult(
+                        source=sc["type"], url=url, title="", content="", error=scraped["error"]
+                    )
                 )
             else:
                 res = scraped["result"]

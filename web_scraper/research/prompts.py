@@ -511,14 +511,14 @@ def build_synthesis_prompt(
             "\n━━━ TABLE FORMAT EXPLICITLY REQUESTED ━━━\n"
             "The user asked for TABULAR output. Apply these rules:\n"
             "1. Populate data_table only with data that is PRESENT IN THE SCRAPED SOURCES.\n"
-            "2. If a required value is missing from the scraped sources, add a row with value = \"not found in sources\".\n"
+            '2. If a required value is missing from the scraped sources, add a row with value = "not found in sources".\n'
             "3. For time-series / weather data use: "
             'metric = date or period label (e.g. "Pazartesi 3 Mart"), '
             "value = all relevant metrics pipe-separated "
             '(e.g. "Yüksek: 2°C | Düşük: -5°C | Koşullar: Karlı | Rüzgar: 15 km/h K"), '
             "source = data source name, date = ISO date.\n"
             "4. NEVER invent values. If fewer than 2 sources confirm a numeric cell and you cannot\n"
-            "   verify it, write \"(unverified — single source)\" in the value field.\n"
+            '   verify it, write "(unverified — single source)" in the value field.\n'
             "5. Continue to answer in executive_summary and key_findings as usual.\n"
         )
     elif benchmark_detected:
@@ -527,7 +527,7 @@ def build_synthesis_prompt(
             "The query involves benchmarks, scores, comparisons, or structured metrics.\n"
             "POPULATE data_table ONLY with numeric results that are EXPLICITLY stated in at least TWO independent sources.\n"
             "1. Do NOT fabricate or infer any number that is not present verbatim in the scraped content.\n"
-            "2. If a number appears in only one source, include it in key_findings with a \"[single source — unverified]\" tag instead of the table.\n"
+            '2. If a number appears in only one source, include it in key_findings with a "[single source — unverified]" tag instead of the table.\n'
             "3. Use metric = benchmark name, value = score WITH uncertainty note if only one source (e.g. '56.8% — single source'), "
             "source = source name, date = publication date.\n"
             "4. If fewer than 2 sources contain comparable numeric data, return data_table = [] and explain the gap in conflicts_uncertainty.\n"

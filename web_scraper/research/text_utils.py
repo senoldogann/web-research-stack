@@ -202,9 +202,7 @@ def extract_json_payload(response_text: str) -> dict:
 # Direct URL detection
 # ---------------------------------------------------------------------------
 
-_URL_RE: re.Pattern = re.compile(
-    r"https?://[^\s,，、;；\"'<>()\[\]{}]+", re.IGNORECASE
-)
+_URL_RE: re.Pattern = re.compile(r"https?://[^\s,，、;；\"'<>()\[\]{}]+", re.IGNORECASE)
 
 # Keywords (Turkish + English) that signal the user wants subpages crawled too
 _SUBPAGE_KEYWORDS: frozenset[str] = frozenset(

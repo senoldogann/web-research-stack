@@ -9,6 +9,10 @@ services:
     environment:
       OLLAMA_HOST: http://host.docker.internal:11434
       HISTORY_DB_PATH: /app/data/history.sqlite3
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
     restart: unless-stopped
     expose:
       - "8000"
@@ -30,6 +34,28 @@ services:
       timeout: 10s
       retries: 5
       start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    container_name: web-research-redis
+    restart: unless-stopped
+    expose:
+      - "6379"
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --appendonly yes
+    volumes:
+      - redis-data:/data
+    networks:
+      - internal
+    deploy:
+      resources:
+        limits:
+          memory: 320m
+          cpus: "0.5"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # 3. FlareSolverr: Cloudflare / DDoS Bypass
   flaresolverr:
@@ -184,3 +210,4 @@ volumes:
   grafana-data:
   sqlite-data:
   nginx-certs:
+  redis-data:

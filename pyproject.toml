@@ -50,6 +50,10 @@ playwright = [
     "playwright-stealth>=1.0.6",
 ]
 
+redis = [
+    "redis[hiredis]>=5.0.0",
+]
+
 [project.scripts]
 web-scraper = "web_scraper.cli:main"
 

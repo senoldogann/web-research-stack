@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -47,6 +49,12 @@ from web_scraper.api_runtime import (
 from web_scraper.async_scrapers import WebScraperAsync
 from web_scraper.config import Config, config
 from web_scraper.content_safety import sanitize_scraped_text, summarize_snippet
+from web_scraper.redis_cache import (
+    RedisCache,
+    RedisRateLimiter,
+    RedisUnavailable,
+    _REDIS_AVAILABLE,
+)
 from web_scraper.scrapers import ScrapedData, WebScraper
 
 logger = logging.getLogger("web_scraper.api")
@@ -132,10 +140,16 @@ async def authenticate_request(request: Request) -> str:
 
 
 async def apply_rate_limit(request: Request, subject: str, limit: int) -> None:
-    """Apply per-route rate limiting."""
-    limiter: SlidingWindowRateLimiter = request.app.state.rate_limiter
+    """Apply per-route rate limiting (Redis with in-memory fallback)."""
+    limiter = request.app.state.rate_limiter
     key = f"{request.url.path}:{subject}"
-    remaining, window = await limiter.check(key, limit=limit)
+    try:
+        remaining, window = await limiter.check(key, limit=limit)
+    except RedisUnavailable:
+        # Redis is down — fall back to the in-memory limiter
+        logger.warning("redis_rate_limiter_unavailable_using_fallback")
+        fallback: SlidingWindowRateLimiter = request.app.state.rate_limiter_fallback
+        remaining, window = await fallback.check(key, limit=limit)
     request.state.rate_limit_remaining = remaining
     request.state.rate_limit_window = window
 
@@ -555,7 +569,11 @@ async def _run_research(
         cached=False,
         settings=settings,
     )
-    await cache.set(cache_key, response_payload.model_dump(mode="json"))
+    try:
+        await cache.set(cache_key, response_payload.model_dump(mode="json"))
+    except RedisUnavailable:
+        logger.warning("redis_cache_unavailable_on_set_using_fallback")
+        await cache_fallback.set(cache_key, response_payload.model_dump(mode="json"))
     await _record_history(
         request,
         route=route_name,
@@ -578,13 +596,18 @@ async def _stream_research(
     legacy: bool,
 ):
     settings: Config = request.app.state.settings
-    cache: InMemoryTTLCache = request.app.state.cache
+    cache = request.app.state.cache
+    cache_fallback: InMemoryTTLCache = request.app.state.cache_fallback
     metrics: MetricsRegistry = request.app.state.metrics
     breaker: CircuitBreaker = request.app.state.circuit_breaker
     gate: ConcurrencyGate = request.app.state.concurrency_gate
 
     cache_key = _build_cache_key(route_name, payload.model_dump(mode="json"))
-    cached_value = await cache.get(cache_key)
+    try:
+        cached_value = await cache.get(cache_key)
+    except RedisUnavailable:
+        logger.warning("redis_cache_unavailable_on_get_stream_using_fallback")
+        cached_value = await cache_fallback.get(cache_key)
     if cached_value is not None:
         metrics.increment("web_scraper_cache_hits_total", endpoint=route_name)
         cached_response = WebResearchResponse.model_validate(cached_value).model_copy(
@@ -682,7 +705,11 @@ async def _stream_research(
                     settings=settings,
                 )
                 breaker.record_success()
-                await cache.set(cache_key, mapped_payload.model_dump(mode="json"))
+                try:
+                    await cache.set(cache_key, mapped_payload.model_dump(mode="json"))
+                except RedisUnavailable:
+                    logger.warning("redis_cache_unavailable_on_set_stream_using_fallback")
+                    await cache_fallback.set(cache_key, mapped_payload.model_dump(mode="json"))
                 await _record_history(
                     request,
                     route=route_name,
@@ -732,18 +759,69 @@ def create_app(settings: Optional[Config] = None) -> FastAPI:
     app_settings = settings or config
     configure_logging(app_settings.log_level)
 
+    # Always-available in-memory fallbacks
+    _mem_cache = InMemoryTTLCache(
+        ttl_seconds=app_settings.cache_ttl_seconds,
+        max_entries=app_settings.cache_max_entries,
+    )
+    _mem_limiter = SlidingWindowRateLimiter(app_settings.api_rate_limit_per_minute)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):  # noqa: ANN001
+        """Try to connect Redis on startup; tear down on shutdown."""
+        redis_url = os.getenv("REDIS_URL")
+        _redis_cache: Optional[RedisCache] = None
+        _redis_limiter: Optional[RedisRateLimiter] = None
+
+        if redis_url and _REDIS_AVAILABLE:
+            try:
+                _redis_cache = RedisCache(
+                    ttl_seconds=app_settings.cache_ttl_seconds,
+                    namespace="research",
+                )
+                await _redis_cache.connect(redis_url)
+                app.state.cache = _redis_cache
+                logger.info("redis_cache_connected url=%s", redis_url.split("@")[-1])
+
+                _redis_limiter = RedisRateLimiter(
+                    default_limit=app_settings.api_rate_limit_per_minute,
+                    window_seconds=60,
+                    namespace="rl",
+                )
+                await _redis_limiter.connect(redis_url)
+                app.state.rate_limiter = _redis_limiter
+                logger.info("redis_rate_limiter_connected")
+            except RedisUnavailable as exc:
+                logger.warning("redis_unavailable_using_in_memory err=%s", exc)
+                _redis_cache = None
+                _redis_limiter = None
+        else:
+            if not redis_url:
+                logger.info("redis_url_not_set_using_in_memory_cache")
+            elif not _REDIS_AVAILABLE:
+                logger.warning("redis_package_not_installed_using_in_memory_cache")
+
+        yield
+
+        # Cleanup
+        if _redis_cache is not None:
+            await _redis_cache.close()
+        if _redis_limiter is not None:
+            await _redis_limiter.close()
+
     app = FastAPI(
         title="Web Scraper API",
         description="Versioned scraping and research API for LLM tool integrations.",
         version=__version__,
+        lifespan=lifespan,
     )
 
     app.state.settings = app_settings
-    app.state.rate_limiter = SlidingWindowRateLimiter(app_settings.api_rate_limit_per_minute)
-    app.state.cache = InMemoryTTLCache(
-        ttl_seconds=app_settings.cache_ttl_seconds,
-        max_entries=app_settings.cache_max_entries,
-    )
+    # Default to in-memory; lifespan will upgrade to Redis when available
+    app.state.rate_limiter = _mem_limiter
+    app.state.rate_limiter_fallback = _mem_limiter
+    app.state.cache = _mem_cache
+    app.state.cache_fallback = _mem_cache
     app.state.circuit_breaker = CircuitBreaker(
         failure_threshold=app_settings.circuit_breaker_failure_threshold,
         recovery_seconds=app_settings.circuit_breaker_recovery_seconds,

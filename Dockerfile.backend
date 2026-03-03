@@ -13,8 +13,8 @@ COPY pyproject.toml README.md /app/
 COPY web_scraper /app/web_scraper
 
 RUN pip install --upgrade pip \
-    # Install base deps + playwright optional group
-    && pip install ".[playwright]" \
+    # Install base deps + playwright + redis optional groups
+    && pip install ".[playwright,redis]" \
     # Download Chromium + its system-level OS dependencies in one step
     && playwright install --with-deps chromium \
     && addgroup --system appgroup \

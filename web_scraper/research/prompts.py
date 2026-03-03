@@ -422,6 +422,13 @@ Search Results:
 {depth_instruction}
 {source_range_hint}
 
+⛔ STRICT RELEVANCE RULE (ABSOLUTE — overrides all other instructions):
+You MUST reject any result whose title or snippet is NOT clearly and specifically about the query topic.
+If the query is about "GPT-5.3-Codex benchmarks", DO NOT select Stack Overflow questions about git, bash,
+programming concepts, terminal commands, or any other unrelated topic — even if they are from high-authority domains.
+Only select sources where the title OR snippet directly discusses the specific subject of the query.
+When in doubt, EXCLUDE the source.
+
 Return ONLY a JSON object:
 {{
     "sources": [

@@ -257,8 +257,33 @@ def expand_selected_sources(
     selected_sources: list[dict],
     fallback_results: list[dict],
     target_count: int,
+    query: str = "",
 ) -> list[dict]:
-    """Top-up AI-selected sources with unused search results when needed."""
+    """Top-up AI-selected sources with unused search results when needed.
+
+    When a query is provided, fallback candidates are filtered so that only
+    results whose title *or* snippet contain at least one meaningful query
+    keyword are added.  This prevents unrelated StackOverflow / generic Q&A
+    pages from polluting the source list.
+    """
+    # Build a set of meaningful query keywords (ignore short stop-words)
+    _STOP = {"a", "an", "the", "is", "are", "of", "in", "on", "for",
+             "and", "or", "to", "vs", "ne", "mi", "ve", "ile", "da", "de"}
+    topic_keywords: set[str] = {
+        w.lower() for w in query.replace("-", " ").split()
+        if len(w) > 2 and w.lower() not in _STOP
+    } if query else set()
+
+    def _is_relevant(result: dict) -> bool:
+        if not topic_keywords:
+            return True
+        haystack = (
+            (result.get("title") or "") + " " +
+            (result.get("snippet") or "") + " " +
+            (result.get("url") or "")
+        ).lower()
+        return any(kw in haystack for kw in topic_keywords)
+
     unique_sources: list[dict] = []
     seen_urls: set[str] = set()
 
@@ -275,6 +300,8 @@ def expand_selected_sources(
         url = result.get("url")
         if not url or url in seen_urls:
             continue
+        if not _is_relevant(result):
+            continue  # skip off-topic fallback results
         seen_urls.add(url)
         unique_sources.append(
             {

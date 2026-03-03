@@ -843,6 +843,7 @@ class ResearchAgent(LLMClient):
                     selected_sources=valid_sources[:max_to_check],
                     fallback_results=ddg_results,
                     target_count=target_count,
+                    query=query,
                 )
                 strategy["depth"] = "deep" if deep_mode else strategy.get("depth", "standard")
                 return strategy
@@ -856,6 +857,7 @@ class ResearchAgent(LLMClient):
                 selected_sources=[],
                 fallback_results=ddg_results,
                 target_count=fallback_target,
+                query=query,
             ),
             "reasoning": "Using top search results",
             "depth": "deep" if deep_mode else "standard",
@@ -950,6 +952,7 @@ class ResearchAgent(LLMClient):
                     selected_sources=valid_sources[:max_to_check],
                     fallback_results=ddg_results,
                     target_count=target_count,
+                    query=query,
                 )
                 strategy["depth"] = "deep" if deep_mode else strategy.get("depth", "standard")
                 return strategy
@@ -963,6 +966,7 @@ class ResearchAgent(LLMClient):
                 selected_sources=[],
                 fallback_results=ddg_results,
                 target_count=fallback_target,
+                query=query,
             ),
             "reasoning": "Using top search results",
             "depth": "deep" if deep_mode else "standard",

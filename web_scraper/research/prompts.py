@@ -525,15 +525,16 @@ def build_synthesis_prompt(
         table_format_block = (
             "\n━━━ BENCHMARK / COMPARISON DATA DETECTED ━━━\n"
             "The query involves benchmarks, scores, comparisons, or structured metrics. "
-            "You MUST present key data in tabular form:\n"
-            "1. data_table is MANDATORY — one row per model / product / metric.\n"
+            "You MUST populate data_table with ALL numeric results found:\n"
+            "1. data_table is MANDATORY — one row per benchmark / metric / model. Returning [] is FORBIDDEN.\n"
             "2. Use metric = benchmark name (e.g. 'SWE-Bench Pro', 'Terminal-Bench 2.0'), "
-            "value = score/result (e.g. '56.8%'), "
+            "value = score/result WITH context (e.g. '56.8% (+0.4 vs GPT-5.2)'), "
             "source = source name, date = publication date.\n"
-            "3. In executive_summary, open with a markdown table summarising ALL numeric "
-            "benchmark scores found in the sources (columns: Benchmark | Score | vs Previous | Source).\n"
-            "4. Do NOT bury numbers in prose — put them in the table first, then explain.\n"
-            "5. If comparing multiple models, add one column per model.\n"
+            "3. If comparing multiple models, add one row per model per benchmark "
+            "(e.g. metric='SWE-Bench Pro — GPT-5.3-Codex', value='56.8%').\n"
+            "4. Cover every distinct numeric result mentioned in the sources.\n"
+            "5. In executive_summary, write a concise prose summary of the benchmark results "
+            "— do NOT embed a markdown table there (the UI renders data_table separately).\n"
         )
     else:
         table_format_block = ""

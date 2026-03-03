@@ -55,10 +55,18 @@ interface CitedSource {
     source: string
 }
 
+interface DataTableRow {
+    metric: string
+    value: string
+    source?: string
+    date?: string
+}
+
 interface ResearchResult {
     query: string
     summary: string
     key_findings: string[]
+    data_table?: DataTableRow[]
     detailed_analysis?: string
     recommendations?: string
     cited_sources?: CitedSource[]
@@ -214,6 +222,17 @@ function normalizeResearchResult(data: unknown): ResearchResult {
         query: getString(payload.query),
         summary: getString(payload.summary) || getString(payload.answer),
         key_findings: getStringArray(payload.key_findings),
+        data_table: Array.isArray(payload.data_table)
+            ? (payload.data_table as unknown[])
+                .filter(isRecord)
+                .map(row => ({
+                    metric: getString(row.metric),
+                    value: getString(row.value),
+                    source: getString(row.source) || undefined,
+                    date: getString(row.date) || undefined,
+                }))
+                .filter(row => row.metric && row.value)
+            : undefined,
         detailed_analysis: getString(payload.detailed_analysis),
         recommendations: getString(payload.recommendations),
         cited_sources: Array.isArray(payload.cited_sources)
@@ -338,12 +357,14 @@ const markdownComponents: Components = {
     },
     br: () => <br className="my-1" />,
     h1: ({ children }: MarkdownChildrenProps) => <h1 className="text-2xl font-bold font-serif mt-8 mb-4 pb-2" style={{ color: 'var(--text-primary)', borderBottom: '1px solid var(--border)' }}>{children}</h1>,
-    h2: ({ children }: MarkdownChildrenProps) => <h2 className="text-xl font-bold font-serif mt-8 mb-4" style={{ color: 'var(--text-primary)' }}>{children}</h2>,
-    h3: ({ children }: MarkdownChildrenProps) => <h3 className="text-lg font-bold font-serif mt-6 mb-3" style={{ color: 'var(--text-primary)' }}>{children}</h3>,
-    p: ({ children }: MarkdownChildrenProps) => <p className="font-serif leading-relaxed mb-5 text-[1.05rem]" style={{ color: 'var(--text-secondary)' }}>{children}</p>,
-    ul: ({ children }: MarkdownChildrenProps) => <ul className="list-disc pl-5 space-y-2 mb-5 font-serif" style={{ color: 'var(--text-secondary)' }}>{children}</ul>,
-    ol: ({ children }: MarkdownChildrenProps) => <ol className="list-decimal pl-5 space-y-2 mb-5 font-serif" style={{ color: 'var(--text-secondary)' }}>{children}</ol>,
-    li: ({ children }: MarkdownChildrenProps) => <li className="pl-1 leading-relaxed"><span className="font-medium" style={{ color: 'var(--text-primary)' }}>{children}</span></li>,
+    h2: ({ children }: MarkdownChildrenProps) => <h2 className="text-2xl font-bold font-serif mt-10 mb-5 pb-2" style={{ color: 'var(--text-primary)', borderBottom: '1px solid var(--border-subtle)' }}>{children}</h2>,
+    h3: ({ children }: MarkdownChildrenProps) => <h3 className="text-xl font-bold font-serif mt-8 mb-4" style={{ color: 'var(--text-primary)' }}>{children}</h3>,
+    h4: ({ children }: MarkdownChildrenProps) => <h4 className="text-lg font-bold font-serif mt-6 mb-3" style={{ color: 'var(--text-primary)' }}>{children}</h4>,
+    h5: ({ children }: MarkdownChildrenProps) => <h5 className="text-base font-bold font-serif mt-5 mb-2" style={{ color: 'var(--text-primary)' }}>{children}</h5>,
+    p: ({ children }: MarkdownChildrenProps) => <p className="font-serif leading-loose mb-6 text-[1.08rem]" style={{ color: 'var(--text-secondary)' }}>{children}</p>,
+    ul: ({ children }: MarkdownChildrenProps) => <ul className="list-disc pl-6 space-y-3 mb-6 font-serif" style={{ color: 'var(--text-secondary)' }}>{children}</ul>,
+    ol: ({ children }: MarkdownChildrenProps) => <ol className="list-decimal pl-6 space-y-3 mb-6 font-serif" style={{ color: 'var(--text-secondary)' }}>{children}</ol>,
+    li: ({ children }: MarkdownChildrenProps) => <li className="pl-1.5 leading-loose text-[1.05rem]"><span className="font-medium" style={{ color: 'var(--text-primary)' }}>{children}</span></li>,
     a: ({ children, href }: MarkdownLinkProps) => <a href={href} target="_blank" rel="noopener noreferrer" className="underline underline-offset-4 transition-colors" style={{ color: 'var(--accent-muted)', textDecorationColor: 'var(--accent-border)' }}>{children}</a>,
     strong: ({ children }: MarkdownChildrenProps) => <strong className="font-bold" style={{ color: 'var(--text-primary)' }}>{children}</strong>,
     blockquote: ({ children }: MarkdownChildrenProps) => <blockquote className="italic pl-4 py-1 my-6 font-serif" style={{ borderLeft: '2px solid var(--accent)', color: 'var(--text-muted)' }}>{children}</blockquote>,
@@ -1129,31 +1150,62 @@ function ResearchResultCard({ result, markdownComponents: mdComponents }: { resu
     }, [result.cited_sources, mdComponents])
 
     return (
-        <div className="w-full font-serif space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
+        <div className="w-full font-serif space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-500">
             {/* Header intro */}
             <p className="text-sm font-sans flex items-center gap-1.5 ml-1" style={{ color: 'var(--text-muted)' }}>
                 {t.synthesizedIntro} <span style={{ opacity: 0.5 }}>›</span>
             </p>
 
             {/* Executive summary */}
-            <div className="prose max-w-none prose-p:text-[1.05rem]" style={{ color: 'var(--text-secondary)' }}>
+            <div className="prose max-w-none prose-p:text-[1.08rem]" style={{ color: 'var(--text-secondary)' }}>
                 <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={citedComponents}>
                     {cleanMarkdown(result.summary)}
                 </ReactMarkdown>
             </div>
 
+            {/* Data table (benchmark / structured results) */}
+            {result.data_table && result.data_table.length > 0 && (
+                <div className="pt-6" style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                    <p className="text-[0.7rem] font-sans font-semibold tracking-widest uppercase mb-4" style={{ color: 'var(--accent-muted)' }}>
+                        Veriler
+                    </p>
+                    <div className="overflow-x-auto rounded-lg" style={{ border: '1px solid var(--border)' }}>
+                        <table className="w-full text-left border-collapse">
+                            <thead>
+                                <tr style={{ backgroundColor: 'var(--bg-surface)', borderBottom: '2px solid var(--border)' }}>
+                                    <th className="px-5 py-3 text-[0.78rem] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-primary)' }}>Metrik</th>
+                                    <th className="px-5 py-3 text-[0.78rem] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-primary)' }}>Sonuç</th>
+                                    {result.data_table.some(r => r.source) && <th className="px-5 py-3 text-[0.78rem] font-semibold uppercase tracking-wider hidden sm:table-cell" style={{ color: 'var(--text-primary)' }}>Kaynak</th>}
+                                    {result.data_table.some(r => r.date) && <th className="px-5 py-3 text-[0.78rem] font-semibold uppercase tracking-wider hidden sm:table-cell" style={{ color: 'var(--text-primary)' }}>Tarih</th>}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {result.data_table.map((row, i) => (
+                                    <tr key={i} style={{ borderBottom: i < result.data_table!.length - 1 ? '1px solid var(--border-subtle)' : undefined }}>
+                                        <td className="px-5 py-3 text-[0.97rem] font-medium" style={{ color: 'var(--text-primary)' }}>{row.metric}</td>
+                                        <td className="px-5 py-3 text-[0.97rem] font-mono font-semibold" style={{ color: 'var(--accent)' }}>{row.value}</td>
+                                        {result.data_table!.some(r => r.source) && <td className="px-5 py-3 text-[0.85rem] hidden sm:table-cell" style={{ color: 'var(--text-muted)' }}>{row.source}</td>}
+                                        {result.data_table!.some(r => r.date) && <td className="px-5 py-3 text-[0.85rem] hidden sm:table-cell" style={{ color: 'var(--text-muted)' }}>{row.date}</td>}
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            )}
+
             {/* Key Findings */}
             {result.key_findings && result.key_findings.length > 0 && (
                 <div className="pt-6" style={{ borderTop: '1px solid var(--border-subtle)' }}>
-                    <p className="text-[0.7rem] font-sans font-semibold tracking-widest uppercase mb-3" style={{ color: 'var(--accent-muted)' }}>
+                    <p className="text-[0.7rem] font-sans font-semibold tracking-widest uppercase mb-4" style={{ color: 'var(--accent-muted)' }}>
                         {t.keyFindings}
                     </p>
-                    <ul className="space-y-2 list-none pl-0">
+                    <ul className="space-y-3 list-none pl-0">
                         {result.key_findings.map((finding, i) => {
                             const cited = result.cited_sources ?? []
                             return (
-                                <li key={i} className="flex items-start gap-2.5 text-[0.97rem] leading-relaxed font-serif" style={{ color: 'var(--text-secondary)' }}>
-                                    <span className="mt-[6px] w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: 'var(--accent-muted)', opacity: 0.5 }} />
+                                <li key={i} className="flex items-start gap-3 text-[1.02rem] leading-loose font-serif" style={{ color: 'var(--text-secondary)' }}>
+                                    <span className="mt-[9px] w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: 'var(--accent-muted)', opacity: 0.6 }} />
                                     <span>{withCitations(cleanMarkdown(finding), cited)}</span>
                                 </li>
                             )
@@ -1164,7 +1216,7 @@ function ResearchResultCard({ result, markdownComponents: mdComponents }: { resu
 
             {/* Detailed analysis */}
             {result.detailed_analysis && (
-                <div className="pt-6 prose max-w-none prose-p:text-[1.05rem]" style={{ borderTop: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>
+                <div className="pt-6 prose max-w-none prose-p:text-[1.08rem]" style={{ borderTop: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>
                     <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={citedComponents}>
                         {cleanMarkdown(result.detailed_analysis)}
                     </ReactMarkdown>
@@ -1174,10 +1226,10 @@ function ResearchResultCard({ result, markdownComponents: mdComponents }: { resu
             {/* Recommendations */}
             {result.recommendations && (
                 <div className="pt-6" style={{ borderTop: '1px solid var(--border-subtle)' }}>
-                    <p className="text-[0.7rem] font-sans font-semibold tracking-widest uppercase mb-3" style={{ color: 'var(--accent-muted)' }}>
+                    <p className="text-[0.7rem] font-sans font-semibold tracking-widest uppercase mb-4" style={{ color: 'var(--accent-muted)' }}>
                         {t.recommendations}
                     </p>
-                    <div className="prose max-w-none prose-p:text-[0.97rem]" style={{ color: 'var(--text-secondary)' }}>
+                    <div className="prose max-w-none prose-p:text-[1.02rem]" style={{ color: 'var(--text-secondary)' }}>
                         <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={citedComponents}>
                             {cleanMarkdown(result.recommendations)}
                         </ReactMarkdown>

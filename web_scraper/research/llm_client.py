@@ -79,6 +79,7 @@ class LLMClient:
         max_output_tokens: int = 2048,
     ) -> str:
         """Dispatch to the configured provider and return the raw text response."""
+        logger.debug(f"[DEBUG] _call_llm prompt preview: {prompt[:500]}...")
         if self.provider == "openai":
             return await self._call_openai(prompt, timeout, max_output_tokens)
         return await self._call_ollama(prompt, timeout, max_output_tokens)

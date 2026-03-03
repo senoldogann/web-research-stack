@@ -56,7 +56,7 @@ class RedisCache:
         )
         # Verify connectivity
         try:
-            await self._client.ping()
+            await self._client.ping()  # type: ignore[misc]
         except Exception as exc:
             self._client = None
             raise RedisUnavailable(f"Redis ping failed: {exc}") from exc
@@ -170,8 +170,8 @@ return {limit - count - 1, window}
             socket_timeout=2,
         )
         try:
-            await self._client.ping()
-            self._lua_sha = await self._client.script_load(self._SCRIPT)
+            await self._client.ping()  # type: ignore[misc]
+            self._lua_sha = await self._client.script_load(self._SCRIPT)  # type: ignore[misc]
         except Exception as exc:
             self._client = None
             raise RedisUnavailable(f"Redis ping/script_load failed: {exc}") from exc
@@ -197,7 +197,7 @@ return {limit - count - 1, window}
         now_ms = int(time.time() * 1000)
 
         try:
-            result = await self._client.evalsha(
+            result = await self._client.evalsha(  # type: ignore[misc]
                 self._lua_sha,
                 1,
                 self._key(key),

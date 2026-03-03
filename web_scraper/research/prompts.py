@@ -609,7 +609,7 @@ def build_synthesis_prompt(
 
     # Detailed analysis instruction
     detailed_analysis_instruction = (
-        "Write a COMPREHENSIVE analytical narrative of AT LEAST 1500 words. "
+        "Write a COMPREHENSIVE analytical narrative of AT LEAST 2500 words. "
         "ASSUME the reader has already read the executive_summary and key_findings in full — do NOT re-introduce, re-define, or re-describe the subject. "
         "Open immediately with the most complex, nuanced, or evidence-rich insight available — the one that most benefits from extended analysis and cannot be expressed in a single bullet point. "
         "ANTI-MAPPING RULE (strictly enforced): Do NOT create one section per key_finding — that merely duplicates the key_findings list with more words. "
@@ -646,7 +646,7 @@ def build_synthesis_prompt(
     )
 
     recommendations_instruction = (
-        "Provide 4–6 specific, actionable next steps grounded firmly in the evidence. "
+        "Provide 8–12 very specific, technical, and actionable next steps grounded firmly in the evidence. "
         "Each recommendation must be 2–3 focused sentences: state the action, "
         "explain the rationale from the sources, and describe the expected outcome. "
         "CRITICAL FORMATTING: Each recommendation MUST be a COMPLETELY SEPARATE block, separated by exactly TWO NEWLINES (\\n\\n). "

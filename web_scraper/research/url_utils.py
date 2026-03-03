@@ -112,7 +112,7 @@ def classify_source_tier(url: str) -> int:
                 return 1
             return 4  # Unknown domain with /docs/ path — treat as reference
 
-    except Exception:
+    except Exception:  # noqa: S110
         pass
     return 5
 

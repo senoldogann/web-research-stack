@@ -202,7 +202,7 @@ class WebScraperAsync:
                             headers=data["solution"]["headers"],
                             content=data["solution"]["response"].encode("utf-8"),
                         )
-            except Exception:
+            except Exception:  # noqa: S112
                 continue
 
         raise Exception(

@@ -439,7 +439,7 @@ Return ONLY a JSON object:
     "reasoning": "Brief explanation of why these sources were chosen"
 }}
 
-Use the exact URLs from the search results."""
+Use the exact URLs from the search results."""  # noqa: S608
 
 
 def build_synthesis_prompt(

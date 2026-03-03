@@ -39,7 +39,7 @@ class HeaderFactory:
     @classmethod
     def get_impersonate_target(cls) -> str:
         """Return a curl_cffi impersonate string for a random supported Chrome version."""
-        return random.choice(list(cls._IMPERSONATE_MAP.keys()))
+        return random.choice(list(cls._IMPERSONATE_MAP.keys()))  # noqa: S311
 
     @classmethod
     def get_referer(cls, query: Optional[str] = None) -> str:
@@ -51,7 +51,7 @@ class HeaderFactory:
         """
         from urllib.parse import quote_plus
 
-        base = random.choice(cls._SEARCH_REFERERS)
+        base = random.choice(cls._SEARCH_REFERERS)  # noqa: S311
         if query and base.endswith("q="):
             return base + quote_plus(query)
         return base
@@ -68,8 +68,8 @@ class HeaderFactory:
                 header is set to ``"cross-site"`` to match real browser behaviour
                 when the user clicks a search-engine result.
         """
-        version = random.choice(cls.CHROME_VERSIONS)
-        os_name = random.choice(cls.OS_PLATFORMS)
+        version = random.choice(cls.CHROME_VERSIONS)  # noqa: S311
+        os_name = random.choice(cls.OS_PLATFORMS)  # noqa: S311
 
         user_agent = cls._UA_TEMPLATES[os_name].replace("{version}", version)
         # sec-ch-ua-platform expects a quoted string

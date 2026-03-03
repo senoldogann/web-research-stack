@@ -43,7 +43,7 @@ def get_freshness_score(result: dict) -> float:
         if year_match:
             try:
                 publication_date = year_match.group(1)
-            except Exception:
+            except Exception:  # noqa: S110
                 pass
 
     if not publication_date:
@@ -112,7 +112,7 @@ def score_search_result(
                 domain_boost = 0.15
             if any(token in hostname for token in query_tokens if len(token) > 3):
                 domain_boost += 0.1
-        except Exception:
+        except Exception:  # noqa: S110
             pass
 
     freshness_score = get_freshness_score(result)
@@ -188,7 +188,7 @@ def merge_and_rank_search_results(
 
                 if any(token in hostname for token in query_tokens if len(token) > 3):
                     domain_boost += 0.1
-            except Exception:
+            except Exception:  # noqa: S110
                 pass
 
             candidate = dict(result)

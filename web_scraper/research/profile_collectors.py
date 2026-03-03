@@ -7,7 +7,7 @@ reuse the existing scraping and ranking pipeline.
 from __future__ import annotations
 
 import re
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as ET  # S314 — safe XML parser (prevents XXE/XML-bomb)
 from typing import Any, Optional
 from urllib.parse import quote_plus
 
@@ -241,7 +241,7 @@ async def collect_stackexchange_results(
                         )
                         if len(merged) >= search_pool_size:
                             break
-                except Exception:  # noqa: BLE001
+                except Exception:  # noqa: BLE001, S112
                     continue
 
     return merged[:search_pool_size]
@@ -334,7 +334,7 @@ async def collect_pubmed_results(
                     )
                     if len(merged) >= search_pool_size:
                         break
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S112
                 continue
 
     return merged[:search_pool_size]
@@ -458,7 +458,7 @@ async def collect_rss_feed_results(
                     )
                     if len(merged) >= search_pool_size:
                         break
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S112
                 continue
 
     return merged[:search_pool_size]

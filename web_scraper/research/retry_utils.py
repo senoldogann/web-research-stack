@@ -71,7 +71,7 @@ async def async_retry(
                     exc,
                 )
                 break
-            sleep_time = delay * (1.0 + random.uniform(-jitter, jitter))
+            sleep_time = delay * (1.0 + random.uniform(-jitter, jitter))  # noqa: S311
             logger.debug(
                 "%s attempt %d/%d failed (%s); retrying in %.2fs",
                 label,

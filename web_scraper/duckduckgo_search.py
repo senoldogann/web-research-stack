@@ -54,7 +54,7 @@ class DuckDuckGoSearcher:
         import random
 
         headers = HeaderFactory.get_headers()
-        headers["User-Agent"] = random.choice(self.USER_AGENTS)
+        headers["User-Agent"] = random.choice(self.USER_AGENTS)  # noqa: S311
 
         results = []
         async with requests.AsyncSession(

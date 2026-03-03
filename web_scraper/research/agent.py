@@ -286,7 +286,9 @@ class ResearchAgent(LLMClient):
             "temporal_scope": None,
         }
 
-        if not cleaned_query or not config.research_enable_query_rewrite:
+        # Skip LLM rewrite in standard mode — only spend the inference time
+        # when deep_mode is active and the extra query variants are worthwhile.
+        if not cleaned_query or not config.research_enable_query_rewrite or not deep_mode:
             return fallback
 
         prompt = build_query_rewrite_prompt(cleaned_query, deep_mode)
@@ -816,6 +818,20 @@ class ResearchAgent(LLMClient):
         if progress_sink:
             progress_sink(self._msg("ranking_results", count=len(ddg_results)))
 
+        # Standard mode: skip the source-selection LLM call entirely.
+        # The keyword-based expand_selected_sources is fast and accurate enough.
+        if not deep_mode:
+            return {
+                "sources": expand_selected_sources(
+                    selected_sources=[],
+                    fallback_results=ddg_results,
+                    target_count=max_to_check,
+                    query=query,
+                ),
+                "reasoning": "Keyword-ranked results (standard mode)",
+                "depth": "standard",
+            }
+
         prompt = build_source_selection_prompt(
             query=query,
             ddg_results=ddg_results,
@@ -838,29 +854,27 @@ class ResearchAgent(LLMClient):
             ]
 
             if valid_sources:
-                target_count = max_to_check if deep_mode else min(max_to_check, len(valid_sources))
                 strategy["sources"] = expand_selected_sources(
                     selected_sources=valid_sources[:max_to_check],
                     fallback_results=ddg_results,
-                    target_count=target_count,
+                    target_count=max_to_check,
                     query=query,
                 )
-                strategy["depth"] = "deep" if deep_mode else strategy.get("depth", "standard")
+                strategy["depth"] = "deep"
                 return strategy
 
         except Exception as e:
             logger.warning(f"AI parsing failed ({e}), using search results directly")
 
-        fallback_target = max_to_check if deep_mode else min(max_to_check, len(ddg_results))
         return {
             "sources": expand_selected_sources(
                 selected_sources=[],
                 fallback_results=ddg_results,
-                target_count=fallback_target,
+                target_count=max_to_check,
                 query=query,
             ),
             "reasoning": "Using top search results",
-            "depth": "deep" if deep_mode else "standard",
+            "depth": "deep",
         }
 
     async def _plan_research_with_results(
@@ -901,6 +915,19 @@ class ResearchAgent(LLMClient):
 
         if progress_sink:
             progress_sink(self._msg("ranking_results", count=len(ddg_results)))
+
+        # Standard mode fast-path: skip LLM source selection entirely.
+        if not deep_mode:
+            return {
+                "sources": expand_selected_sources(
+                    selected_sources=[],
+                    fallback_results=ddg_results,
+                    target_count=max_to_check,
+                    query=query,
+                ),
+                "reasoning": "Keyword-ranked results (standard mode)",
+                "depth": "standard",
+            }
 
         prompt = build_source_selection_prompt(
             query=query,
@@ -947,25 +974,23 @@ class ResearchAgent(LLMClient):
                     valid_sources = injected + valid_sources
 
             if valid_sources:
-                target_count = max_to_check if deep_mode else min(max_to_check, len(valid_sources))
                 strategy["sources"] = expand_selected_sources(
                     selected_sources=valid_sources[:max_to_check],
                     fallback_results=ddg_results,
-                    target_count=target_count,
+                    target_count=max_to_check,
                     query=query,
                 )
-                strategy["depth"] = "deep" if deep_mode else strategy.get("depth", "standard")
+                strategy["depth"] = "deep"
                 return strategy
 
         except Exception as e:
             logger.warning(f"AI parsing failed ({e}), using search results directly")
 
-        fallback_target = max_to_check if deep_mode else min(max_to_check, len(ddg_results))
         return {
             "sources": expand_selected_sources(
                 selected_sources=[],
                 fallback_results=ddg_results,
-                target_count=fallback_target,
+                target_count=max_to_check,
                 query=query,
             ),
             "reasoning": "Using top search results",

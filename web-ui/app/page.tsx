@@ -1182,7 +1182,7 @@ function ResearchResultCard({ result, markdownComponents: mdComponents }: { resu
                             <tbody>
                                 {result.data_table.map((row, i) => (
                                     <tr key={i} style={{ borderBottom: i < result.data_table!.length - 1 ? '1px solid var(--border-subtle)' : undefined }}>
-                                        <td className="px-5 py-3 text-[0.97rem] font-medium" style={{ color: 'var(--text-primary)' }}>{row.metric}</td>
+                                        <td className="px-5 py-3 text-[0.85rem] font-medium" style={{ color: 'var(--text-primary)' }}>{row.metric}</td>
                                         <td className="px-5 py-3 text-[0.85rem] font-sans" style={{ color: 'var(--text-secondary)' }}>{row.value}</td>
                                         {result.data_table!.some(r => r.source) && <td className="px-5 py-3 text-[0.85rem] hidden sm:table-cell" style={{ color: 'var(--text-muted)' }}>{row.source}</td>}
                                         {result.data_table!.some(r => r.date) && <td className="px-5 py-3 text-[0.85rem] hidden sm:table-cell" style={{ color: 'var(--text-muted)' }}>{row.date}</td>}

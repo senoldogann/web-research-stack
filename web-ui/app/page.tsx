@@ -383,7 +383,7 @@ export default function Home() {
     const [statusLogs, setStatusLogs] = useState<StatusLog[]>([])
     const [models, setModels] = useState<string[]>([])
     const [deepMode, setDeepMode] = useState(false)
-    const [researchProfile, setResearchProfile] = useState<'technical' | 'news' | 'academic'>('technical')
+    const [researchProfile, setResearchProfile] = useState<'technical' | 'news' | 'academic' | 'auto'>('auto')
     const [abortController, setAbortController] = useState<AbortController | null>(null)
     const [activeSources, setActiveSources] = useState<SourceStatus[]>([])
 

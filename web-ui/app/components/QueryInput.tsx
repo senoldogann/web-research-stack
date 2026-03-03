@@ -16,6 +16,16 @@ function IconTechnical({ className }: { className?: string }) {
     )
 }
 
+function IconAuto({ className }: { className?: string }) {
+    return (
+        <svg className={className} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="8" cy="8" r="6" />
+            <path d="M5.5 10.5 L8 5 L10.5 10.5" />
+            <line x1="6.5" y1="8.8" x2="9.5" y2="8.8" />
+        </svg>
+    )
+}
+
 function IconNews({ className }: { className?: string }) {
     return (
         <svg className={className} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -47,8 +57,8 @@ interface QueryInputProps {
     isLoading: boolean
     deepMode: boolean
     setDeepMode: (val: boolean) => void
-    researchProfile: 'technical' | 'news' | 'academic'
-    setResearchProfile: (val: 'technical' | 'news' | 'academic') => void
+    researchProfile: 'technical' | 'news' | 'academic' | 'auto'
+    setResearchProfile: (val: 'technical' | 'news' | 'academic' | 'auto') => void
     provider: string
     openaiModel: string
     selectedModel: string
@@ -93,10 +103,11 @@ export default function QueryInput({
     }, [plusOpen])
 
     const profiles: {
-        value: 'technical' | 'news' | 'academic'
+        value: 'technical' | 'news' | 'academic' | 'auto'
         label: string
         Icon: ({ className }: { className?: string }) => React.ReactElement
     }[] = [
+        { value: 'auto',      label: t.profileAuto ?? 'Auto',         Icon: IconAuto },
         { value: 'technical', label: t.profileTechnical, Icon: IconTechnical },
         { value: 'news',      label: t.profileNews,      Icon: IconNews },
         { value: 'academic',  label: t.profileAcademic,  Icon: IconAcademic },

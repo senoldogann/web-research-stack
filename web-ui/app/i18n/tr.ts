@@ -58,6 +58,7 @@ const tr: Translations = {
     researchStatusGeneratingQueries: 'Daha iyi alma için {count} arama sorgusu varyantı oluşturuldu.',
 
     researchProfile: 'Profil',
+    profileAuto: 'Otomatik',
     profileTechnical: 'Teknik',
     profileNews: 'Haber',
     profileAcademic: 'Akademik',

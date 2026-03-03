@@ -120,14 +120,20 @@ class WebScraper:
         try:
             response = self._get_page(url)
 
-            # Check for Cloudflare block more aggressively
+            # Cloudflare detection: status code alone is NOT reliable —
+            # IUAM (I'm Under Attack Mode) typically returns HTTP 200.
+            # Trigger FlareSolverr whenever CF signatures appear in the HTML.
             html_lower = response.text.lower()
-            is_cloudflare = response.status_code in (403, 503) and (
-                "just a moment..." in html_lower
+            is_cloudflare = (
+                "just a moment" in html_lower
                 or "cf-browser-verification" in html_lower
                 or "cloudflare-challenge" in html_lower
                 or "challenge-error-text" in html_lower
                 or "enable javascript and cookies to continue" in html_lower
+                or "cf-chl-bypass" in html_lower
+                or "cf-challenge-body" in html_lower
+                or ("ray id" in html_lower and "cloudflare" in html_lower)
+                or (response.status_code in (403, 503) and "cloudflare" in html_lower)
             )
 
             if is_cloudflare:
@@ -167,7 +173,7 @@ class WebScraper:
             return self._error_result(url, f"Unexpected error: {str(e)}")
 
     def _run_flaresolverr(self, url: str):
-        """Fallback to FlareSolverr if Cloudflare Turnstile blocks the native scraper."""
+        """Invoke FlareSolverr to bypass Cloudflare challenges (IUAM, Turnstile, etc.)."""
         flaresolverr_url = os.environ.get(
             "FLARESOLVERR_URL", "http://web-research-flaresolverr:8191/v1"
         )

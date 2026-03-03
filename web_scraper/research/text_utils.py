@@ -198,6 +198,81 @@ def extract_json_payload(response_text: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Direct URL detection
+# ---------------------------------------------------------------------------
+
+_URL_RE: re.Pattern = re.compile(
+    r"https?://[^\s,，、;；\"'<>()\[\]{}]+", re.IGNORECASE
+)
+
+# Keywords (Turkish + English) that signal the user wants subpages crawled too
+_SUBPAGE_KEYWORDS: frozenset[str] = frozenset(
+    {
+        # Turkish
+        "alt sayfa",
+        "alt sayfalar",
+        "alt sayfaları",
+        "alt sayfalarını",
+        "alt sayfalarini",
+        "alt sayfalarında",
+        "alt sayfalarinda",
+        "alt sayfaları da",
+        "alt sayfalarını da",
+        "alt sayfalarini da",
+        "tüm sayfaları",
+        "tüm sayfalarını",
+        "bağlantıları",
+        "linkleri",
+        "sitedeki sayfalar",
+        "sitemap",
+        "tara",
+        "hepsini tara",
+        "tüm",
+        # English
+        "subpages",
+        "sub-pages",
+        "all pages",
+        "crawl",
+        "sublinks",
+        "internal links",
+        "all links",
+        "every page",
+        "entire site",
+        "whole site",
+        "follow links",
+    }
+)
+
+
+def extract_direct_urls(query: str) -> list[str]:
+    """Extract all well-formed http(s) URLs from *query*.
+
+    Returns a list of unique URLs (preserving first-seen order).
+    Trailing punctuation (``.``, ``,``, ``!`` etc.) is stripped.
+    """
+    raw = _URL_RE.findall(query)
+    seen: set[str] = set()
+    result: list[str] = []
+    for url in raw:
+        url = url.rstrip(".,;:!?)")
+        if url not in seen:
+            seen.add(url)
+            result.append(url)
+    return result
+
+
+def has_subpage_crawl_intent(query: str) -> bool:
+    """Return ``True`` when the query signals that subpages should also be crawled."""
+    lower = query.lower()
+    return any(kw in lower for kw in _SUBPAGE_KEYWORDS)
+
+
+# ---------------------------------------------------------------------------
+# Text / content utilities
+# ---------------------------------------------------------------------------
+
+
 def clean_query_text(query: str) -> str:
     """Normalize whitespace so query comparisons stay stable."""
     return " ".join((query or "").split()).strip()

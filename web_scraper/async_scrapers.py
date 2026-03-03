@@ -88,14 +88,20 @@ class WebScraperAsync:
         try:
             response = await self._request_with_safe_redirects(url)
 
-            # Check for Cloudflare block more aggressively
+            # Cloudflare detection: status code alone is NOT reliable —
+            # IUAM (I'm Under Attack Mode) typically returns HTTP 200.
+            # Trigger FlareSolverr whenever CF signatures appear in the HTML.
             html_lower = response.text.lower()
-            is_cloudflare = response.status_code in (403, 503) and (
-                "just a moment..." in html_lower
+            is_cloudflare = (
+                "just a moment" in html_lower
                 or "cf-browser-verification" in html_lower
                 or "cloudflare-challenge" in html_lower
                 or "challenge-error-text" in html_lower
                 or "enable javascript and cookies to continue" in html_lower
+                or "cf-chl-bypass" in html_lower
+                or "cf-challenge-body" in html_lower
+                or ("ray id" in html_lower and "cloudflare" in html_lower)
+                or (response.status_code in (403, 503) and "cloudflare" in html_lower)
             )
 
             if is_cloudflare:
@@ -157,6 +163,7 @@ class WebScraperAsync:
         return await asyncio.gather(*tasks)
 
     async def _run_flaresolverr(self, url: str):
+        """Invoke FlareSolverr to bypass Cloudflare challenges (IUAM, Turnstile, etc.)."""
         import os
 
         flaresolverr_url = os.environ.get(

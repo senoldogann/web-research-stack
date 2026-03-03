@@ -67,6 +67,7 @@ export interface Translations {
 
     // Research Profile
     researchProfile: string
+    profileAuto: string
     profileTechnical: string
     profileNews: string
     profileAcademic: string
@@ -138,6 +139,7 @@ const en: Translations = {
     researchStatusGeneratingQueries: 'Generated {count} search query variants for better retrieval.',
 
     researchProfile: 'Profile',
+    profileAuto: 'Auto',
     profileTechnical: 'Technical',
     profileNews: 'News',
     profileAcademic: 'Academic',

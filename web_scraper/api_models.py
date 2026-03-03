@@ -62,7 +62,7 @@ class ResearchToolRequest(BaseModel):
     model: Optional[str] = Field(default=None, min_length=1, max_length=128)
     include_source_content: bool = False
     provider: Literal["ollama", "openai"] = "ollama"
-    research_profile: Literal["technical", "news", "academic"] = "technical"
+    research_profile: Literal["technical", "news", "academic", "auto"] = "auto"
     openai_api_key: Optional[str] = Field(default=None, max_length=512)
     ollama_api_key: Optional[str] = Field(default=None, max_length=512)
     ollama_base_url: Optional[str] = Field(default=None, max_length=512)

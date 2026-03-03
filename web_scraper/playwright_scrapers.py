@@ -14,11 +14,16 @@ from web_scraper.content_safety import preserve_code_blocks
 from web_scraper.network_safety import UnsafeTargetError, validate_outbound_url
 from web_scraper.scrapers import ScrapedData
 
-# Cloudflare challenge fingerprints
+# Cloudflare challenge fingerprints — status code alone is NOT reliable;
+# IUAM pages typically return HTTP 200 so we match on HTML content only.
 _CF_SIGNATURES = (
-    "just a moment...",
+    "just a moment",
     "cf-browser-verification",
     "cloudflare-challenge",
+    "challenge-error-text",
+    "enable javascript and cookies to continue",
+    "cf-chl-bypass",
+    "cf-challenge-body",
 )
 
 
@@ -205,8 +210,13 @@ class PlaywrightScraper:
     async def _bypass_cloudflare_if_needed(self) -> str:
         """Return page HTML, pausing to simulate human input if a CF challenge is detected."""
         raw_html = await self._page.content()
+        raw_lower = raw_html.lower()
 
-        if any(sig in raw_html.lower() for sig in _CF_SIGNATURES):
+        has_cf = any(sig in raw_lower for sig in _CF_SIGNATURES) or (
+            "ray id" in raw_lower and "cloudflare" in raw_lower
+        )
+
+        if has_cf:
             # Simulate human mouse movements to trigger Turnstile token generation.
             for _ in range(5):
                 x = random.randint(100, 700)  # noqa: S311 — non-crypto mouse coords

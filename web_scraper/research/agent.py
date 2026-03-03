@@ -51,9 +51,11 @@ from web_scraper.research.text_utils import (
     clean_query_text,
     detect_query_language,
     extract_date_from_snippet,
+    extract_direct_urls,
     extract_json_payload,
     extract_publication_date,
     filter_low_quality_results,
+    has_subpage_crawl_intent,
     repair_truncated_json,
 )
 from web_scraper.research.url_utils import (
@@ -63,6 +65,7 @@ from web_scraper.research.url_utils import (
 
 logger = logging.getLogger(__name__)
 ResearchProfile = Literal["technical", "news", "academic"]
+ResearchProfileInput = Literal["technical", "news", "academic", "auto"]
 
 # Code-query keywords re-used in _plan_research_with_results for official-docs injection
 _CODE_SOURCE_KW: frozenset[str] = frozenset(
@@ -175,6 +178,39 @@ class ResearchAgent(LLMClient):
         )
         # Language detected from the current query — set during research()
         self._query_lang: str = "en"
+
+    @staticmethod
+    def _detect_profile_from_query(query: str) -> ResearchProfile:
+        """Infer the most appropriate research profile from *query* text."""
+        lower = query.lower()
+
+        _ACADEMIC_KW: frozenset[str] = frozenset(
+            {
+                "paper", "study", "research", "journal", "arxiv", "pubmed",
+                "doi", "citation", "abstract", "hypothesis", "experiment",
+                "peer review", "peer-review", "literature review", "methodology",
+                "meta-analysis", "clinical trial", "dissertation", "thesis",
+                # Turkish
+                "makale", "araştırma", "çalışma", "tez", "yayın", "akademik",
+                "bilimsel", "dergi", "atıf", "deneysel",
+            }
+        )
+        _NEWS_KW: frozenset[str] = frozenset(
+            {
+                "news", "breaking", "latest", "today", "yesterday", "this week",
+                "this month", "current", "update", "announcement", "headline",
+                "report", "journalist", "press", "coverage", "incident",
+                # Turkish
+                "haber", "son dakika", "güncel", "bugün", "dün", "bu hafta",
+                "bu ay", "gelişme", "açıklama", "basın",
+            }
+        )
+
+        if any(kw in lower for kw in _ACADEMIC_KW):
+            return "academic"
+        if any(kw in lower for kw in _NEWS_KW):
+            return "news"
+        return "technical"
 
     @staticmethod
     def _normalize_profile(research_profile: str) -> ResearchProfile:
@@ -721,6 +757,205 @@ class ResearchAgent(LLMClient):
             return ResearchResult(source=source_type, url=url, title="", content="", error=str(e))
 
     # ------------------------------------------------------------------
+    # Direct URL crawl (bypass search engine)
+    # ------------------------------------------------------------------
+
+    # Absolute ceiling for subpages (root page is +1 on top of this)
+    _DIRECT_CRAWL_MAX_SUBPAGES: int = 99
+
+    # File extensions that are never worth scraping as content pages
+    _SKIP_EXTENSIONS: frozenset[str] = frozenset(
+        {
+            ".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp", ".ico",
+            ".css", ".js", ".woff", ".woff2", ".ttf", ".otf", ".eot",
+            ".pdf", ".zip", ".tar", ".gz", ".rar", ".exe", ".dmg",
+            ".mp4", ".mp3", ".avi", ".mov", ".wmv", ".flv",
+            ".xml", ".json", ".txt", ".csv",
+        }
+    )
+
+    @staticmethod
+    def _score_subpage_url(url: str, root_url: str) -> int:
+        """Return a priority score for *url* (higher = more valuable).
+
+        Scoring rationale:
+        - Deep, descriptive paths score higher than shallow or paginated ones.
+        - Query-param-only variants of the same path are penalised.
+        - Common navigation dead-ends (login, logout, cart, print) score zero.
+        - Fragment-only differences from root get lowest score.
+        """
+        from urllib.parse import urlparse
+
+        _SKIP_PATH_SEGMENTS: frozenset[str] = frozenset(
+            {
+                "login", "logout", "register", "signup", "sign-up",
+                "cart", "basket", "checkout", "payment", "order",
+                "print", "share", "embed", "feed", "rss",
+                "giris", "cikis", "uye-ol", "kayit", "sepet", "odeme",
+                "search", "ara", "tag", "etiket",
+            }
+        )
+
+        try:
+            parsed = urlparse(url)
+            root_parsed = urlparse(root_url)
+
+            # Fragment-only difference → very low
+            if parsed.path == root_parsed.path and parsed.query == root_parsed.query:
+                return 0
+
+            path = parsed.path.rstrip("/").lower()
+            segments = [s for s in path.split("/") if s]
+
+            # Skip known dead-ends
+            if any(seg in _SKIP_PATH_SEGMENTS for seg in segments):
+                return 0
+
+            score = 10
+
+            # Depth bonus (more segments = more specific content)
+            score += min(len(segments), 5) * 5
+
+            # Penalty for query parameters (paginated, filtered views)
+            if parsed.query:
+                score -= 8
+
+            # Penalty for purely numeric last segment (e.g. /page/2, /urun/12345)
+            last_seg = segments[-1] if segments else ""
+            if last_seg.isdigit():
+                score -= 6
+
+            # Bonus for descriptive slug (letters + hyphens, no digits)
+            import re as _re
+            if last_seg and _re.match(r"^[a-z\-\u00c0-\u024f]+$", last_seg):
+                score += 4
+
+            return max(score, 0)
+        except Exception:
+            return 1
+
+    def _select_subpages(
+        self,
+        raw_links: list[str],
+        root_url: str,
+        max_subpages: int,
+    ) -> list[str]:
+        """Score, deduplicate, and cap *raw_links* to the most valuable subset.
+
+        Strategy:
+        1. Drop media/binary extensions.
+        2. Score each URL by content-value heuristics.
+        3. Deduplicate by normalised path pattern (avoid 50 product-list pages).
+        4. Return up to *max_subpages* URLs, ordered by descending score.
+        """
+        import re as _re
+        from urllib.parse import urlparse
+
+        skip_ext = self._SKIP_EXTENSIONS
+        seen_urls: set[str] = set()
+        # Maps a "pattern key" (path with digits replaced) to count seen
+        pattern_counter: dict[str, int] = {}
+        # Max pages sharing the same path pattern (avoids e.g. 40 product pages)
+        _PATTERN_CAP = 5
+
+        scored: list[tuple[int, str]] = []
+
+        for url in raw_links:
+            url_clean = url.rstrip("/")
+            if not url_clean or url_clean in seen_urls:
+                continue
+            seen_urls.add(url_clean)
+
+            # Drop binary/media extensions
+            lower = url_clean.lower().split("?")[0]
+            if any(lower.endswith(ext) for ext in skip_ext):
+                continue
+
+            score = self._score_subpage_url(url_clean, root_url)
+            if score == 0:
+                continue
+
+            # Pattern deduplication: normalise all digits → "N"
+            try:
+                path = urlparse(url_clean).path
+            except Exception:
+                path = url_clean
+            pattern_key = _re.sub(r"\d+", "N", path)
+            count = pattern_counter.get(pattern_key, 0)
+            if count >= _PATTERN_CAP:
+                continue
+            pattern_counter[pattern_key] = count + 1
+
+            scored.append((score, url_clean))
+
+        # Sort descending by score, then alphabetically for stability
+        scored.sort(key=lambda t: (-t[0], t[1]))
+        return [url for _, url in scored[:max_subpages]]
+
+    async def _crawl_direct_url(
+        self,
+        root_url: str,
+        include_subpages: bool,
+        query: str,
+        deep_mode: bool = False,
+        progress_sink: Optional[Callable[[str], None]] = None,
+        max_subpages: int = _DIRECT_CRAWL_MAX_SUBPAGES,
+    ) -> list[dict]:
+        """Scrape *root_url* directly (no search-engine lookup).
+
+        When *include_subpages* is ``True``, internal links discovered on the
+        root page are scored, deduplicated, and filtered before scraping —
+        up to *max_subpages*.  Returns source-config dicts compatible with
+        ``_scrape_source``.
+        """
+        if progress_sink:
+            progress_sink(self._msg("gathering_data"))
+
+        # -- 1. Scrape root -------------------------------------------------
+        root_result = await self._scrape_source(
+            {"type": "direct", "url": root_url, "title": root_url},
+            query,
+            deep_mode,
+        )
+
+        source_configs: list[dict] = [
+            {"type": "direct", "url": root_url, "title": root_result.title or root_url}
+        ]
+
+        if not include_subpages:
+            return source_configs
+
+        # -- 2. Discover internal links from the root page HTML ------------
+        try:
+            async with WebScraperAsync(timeout=self.timeout_per_source) as scraper:
+                raw = await scraper.scrape(root_url)
+                internal_links: list[str] = [
+                    lnk.get("url", "")
+                    for lnk in raw.links.get("internal", [])
+                    if lnk.get("url", "").startswith("http")
+                ]
+        except Exception as exc:
+            logger.warning("Could not extract internal links from %s: %s", root_url, exc)
+            internal_links = []
+
+        # -- 3. Score and select best subpages ------------------------------
+        selected = self._select_subpages(
+            raw_links=[lnk for lnk in internal_links if lnk != root_url],
+            root_url=root_url,
+            max_subpages=max_subpages,
+        )
+
+        if progress_sink and selected:
+            progress_sink(
+                self._msg("sources_to_check", count=len(selected) + 1)
+            )
+
+        for lnk in selected:
+            source_configs.append({"type": "subpage", "url": lnk, "title": lnk})
+
+        return source_configs
+
+    # ------------------------------------------------------------------
     # Research planning
     # ------------------------------------------------------------------
 
@@ -1239,6 +1474,119 @@ class ResearchAgent(LLMClient):
             }
 
     # ------------------------------------------------------------------
+    # Direct-URL research path (no search engine)
+    # ------------------------------------------------------------------
+
+    async def _research_direct_url(
+        self,
+        query: str,
+        direct_urls: list[str],
+        max_sources: Optional[int] = None,
+        deep_mode: bool = False,
+        no_synthesis: bool = False,
+        research_profile: ResearchProfile = "technical",
+        progress_sink: Optional[Callable[[str], None]] = None,
+    ) -> ResearchReport:
+        """Scrape one or more explicit URLs instead of running a search.
+
+        Called automatically from :meth:`research` when the query contains
+        an ``http(s)://`` URL.  Subpages are discovered and crawled when the
+        query contains subpage-crawl intent keywords (e.g. "alt sayfalarını
+        da tara" / "crawl subpages").
+        """
+        include_subpages = has_subpage_crawl_intent(query)
+        root_url = direct_urls[0]
+
+        if progress_sink:
+            progress_sink(self._msg("gathering_data"))
+
+        # Max subpages: honour explicit max_sources from caller if supplied
+        subpage_budget = (max_sources - 1) if max_sources and max_sources > 1 else self._DIRECT_CRAWL_MAX_SUBPAGES
+
+        sources_to_check = await self._crawl_direct_url(
+            root_url=root_url,
+            include_subpages=include_subpages,
+            query=query,
+            deep_mode=deep_mode,
+            progress_sink=progress_sink,
+            max_subpages=subpage_budget,
+        )
+
+        # Also include any additional explicit URLs beyond the first
+        root_urls_seen = {root_url}
+        for extra_url in direct_urls[1:]:
+            if extra_url not in root_urls_seen:
+                sources_to_check.append({"type": "direct", "url": extra_url, "title": extra_url})
+                root_urls_seen.add(extra_url)
+
+        num_sources = len(sources_to_check)
+
+        if progress_sink:
+            progress_sink(self._msg("sources_to_check", count=num_sources))
+
+        semaphore = asyncio.Semaphore(self.max_concurrent)
+
+        async def scrape_with_limit(source_config: dict) -> ResearchResult:
+            async with semaphore:
+                return await self._scrape_source(source_config, query, deep_mode)
+
+        tasks = [scrape_with_limit(s) for s in sources_to_check]
+        raw_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        research_results: list[ResearchResult] = []
+        successful = 0
+
+        for i, result in enumerate(raw_results):
+            if isinstance(result, BaseException):
+                logger.error("Direct-URL source failed: %s — %s", sources_to_check[i]["url"], result)
+                research_results.append(
+                    ResearchResult(
+                        source=sources_to_check[i]["type"],
+                        url=sources_to_check[i]["url"],
+                        title="",
+                        content="",
+                        error=str(result),
+                    )
+                )
+            else:
+                research_results.append(result)
+                successful += 1
+
+        if progress_sink:
+            total_chars = sum(len(r.content) for r in research_results if not r.error)
+            progress_sink(self._msg("results_summary", successful=successful, total=num_sources))
+            progress_sink(self._msg("total_content", chars=f"{total_chars:,}"))
+            progress_sink(self._msg("synthesizing"))
+
+        if no_synthesis:
+            synthesis: dict = {
+                "summary": "[AI synthesis disabled - showing raw content from sources]",
+                "key_findings": [],
+            }
+        else:
+            synthesis = await self._synthesize_findings(query, research_results, deep_mode, None)
+
+        report = ResearchReport(
+            query=query,
+            sources=research_results,
+            summary=synthesis.get("summary", ""),
+            executive_summary=synthesis.get("executive_summary", ""),
+            key_findings=synthesis.get("key_findings", []),
+            detailed_analysis=synthesis.get("detailed_analysis", ""),
+            recommendations=synthesis.get("recommendations", ""),
+            data_table=synthesis.get("data_table", []),
+            conflicts_uncertainty=synthesis.get("conflicts_uncertainty", []),
+            confidence_level=synthesis.get("confidence_level", "Medium"),
+            confidence_reason=synthesis.get("confidence_reason", ""),
+            sources_checked=num_sources,
+            sources_succeeded=successful,
+            sources_failed=num_sources - successful,
+        )
+
+        await self._close_http_client()
+        return report
+
+    # ------------------------------------------------------------------
     # Public API — non-streaming
     # ------------------------------------------------------------------
 
@@ -1248,7 +1596,7 @@ class ResearchAgent(LLMClient):
         max_sources: Optional[int] = None,
         deep_mode: bool = False,
         no_synthesis: bool = False,
-        research_profile: ResearchProfile = "technical",
+        research_profile: ResearchProfileInput = "auto",
         progress_sink: Optional[Callable[[str], None]] = None,
     ) -> ResearchReport:
         """Perform comprehensive research on *query*.
@@ -1264,7 +1612,10 @@ class ResearchAgent(LLMClient):
             :class:`ResearchReport` populated with findings.
         """
         self._query_lang = detect_query_language(query)
-        selected_profile = self._normalize_profile(research_profile)
+        if research_profile == "auto":
+            selected_profile = self._detect_profile_from_query(query)
+        else:
+            selected_profile = self._normalize_profile(research_profile)
 
         if progress_sink:
             progress_sink(self._msg("starting_research", query=query))
@@ -1273,6 +1624,22 @@ class ResearchAgent(LLMClient):
         logger.info(f"Starting research on: {query}")
 
         cleaned_query = clean_query_text(query)
+
+        # ---- Direct-URL fast path: bypass search engine entirely --------
+        # When the user supplies a URL in the query (e.g.
+        # "https://example.com/ bu siteyi ve alt sayfalarını tara"),
+        # skip DDG/Google search and scrape the target directly.
+        direct_urls = extract_direct_urls(query)
+        if direct_urls:
+            return await self._research_direct_url(
+                query=query,
+                direct_urls=direct_urls,
+                max_sources=max_sources,
+                deep_mode=deep_mode,
+                no_synthesis=no_synthesis,
+                research_profile=selected_profile,
+                progress_sink=progress_sink,
+            )
 
         # Fire query-rewrite and early search concurrently
         rewrite_task = asyncio.create_task(self._prepare_search_queries(query, deep_mode=deep_mode))
@@ -1457,18 +1824,127 @@ class ResearchAgent(LLMClient):
     # Public API — streaming (SSE)
     # ------------------------------------------------------------------
 
+    async def _research_stream_direct_url(
+        self,
+        query: str,
+        direct_urls: list[str],
+        max_sources: Optional[int] = None,
+        deep_mode: bool = False,
+        research_profile: ResearchProfile = "technical",
+    ):
+        """SSE generator for the direct-URL fast path."""
+        import json as _json
+
+        include_subpages = has_subpage_crawl_intent(query)
+        root_url = direct_urls[0]
+        subpage_budget = (max_sources - 1) if max_sources and max_sources > 1 else self._DIRECT_CRAWL_MAX_SUBPAGES
+
+        yield f"data: {_json.dumps({'type': 'status', 'message': self._msg('gathering_data')})}\n\n"
+
+        sources_to_check = await self._crawl_direct_url(
+            root_url=root_url,
+            include_subpages=include_subpages,
+            query=query,
+            deep_mode=deep_mode,
+            max_subpages=subpage_budget,
+        )
+
+        # Additional explicit URLs beyond the first
+        root_urls_seen = {root_url}
+        for extra_url in direct_urls[1:]:
+            if extra_url not in root_urls_seen:
+                sources_to_check.append({"type": "direct", "url": extra_url, "title": extra_url})
+                root_urls_seen.add(extra_url)
+
+        num_sources = len(sources_to_check)
+        yield f"data: {_json.dumps({'type': 'status', 'message': self._msg('sources_to_check', count=num_sources)})}\n\n"
+
+        for sc in sources_to_check:
+            yield f"data: {_json.dumps({'type': 'source_start', 'url': sc['url'], 'title': sc.get('title', sc['url'])})}\n\n"
+
+        semaphore = asyncio.Semaphore(self.max_concurrent)
+
+        async def scrape_single(source_config: dict) -> dict:
+            try:
+                async with semaphore:
+                    result = await self._scrape_source(source_config, query, deep_mode)
+                return {"config": source_config, "result": result, "error": None}
+            except Exception as exc:
+                return {"config": source_config, "result": None, "error": str(exc)}
+
+        scrape_tasks = [scrape_single(s) for s in sources_to_check]
+        research_results: list[ResearchResult] = []
+        successful = 0
+
+        for coro in asyncio.as_completed(scrape_tasks):
+            scraped = await coro
+            sc = scraped["config"]
+            url = sc["url"]
+            title = sc.get("title", url)
+            if scraped["error"]:
+                yield f"data: {_json.dumps({'type': 'source_complete', 'url': url, 'title': title, 'success': False})}\n\n"
+                research_results.append(
+                    ResearchResult(source=sc["type"], url=url, title="", content="", error=scraped["error"])
+                )
+            else:
+                res = scraped["result"]
+                yield f"data: {_json.dumps({'type': 'source_complete', 'url': url, 'title': res.title or title, 'success': True})}\n\n"
+                research_results.append(res)
+                successful += 1
+
+        total_chars = sum(len(r.content) for r in research_results if not r.error)
+        yield f"data: {_json.dumps({'type': 'status', 'message': self._msg('gathered_chars', chars=f'{total_chars:,}', successful=successful, total=num_sources)})}\n\n"
+        yield f"data: {_json.dumps({'type': 'status', 'message': self._msg('synthesizing')})}\n\n"
+
+        synthesis = await self._synthesize_findings(query, research_results, deep_mode, None)
+
+        report_dict = {
+            "query": query,
+            "executive_summary": synthesis.get("executive_summary", ""),
+            "summary": synthesis.get("summary", ""),
+            "key_findings": synthesis.get("key_findings", []),
+            "data_table": synthesis.get("data_table", []),
+            "conflicts_uncertainty": synthesis.get("conflicts_uncertainty", []),
+            "confidence_level": synthesis.get("confidence_level", "Medium"),
+            "confidence_reason": synthesis.get("confidence_reason", ""),
+            "detailed_analysis": synthesis.get("detailed_analysis", ""),
+            "recommendations": synthesis.get("recommendations", ""),
+            "sources": [
+                {
+                    "source": s.source,
+                    "url": s.url,
+                    "title": s.title,
+                    "content": s.content,
+                    "relevance_score": s.relevance_score,
+                    "source_tier": s.source_tier,
+                    "publication_date": s.publication_date,
+                    "error": s.error,
+                }
+                for s in research_results
+            ],
+            "sources_checked": num_sources,
+            "sources_succeeded": successful,
+            "sources_failed": num_sources - successful,
+            "cited_sources": synthesis.get("cited_sources", []),
+        }
+
+        yield f"data: {_json.dumps({'type': 'result', 'data': report_dict})}\n\n"
+
     async def research_stream(
         self,
         query: str,
         max_sources: Optional[int] = None,
         deep_mode: bool = False,
-        research_profile: ResearchProfile = "technical",
+        research_profile: ResearchProfileInput = "auto",
     ):
         """Yield Server-Sent Event strings while researching *query*."""
         import json as _json
 
         self._query_lang = detect_query_language(query)
-        selected_profile = self._normalize_profile(research_profile)
+        if research_profile == "auto":
+            selected_profile = self._detect_profile_from_query(query)
+        else:
+            selected_profile = self._normalize_profile(research_profile)
 
         yield (
             f"data: {_json.dumps({'type': 'status', 'message': self._msg('starting_research', query=query)})}\n\n"
@@ -1479,6 +1955,20 @@ class ResearchAgent(LLMClient):
 
         try:
             cleaned_query = clean_query_text(query)
+
+            # ---- Direct-URL fast path ----
+            direct_urls = extract_direct_urls(query)
+            if direct_urls:
+                async for event in self._research_stream_direct_url(
+                    query=query,
+                    direct_urls=direct_urls,
+                    max_sources=max_sources,
+                    deep_mode=deep_mode,
+                    research_profile=selected_profile,
+                ):
+                    yield event
+                return
+
             rewrite_task = asyncio.create_task(
                 self._prepare_search_queries(query, deep_mode=deep_mode)
             )

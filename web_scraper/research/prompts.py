@@ -157,6 +157,55 @@ _TABLE_KEYWORDS: frozenset[str] = frozenset(
     }
 )
 
+# Keywords that imply structured comparison / benchmark data → auto-trigger table
+_BENCHMARK_KEYWORDS: frozenset[str] = frozenset(
+    {
+        # English
+        "benchmark",
+        "benchmarks",
+        "benchmark results",
+        "benchmark scores",
+        "comparison",
+        "compare",
+        "vs",
+        "versus",
+        "score",
+        "scores",
+        "ranking",
+        "rankings",
+        "leaderboard",
+        "performance results",
+        "test results",
+        "evaluation",
+        "evals",
+        "accuracy",
+        "metrics",
+        "specs",
+        "specifications",
+        "pricing",
+        "price comparison",
+        "speed comparison",
+        "model comparison",
+        # Turkish
+        "benchmark sonuçları",
+        "sonuçları",
+        "sonuclari",
+        "karşılaştırma",
+        "karsilastirma",
+        "kıyaslama",
+        "kiyaslama",
+        "skor",
+        "skorlar",
+        "puan",
+        "puanlar",
+        "sıralama",
+        "siralama",
+        "performans sonuçları",
+        "özellik karşılaştırması",
+        "fiyat karşılaştırması",
+    }
+)
+
 _CODE_QUERY_SOURCE_KEYWORDS: frozenset[str] = frozenset(
     {
         "code",
@@ -446,23 +495,41 @@ def build_synthesis_prompt(
     )
 
     # Table format block
-    table_requested = any(kw in query.lower() for kw in _TABLE_KEYWORDS)
-    table_format_block = (
-        "\n━━━ TABLE FORMAT EXPLICITLY REQUESTED ━━━\n"
-        "The user asked for TABULAR output. The following rules override defaults:\n"
-        "1. Populating data_table is MANDATORY — returning [] is FORBIDDEN.\n"
-        "2. Include one row per meaningful unit "
-        "(one row per day for weather, one row per item for lists, etc.).\n"
-        "3. For time-series / weather data use: "
-        'metric = date or period label (e.g. "Pazartesi 3 Mart"), '
-        "value = all relevant metrics pipe-separated "
-        '(e.g. "Yüksek: 2°C | Düşük: -5°C | Koşullar: Karlı | Rüzgar: 15 km/h K"), '
-        "source = weather/data source name, date = ISO date.\n"
-        "4. Cover ALL requested rows (e.g. all 10 days for a 10-day forecast).\n"
-        "5. Continue to answer in executive_summary and key_findings as usual.\n"
-        if table_requested
-        else ""
-    )
+    query_lower = query.lower()
+    table_requested = any(kw in query_lower for kw in _TABLE_KEYWORDS)
+    benchmark_detected = any(kw in query_lower for kw in _BENCHMARK_KEYWORDS)
+
+    if table_requested:
+        table_format_block = (
+            "\n━━━ TABLE FORMAT EXPLICITLY REQUESTED ━━━\n"
+            "The user asked for TABULAR output. The following rules override defaults:\n"
+            "1. Populating data_table is MANDATORY — returning [] is FORBIDDEN.\n"
+            "2. Include one row per meaningful unit "
+            "(one row per day for weather, one row per item for lists, etc.).\n"
+            "3. For time-series / weather data use: "
+            'metric = date or period label (e.g. "Pazartesi 3 Mart"), '
+            "value = all relevant metrics pipe-separated "
+            '(e.g. "Yüksek: 2°C | Düşük: -5°C | Koşullar: Karlı | Rüzgar: 15 km/h K"), '
+            "source = weather/data source name, date = ISO date.\n"
+            "4. Cover ALL requested rows (e.g. all 10 days for a 10-day forecast).\n"
+            "5. Continue to answer in executive_summary and key_findings as usual.\n"
+        )
+    elif benchmark_detected:
+        table_format_block = (
+            "\n━━━ BENCHMARK / COMPARISON DATA DETECTED ━━━\n"
+            "The query involves benchmarks, scores, comparisons, or structured metrics. "
+            "You MUST present key data in tabular form:\n"
+            "1. data_table is MANDATORY — one row per model / product / metric.\n"
+            "2. Use metric = benchmark name (e.g. 'SWE-Bench Pro', 'Terminal-Bench 2.0'), "
+            "value = score/result (e.g. '56.8%'), "
+            "source = source name, date = publication date.\n"
+            "3. In executive_summary, open with a markdown table summarising ALL numeric "
+            "benchmark scores found in the sources (columns: Benchmark | Score | vs Previous | Source).\n"
+            "4. Do NOT bury numbers in prose — put them in the table first, then explain.\n"
+            "5. If comparing multiple models, add one column per model.\n"
+        )
+    else:
+        table_format_block = ""
 
     # Code format block — SOURCE-ONLY policy
     code_query_detected = is_code_query(query)

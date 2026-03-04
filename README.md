@@ -1,7 +1,7 @@
 # Web Research Stack / Web Araştırma Yığını
 
 <div align="center">
-  <video src="./GITHUB-video.mp4" controls="controls" width="100%" style="max-width: 800px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);"></video>
+  <video src="https://github.com/senoldogann/web-research-stack/raw/main/GITHUB-video.mp4" controls="controls" width="100%" style="max-width: 800px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);"></video>
   <br/>
   <em>2-Minute Demonstration / 2 Dakikalık Tanıtım Videosu</em>
 </div>

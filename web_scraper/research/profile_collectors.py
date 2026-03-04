@@ -7,10 +7,10 @@ reuse the existing scraping and ranking pipeline.
 from __future__ import annotations
 
 import re
-import defusedxml.ElementTree as ET  # S314 — safe XML parser (prevents XXE/XML-bomb)
 from typing import Any, Optional
 from urllib.parse import quote_plus
 
+import defusedxml.ElementTree as ET  # S314 — safe XML parser (prevents XXE/XML-bomb)
 import httpx
 
 

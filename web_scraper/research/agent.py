@@ -366,9 +366,9 @@ class ResearchAgent(LLMClient):
             "temporal_scope": None,
         }
 
-        # Skip LLM rewrite in standard mode — only spend the inference time
-        # when deep_mode is active and the extra query variants are worthwhile.
-        if not cleaned_query or not config.research_enable_query_rewrite or not deep_mode:
+        # Run rewrite for both standard and deep modes so standard mode can also
+        # benefit from multi-query retrieval variants.
+        if not cleaned_query or not config.research_enable_query_rewrite:
             return fallback
 
         prompt = build_query_rewrite_prompt(cleaned_query, deep_mode)

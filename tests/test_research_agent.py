@@ -1,6 +1,7 @@
 """Tests for research planning and synthesis behavior."""
 
 import asyncio
+from datetime import datetime
 
 import pytest
 
@@ -128,6 +129,34 @@ def test_normalize_search_queries_dedupes_and_keeps_original(monkeypatch) -> Non
         "OpenAI ajanlari",
         "OpenAI agents latest updates",
     ]
+
+
+@pytest.mark.asyncio
+async def test_prepare_search_queries_generates_variants_in_standard_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = ResearchAgent(model="demo-model", host="http://ollama.local")
+
+    async def fake_call_llm(prompt, timeout, max_tokens=None):
+        return (
+            '{"query_ready": true,'
+            '"normalized_query":"dünyada neler oluyor",'
+            '"search_queries":['
+            '"dünyada neler oluyor",'
+            '"world news now",'
+            '"international current events"'
+            '],'
+            '"rewrite_reason":"standard mode variants",'
+            '"temporal_scope":{"type":"current","resolved_period":null,"reference":"bugün"}}'
+        )
+
+    monkeypatch.setattr(agent, "_call_llm", fake_call_llm)
+
+    result = await agent._prepare_search_queries("Dünyada neler oluyor bugün?", deep_mode=False)
+    current_year = str(datetime.now().year)
+
+    assert len(result["search_queries"]) >= 3
+    assert all(current_year in query for query in result["search_queries"])
 
 
 def test_merge_and_rank_search_results_dedupes_urls_and_rewards_domain_diversity() -> None:

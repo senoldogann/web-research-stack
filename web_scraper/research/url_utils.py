@@ -74,6 +74,14 @@ _KNOWN_TECH_DOMAINS: tuple[str, ...] = (
     "redis.io",
 )
 
+_OFFICIAL_VENDOR_RELEASE_DOMAINS: tuple[str, ...] = (
+    "openai.com",
+    "platform.openai.com",
+    "anthropic.com",
+    "docs.anthropic.com",
+    "support.claude.com",
+)
+
 
 def classify_source_tier(url: str) -> int:
     """Return authority tier 1–5 for *url* (1 = highest, 5 = lowest/unknown).
@@ -90,6 +98,9 @@ def classify_source_tier(url: str) -> int:
         path = parsed.path.lower()
         if hostname.startswith("www."):
             hostname = hostname[4:]
+
+        if any(hostname == d or hostname.endswith(f".{d}") for d in _OFFICIAL_VENDOR_RELEASE_DOMAINS):
+            return 1
 
         for tier, domains in SOURCE_TIERS.items():
             if hostname in domains:

@@ -1,7 +1,7 @@
 """Data models for the research agent."""
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Dict, Optional, Union
 
 
 @dataclass
@@ -38,3 +38,12 @@ class ResearchReport:
     conflicts_uncertainty: list[str] = field(default_factory=list)
     confidence_level: str = "Medium"  # High / Medium / Low
     confidence_reason: str = ""
+    # Mode/intent/retrieval telemetry (backward-compatible, optional)
+    intent_class: Optional[str] = None
+    execution_mode_requested: Optional[str] = None
+    execution_mode_effective: Optional[str] = None
+    authority_tier_counts: Dict[str, int] = field(default_factory=dict)
+    freshness_summary: Dict[str, Optional[Union[int, str]]] = field(default_factory=dict)
+    retrieval_attempts: int = 1
+    evidence_gate_passed: Optional[bool] = None
+    extended_analysis_hidden: bool = False

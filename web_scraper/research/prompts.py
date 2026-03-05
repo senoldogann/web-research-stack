@@ -303,6 +303,119 @@ def build_source_count_decision_prompt(query: str, deep_mode: bool) -> str:
     )
 
 
+def build_lite_query_rewrite_prompt(query: str) -> str:
+    """Build a lightweight prompt for standard mode: only detect temporal scope and normalize.
+
+    Unlike the full rewrite prompt, this does NOT generate multiple search variants.
+    It only:
+    1. Detects temporal scope (current / past / explicit)
+    2. Returns a single normalized query with year appended if scope is "current"
+
+    This is intentionally cheap — one LLM call with minimal output.
+    """
+    today_str = datetime.now().strftime("%B %d, %Y")
+    current_year = datetime.now().year
+
+    return f"""You are a search query optimizer. Your ONLY job is to detect the temporal scope of a query and normalize it for web search.
+
+TODAY'S DATE: {today_str}
+CURRENT YEAR: {current_year}
+
+User query: "{query}"
+
+RULES:
+1. Detect the temporal scope:
+   - "current": no explicit time mentioned, or words like latest/now/recent/today/bugün/güncel/şu an/en son
+   - "past": relative past reference like "last year/geçen yıl/geçen ay/dün"
+   - "explicit": an explicit year or date is in the query (e.g. "2023", "2024")
+
+2. If scope is "current", append {current_year} to the normalized_query UNLESS the query already contains a year.
+
+3. Detect if the query is AMBIGUOUS (open-ended with multiple valid interpretations):
+   - Example: "dünyanın en güçlü insanı" → ambiguous (economic? military? political? physical?)
+   - Example: "en iyi telefon" → ambiguous (budget? camera? performance?)
+   - Example: "Python list sort" → NOT ambiguous (clear technical question)
+   - Example: "Tesla hisse fiyatı" → NOT ambiguous (clear financial question)
+   - Set "is_ambiguous": true ONLY when a single web search cannot satisfy all valid interpretations
+
+4. If ambiguous, set "ambiguous_dimensions": array of 2-4 distinct angles/dimensions the query could mean.
+
+Return ONLY a JSON object:
+{{
+    "normalized_query": "clean search-ready version (with {current_year} appended if scope is current)",
+    "temporal_scope": {{
+        "type": "current|past|explicit",
+        "resolved_period": "e.g. {current_year}, {current_year - 1}, or null if type is current",
+        "reference": "original time expression used by the user, or null"
+    }},
+    "is_ambiguous": false,
+    "ambiguous_dimensions": []
+}}"""
+
+
+def build_ambiguous_query_clarification_prompt(query: str, dimensions: list[str]) -> str:
+    """Build a prompt to generate dimension-specific sub-queries for ambiguous queries.
+
+    When a query like "dünyanın en güçlü insanı" is flagged as ambiguous,
+    this prompt generates targeted search queries for each identified dimension.
+    """
+    today_str = datetime.now().strftime("%B %d, %Y")
+    current_year = datetime.now().year
+    dims_str = "\n".join(f"  - {d}" for d in dimensions)
+
+    return f"""You are a search query generator. The user asked an ambiguous question with multiple valid interpretations.
+
+TODAY'S DATE: {today_str}
+CURRENT YEAR: {current_year}
+
+Original query: "{query}"
+
+Identified interpretations/dimensions:
+{dims_str}
+
+Task: Generate ONE focused, precise web search query for EACH dimension above.
+- Each query must be in the SAME LANGUAGE as the original query.
+- Each query must include {current_year} if the topic is time-sensitive.
+- Each query must be specific enough to retrieve results for THAT dimension only.
+- Keep each query concise (max 10 words).
+
+Return ONLY a JSON object:
+{{
+    "dimension_queries": [
+        {{"dimension": "dimension name", "query": "focused search query for this dimension"}}
+    ]
+}}"""
+
+
+def build_cross_language_variant_prompt(
+    query: str,
+    source_language: str,
+    target_language: str = "English",
+) -> str:
+    """Build a prompt that translates a query into one cross-language variant.
+
+    Used to avoid language lock-in (e.g. Turkish input yielding only Turkish
+    sources) by adding a single high-recall global search query.
+    """
+    return f"""You are a web-search query translator.
+
+Translate the user query into ONE concise, high-retrieval search query in {target_language}.
+
+Source language: {source_language}
+User query: "{query}"
+
+Rules:
+- Preserve entities, names, products, versions, and intent exactly.
+- Do NOT add new facts or assumptions.
+- Keep it concise (max 12 words).
+- Return ONLY JSON.
+
+Return schema:
+{{
+  "target_query": "translated query in {target_language}"
+}}"""
+
+
 def build_query_rewrite_prompt(query: str, deep_mode: bool) -> str:
     """Build the prompt used to convert user input into search-ready queries."""
     depth_hint = (

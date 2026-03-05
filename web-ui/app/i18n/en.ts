@@ -16,9 +16,32 @@ export interface Translations {
     synthesizedIntro: string
     keyFindings: string
     recommendations: string
+    resultMode: string
+    resultModeDeep: string
+    resultModeStandard: string
+    resultAutoFocused: string
+    sourceCoverage: string
+    confidence: string
+    confidenceReason: string
+    confidenceReasonUnavailable: string
+    showExtendedAnalysis: string
+    dataTable: string
+    dataMetric: string
+    dataResult: string
+    dataSource: string
+    dataDate: string
+    evidenceGateFailedTitle: string
+    evidenceGateFailedMessage: string
+    authorityMix: string
+    retries: string
+    freshness: string
+    intentClass: string
+    unknownValue: string
 
     // Deep Mode
     deepMode: string
+    options: string
+    mode: string
 
     // Disclaimer
     aiDisclaimer: string
@@ -64,6 +87,7 @@ export interface Translations {
     researchStatusGatheringData: string
     researchStatusAnalyzingFindings: string
     researchStatusGeneratingQueries: string
+    researchStatusAutoFocused: string
 
     // Research Profile
     researchProfile: string
@@ -71,6 +95,7 @@ export interface Translations {
     profileTechnical: string
     profileNews: string
     profileAcademic: string
+    profileGeneral: string
 
     // Ollama settings
     ollamaBaseUrl: string
@@ -95,8 +120,31 @@ const en: Translations = {
     synthesizedIntro: 'Synthesized breaking developments for comprehensive overview',
     keyFindings: 'Key Findings',
     recommendations: 'Recommendations',
+    resultMode: 'Mode',
+    resultModeDeep: 'Deep',
+    resultModeStandard: 'Standard',
+    resultAutoFocused: 'Auto-focused',
+    sourceCoverage: 'Source Coverage',
+    confidence: 'Confidence',
+    confidenceReason: 'Confidence Reason',
+    confidenceReasonUnavailable: 'No reason provided',
+    showExtendedAnalysis: 'Show extended analysis',
+    dataTable: 'Data',
+    dataMetric: 'Metric',
+    dataResult: 'Result',
+    dataSource: 'Source',
+    dataDate: 'Date',
+    evidenceGateFailedTitle: 'Evidence quality warning',
+    evidenceGateFailedMessage: 'Authoritative/fresh evidence is insufficient. Treat this answer as tentative.',
+    authorityMix: 'Authority Mix',
+    retries: 'Retries',
+    freshness: 'Freshness',
+    intentClass: 'Intent',
+    unknownValue: 'Unknown',
 
     deepMode: 'Deep Mode',
+    options: 'Options',
+    mode: 'Mode',
 
     aiDisclaimer: 'AI may produce inaccurate information. Please verify important claims.',
 
@@ -137,12 +185,14 @@ const en: Translations = {
     researchStatusGatheringData: 'Gathering data from sources...',
     researchStatusAnalyzingFindings: 'Analyzing and synthesizing findings...',
     researchStatusGeneratingQueries: 'Generated {count} search query variants for better retrieval.',
+    researchStatusAutoFocused: 'Deep mode auto-focused for this single-intent query (improved precision).',
 
     researchProfile: 'Profile',
     profileAuto: 'Auto',
     profileTechnical: 'Technical',
     profileNews: 'News',
     profileAcademic: 'Academic',
+    profileGeneral: 'General',
 
     ollamaBaseUrl: 'Ollama Host URL',
     ollamaBaseUrlPlaceholder: 'https://ollama.com  or  http://localhost:11434',

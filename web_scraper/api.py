@@ -271,6 +271,8 @@ def _map_research_payload(
     cached: bool,
     settings: Config,
 ) -> WebResearchResponse:
+    raw_metadata = raw_payload.get("metadata", {})
+    metadata_payload = raw_metadata if isinstance(raw_metadata, dict) else {}
     citations, sources = _map_sources(
         raw_sources=raw_payload.get("sources", []),
         include_source_content=request_payload.include_source_content,
@@ -284,6 +286,22 @@ def _map_research_payload(
         cached=cached,
         trace_id=trace_id,
         response_ms=response_ms,
+        intent_class=metadata_payload.get("intent_class") or raw_payload.get("intent_class"),
+        execution_mode_requested=metadata_payload.get("execution_mode_requested")
+        or raw_payload.get("execution_mode_requested"),
+        execution_mode_effective=metadata_payload.get("execution_mode_effective")
+        or raw_payload.get("execution_mode_effective"),
+        authority_tier_counts=metadata_payload.get("authority_tier_counts")
+        or raw_payload.get("authority_tier_counts")
+        or {},
+        freshness_summary=metadata_payload.get("freshness_summary")
+        or raw_payload.get("freshness_summary")
+        or {},
+        retrieval_attempts=metadata_payload.get("retrieval_attempts")
+        or raw_payload.get("retrieval_attempts"),
+        evidence_gate_passed=metadata_payload.get("evidence_gate_passed")
+        if "evidence_gate_passed" in metadata_payload
+        else raw_payload.get("evidence_gate_passed"),
     )
 
     summary = _coerce_str(
@@ -295,6 +313,7 @@ def _map_research_payload(
         summary=summary,
         key_findings=list(raw_payload.get("key_findings", [])),
         detailed_analysis=_coerce_str(raw_payload.get("detailed_analysis", "")),
+        extended_analysis_hidden=bool(raw_payload.get("extended_analysis_hidden", False)),
         recommendations=_coerce_str(raw_payload.get("recommendations", "")),
         executive_summary=_coerce_str(raw_payload.get("executive_summary", "")),
         data_table=[
@@ -330,6 +349,14 @@ def _map_research_report(
         "conflicts_uncertainty": report.conflicts_uncertainty,
         "confidence_level": report.confidence_level,
         "confidence_reason": report.confidence_reason,
+        "intent_class": report.intent_class,
+        "execution_mode_requested": report.execution_mode_requested,
+        "execution_mode_effective": report.execution_mode_effective,
+        "authority_tier_counts": report.authority_tier_counts,
+        "freshness_summary": report.freshness_summary,
+        "retrieval_attempts": report.retrieval_attempts,
+        "evidence_gate_passed": report.evidence_gate_passed,
+        "extended_analysis_hidden": report.extended_analysis_hidden,
         "sources": [
             {
                 "source": source.source,
@@ -364,6 +391,7 @@ def _map_legacy_response(payload: WebResearchResponse) -> LegacyResearchResponse
         executive_summary=payload.executive_summary,
         key_findings=payload.key_findings,
         detailed_analysis=payload.detailed_analysis,
+        extended_analysis_hidden=payload.extended_analysis_hidden,
         recommendations=payload.recommendations,
         data_table=payload.data_table,
         conflicts_uncertainty=payload.conflicts_uncertainty,
@@ -639,7 +667,19 @@ async def _stream_research(
                 "sources_succeeded": cached_response.metadata.sources_succeeded,
             },
         )
-        yield f"data: {json.dumps({'type': 'status', 'message': 'Serving cached research result.'}, ensure_ascii=False)}\n\n"
+        yield (
+            "data: "
+            + json.dumps(
+                {
+                    "type": "status",
+                    "message": "Serving cached research result.",
+                    "phase": "search",
+                    "code": "CACHE_HIT",
+                },
+                ensure_ascii=False,
+            )
+            + "\n\n"
+        )
         yield f"data: {json.dumps({'type': 'result', 'data': payload_to_send}, ensure_ascii=False)}\n\n"
         return
 

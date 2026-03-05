@@ -35,7 +35,7 @@ export async function POST(request: NextRequest) {
                 query,
                 max_sources: maxSources,
                 deep_mode: deepMode,
-                research_profile: research_profile || 'technical',
+                research_profile: research_profile || 'auto',
                 ollama_api_key: ollamaApiKey || null,
                 ollama_base_url: ollamaBaseUrl || null,
             }),

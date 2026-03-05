@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useRef, useState, useEffect } from 'react'
-import { ArrowUpRight, Sparkles, Square, Settings, Plus } from 'lucide-react'
+import { ArrowUpRight, Sparkles, Square, Settings, Plus, Globe } from 'lucide-react'
 import { useLanguage } from '../contexts/LanguageProvider'
 
 // ── Inline SVG icons for research profiles ──────────────────────────────────
@@ -48,6 +48,10 @@ function IconAcademic({ className }: { className?: string }) {
     )
 }
 
+function IconGeneral({ className }: { className?: string }) {
+    return <Globe className={className} />
+}
+
 // ── Component ────────────────────────────────────────────────────────────────
 
 interface QueryInputProps {
@@ -57,8 +61,8 @@ interface QueryInputProps {
     isLoading: boolean
     deepMode: boolean
     setDeepMode: (val: boolean) => void
-    researchProfile: 'technical' | 'news' | 'academic' | 'auto'
-    setResearchProfile: (val: 'technical' | 'news' | 'academic' | 'auto') => void
+    researchProfile: 'technical' | 'news' | 'academic' | 'general' | 'auto'
+    setResearchProfile: (val: 'technical' | 'news' | 'academic' | 'general' | 'auto') => void
     provider: string
     openaiModel: string
     selectedModel: string
@@ -103,7 +107,7 @@ export default function QueryInput({
     }, [plusOpen])
 
     const profiles: {
-        value: 'technical' | 'news' | 'academic' | 'auto'
+        value: 'technical' | 'news' | 'academic' | 'general' | 'auto'
         label: string
         Icon: ({ className }: { className?: string }) => React.ReactElement
     }[] = [
@@ -111,6 +115,7 @@ export default function QueryInput({
         { value: 'technical', label: t.profileTechnical, Icon: IconTechnical },
         { value: 'news',      label: t.profileNews,      Icon: IconNews },
         { value: 'academic',  label: t.profileAcademic,  Icon: IconAcademic },
+        { value: 'general',   label: t.profileGeneral ?? 'General', Icon: IconGeneral },
     ]
 
     const activeProfile = profiles.find((p) => p.value === researchProfile)!
@@ -191,7 +196,7 @@ export default function QueryInput({
                                 color: 'var(--text-muted)',
                                 borderWidth: '1px', borderStyle: 'solid', borderColor: 'var(--border-subtle)',
                             }}
-                            title="Options"
+                            title={t.options}
                         >
                             <Plus className="w-3 h-3" />
                             {/* Show active profile icon + deep badge as hints */}
@@ -212,7 +217,7 @@ export default function QueryInput({
                                 {/* Deep Mode row */}
                                 <div className="px-2 pt-2 pb-1">
                                     <p className="text-[0.6rem] font-semibold uppercase tracking-widest px-1 pb-1" style={{ color: 'var(--text-faint)' }}>
-                                        Mode
+                                        {t.mode}
                                     </p>
                                     <button
                                         type="button"

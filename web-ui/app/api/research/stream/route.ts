@@ -37,7 +37,7 @@ export async function POST(request: NextRequest) {
                 query,
                 max_sources: maxSources,
                 deep_mode: deepMode,
-                research_profile: research_profile || 'technical',
+                research_profile: research_profile || 'auto',
                 model,
                 provider: provider || 'ollama',
                 openai_api_key: openaiApiKey || null,

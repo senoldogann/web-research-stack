@@ -62,6 +62,23 @@ interface DataTableRow {
     date?: string
 }
 
+interface AuthorityTierCounts {
+    tier1: number
+    tier2: number
+    tier3: number
+    tier4: number
+    tier5: number
+}
+
+interface FreshnessSummary {
+    newest_date?: string
+    newest_year?: number
+    recency_window_days?: number
+}
+
+type ResearchProfile = 'technical' | 'news' | 'academic' | 'general' | 'auto'
+type ResearchDepth = 'deep' | 'standard'
+
 interface ResearchResult {
     query: string
     summary: string
@@ -69,6 +86,7 @@ interface ResearchResult {
     data_table?: DataTableRow[]
     detailed_analysis?: string
     recommendations?: string
+    extended_analysis_hidden?: boolean
     cited_sources?: CitedSource[]
     sources: {
         source: string
@@ -80,6 +98,16 @@ interface ResearchResult {
     }[]
     sources_checked: number
     sources_succeeded: number
+    confidence_level?: string
+    confidence_reason?: string
+    research_depth?: ResearchDepth
+    intent_class?: string
+    execution_mode_requested?: ResearchDepth
+    execution_mode_effective?: ResearchDepth
+    authority_tier_counts?: AuthorityTierCounts
+    freshness_summary?: FreshnessSummary
+    retrieval_attempts?: number
+    evidence_gate_passed?: boolean
 }
 
 interface Message {
@@ -88,6 +116,8 @@ interface Message {
     content: string
     result?: ResearchResult
     statusLogs?: StatusLog[]
+    requestedDeepMode?: boolean
+    requestedProfile?: ResearchProfile
     timestamp: Date
 }
 
@@ -119,6 +149,36 @@ function getNumber(value: unknown, fallback = 0): number {
 
 function getStringArray(value: unknown): string[] {
     return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+}
+
+function getResearchDepth(value: unknown): ResearchDepth | undefined {
+    if (value === 'deep' || value === 'standard') {
+        return value
+    }
+    return undefined
+}
+
+function normalizeAuthorityTierCounts(value: unknown): AuthorityTierCounts | undefined {
+    if (!isRecord(value)) return undefined
+    return {
+        tier1: getNumber(value.tier1),
+        tier2: getNumber(value.tier2),
+        tier3: getNumber(value.tier3),
+        tier4: getNumber(value.tier4),
+        tier5: getNumber(value.tier5),
+    }
+}
+
+function normalizeFreshnessSummary(value: unknown): FreshnessSummary | undefined {
+    if (!isRecord(value)) return undefined
+    const newestDate = getString(value.newest_date)
+    const newestYear = getNumber(value.newest_year, NaN)
+    const recencyWindow = getNumber(value.recency_window_days, NaN)
+    return {
+        newest_date: newestDate || undefined,
+        newest_year: Number.isFinite(newestYear) ? newestYear : undefined,
+        recency_window_days: Number.isFinite(recencyWindow) ? recencyWindow : undefined,
+    }
 }
 
 function faviconUrl(url: string): string {
@@ -217,6 +277,12 @@ function normalizeResearchResult(data: unknown): ResearchResult {
     const payload = isRecord(data) ? data : {}
     const metadata = isRecord(payload.metadata) ? payload.metadata : {}
     const rawSources = Array.isArray(payload.sources) ? payload.sources : []
+    const executionModeEffective = getResearchDepth(metadata.execution_mode_effective) || getResearchDepth(payload.execution_mode_effective)
+    const executionModeRequested = getResearchDepth(metadata.execution_mode_requested) || getResearchDepth(payload.execution_mode_requested)
+    const researchDepth = executionModeEffective || getResearchDepth(payload.research_depth) || getResearchDepth(metadata.research_depth)
+    const authorityTierCounts = normalizeAuthorityTierCounts(metadata.authority_tier_counts || payload.authority_tier_counts)
+    const freshnessSummary = normalizeFreshnessSummary(metadata.freshness_summary || payload.freshness_summary)
+    const rawRetries = getNumber(metadata.retrieval_attempts, getNumber(payload.retrieval_attempts, NaN))
 
     return {
         query: getString(payload.query),
@@ -234,6 +300,7 @@ function normalizeResearchResult(data: unknown): ResearchResult {
                 .filter(row => row.metric && row.value)
             : undefined,
         detailed_analysis: getString(payload.detailed_analysis),
+        extended_analysis_hidden: Boolean(payload.extended_analysis_hidden),
         recommendations: getString(payload.recommendations),
         cited_sources: Array.isArray(payload.cited_sources)
             ? payload.cited_sources
@@ -265,6 +332,19 @@ function normalizeResearchResult(data: unknown): ResearchResult {
                 rawSources.filter((source) => !isRecord(source) || !source.error).length
             )
         ),
+        confidence_level: getString(payload.confidence_level) || undefined,
+        confidence_reason: getString(payload.confidence_reason) || undefined,
+        research_depth: researchDepth,
+        intent_class: getString(metadata.intent_class) || getString(payload.intent_class) || undefined,
+        execution_mode_requested: executionModeRequested,
+        execution_mode_effective: executionModeEffective,
+        authority_tier_counts: authorityTierCounts,
+        freshness_summary: freshnessSummary,
+        retrieval_attempts: Number.isFinite(rawRetries) ? rawRetries : undefined,
+        evidence_gate_passed:
+            typeof metadata.evidence_gate_passed === 'boolean'
+                ? metadata.evidence_gate_passed
+                : (typeof payload.evidence_gate_passed === 'boolean' ? payload.evidence_gate_passed : undefined),
     }
 }
 
@@ -273,6 +353,18 @@ interface StatusLog {
     message: string
     type: 'info' | 'search' | 'success' | 'process'
     timestamp: Date
+    phase?: string
+    code?: string
+}
+
+function getDepthFromStatusLogs(statusLogs: StatusLog[]): ResearchDepth | undefined {
+    for (const log of statusLogs) {
+        const match = log.message.match(/(?:depth|derinlik)\s*:\s*(deep|standard)/i)
+        if (match?.[1] === 'deep' || match?.[1] === 'standard') {
+            return match[1]
+        }
+    }
+    return undefined
 }
 
 const CopyButton = ({ text }: { text: string }) => {
@@ -383,7 +475,7 @@ export default function Home() {
     const [statusLogs, setStatusLogs] = useState<StatusLog[]>([])
     const [models, setModels] = useState<string[]>([])
     const [deepMode, setDeepMode] = useState(false)
-    const [researchProfile, setResearchProfile] = useState<'technical' | 'news' | 'academic' | 'auto'>('auto')
+    const [researchProfile, setResearchProfile] = useState<ResearchProfile>('auto')
     const [abortController, setAbortController] = useState<AbortController | null>(null)
     const [activeSources, setActiveSources] = useState<SourceStatus[]>([])
 
@@ -416,6 +508,9 @@ export default function Home() {
         if (lowerMsg.includes('search query variants')) {
             const countMatch = message.match(/generated\s+(\d+)/i);
             return t.researchStatusGeneratingQueries.replace('{count}', countMatch?.[1] || '0');
+        }
+        if (lowerMsg.includes('auto-focused') || lowerMsg.includes('auto focused')) {
+            return t.researchStatusAutoFocused;
         }
         
         return message; // Return original if no match
@@ -509,6 +604,8 @@ export default function Home() {
             id: crypto.randomUUID(),
             type: 'loading',
             content: '',
+            requestedDeepMode: deepMode,
+            requestedProfile: researchProfile,
             timestamp: new Date(),
         }
 
@@ -590,15 +687,17 @@ export default function Home() {
                                         if (currentStatusLogs.length > 0 && currentStatusLogs[currentStatusLogs.length - 1].message === parsed.message) continue;
 
                                         let type: StatusLog['type'] = 'info';
-                                        if (parsed.message.toLowerCase().includes('search')) type = 'search';
+                                        if (parsed.phase === 'search' || parsed.message.toLowerCase().includes('search')) type = 'search';
                                         if (parsed.message.toLowerCase().includes('completed') || parsed.message.toLowerCase().includes('finished')) type = 'success';
-                                        if (parsed.message.toLowerCase().includes('analysing') || parsed.message.toLowerCase().includes('selecting')) type = 'process';
+                                        if (parsed.phase === 'planning' || parsed.phase === 'synth' || parsed.message.toLowerCase().includes('analysing') || parsed.message.toLowerCase().includes('selecting')) type = 'process';
 
                                         currentStatusLogs = [...currentStatusLogs, {
                                             id: crypto.randomUUID(),
                                             message: translateStatusMessage(parsed.message),
                                             type,
-                                            timestamp: new Date()
+                                            timestamp: new Date(),
+                                            phase: typeof parsed.phase === 'string' ? parsed.phase : undefined,
+                                            code: typeof parsed.code === 'string' ? parsed.code : undefined,
                                         }];
                                         setStatusLogs(currentStatusLogs);
                                         scrollToBottom()
@@ -840,7 +939,13 @@ export default function Home() {
                                                     />
                                                 )}
                                                 {message.result ? (
-                                                    <ResearchResultCard result={message.result} markdownComponents={themedMarkdownComponents} />
+                                                    <ResearchResultCard
+                                                        result={message.result}
+                                                        statusLogs={message.statusLogs || []}
+                                                        requestedDeepMode={message.requestedDeepMode}
+                                                        requestedProfile={message.requestedProfile}
+                                                        markdownComponents={themedMarkdownComponents}
+                                                    />
                                                 ) : (
                                                     <div className="prose max-w-none font-serif prose-p:text-[1.05rem]" style={{ color: 'var(--text-secondary)' }}>
                                                         <ReactMarkdown remarkPlugins={[remarkGfm]} components={themedMarkdownComponents}>
@@ -1129,8 +1234,54 @@ function LoadingState({ sources, statusLogs, isCompleted }: { sources: SourceSta
     );
 }
 
-function ResearchResultCard({ result, markdownComponents: mdComponents }: { result: ResearchResult; markdownComponents: Components }) {
+function ResearchResultCard({
+    result,
+    statusLogs,
+    requestedDeepMode,
+    requestedProfile,
+    markdownComponents: mdComponents,
+}: {
+    result: ResearchResult
+    statusLogs: StatusLog[]
+    requestedDeepMode?: boolean
+    requestedProfile?: ResearchProfile
+    markdownComponents: Components
+}) {
     const { t } = useLanguage()
+    const resolvedDepth =
+        result.execution_mode_effective ||
+        result.research_depth ||
+        getDepthFromStatusLogs(statusLogs) ||
+        (requestedDeepMode ? 'deep' : 'standard')
+    const isDeepMode = resolvedDepth === 'deep'
+    const isAutoFocused = requestedDeepMode === true && resolvedDepth === 'standard'
+    const retries =
+        typeof result.retrieval_attempts === 'number' && Number.isFinite(result.retrieval_attempts)
+            ? result.retrieval_attempts
+            : undefined
+    const authorityMix = result.authority_tier_counts
+        ? `T1:${result.authority_tier_counts.tier1} T2:${result.authority_tier_counts.tier2} T3:${result.authority_tier_counts.tier3} T4:${result.authority_tier_counts.tier4} T5:${result.authority_tier_counts.tier5}`
+        : t.unknownValue
+    const freshnessLabel = result.freshness_summary?.newest_date
+        ? `${result.freshness_summary.newest_date}${typeof result.freshness_summary.recency_window_days === 'number' ? ` (${result.freshness_summary.recency_window_days}d)` : ''}`
+        : t.unknownValue
+
+    const profileLabel = (() => {
+        switch (requestedProfile) {
+            case 'technical':
+                return t.profileTechnical
+            case 'news':
+                return t.profileNews
+            case 'academic':
+                return t.profileAcademic
+            case 'general':
+                return t.profileGeneral
+            case 'auto':
+                return t.profileAuto
+            default:
+                return null
+        }
+    })()
 
     const citedComponents = useMemo((): Components => {
         const cited = result.cited_sources ?? []
@@ -1149,8 +1300,115 @@ function ResearchResultCard({ result, markdownComponents: mdComponents }: { resu
         }
     }, [result.cited_sources, mdComponents])
 
+    const extendedInsights = (
+        <>
+            {result.detailed_analysis && (
+                <div className="pt-6 prose max-w-none prose-p:text-[1.08rem]" style={{ borderTop: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>
+                    <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={citedComponents}>
+                        {cleanMarkdown(result.detailed_analysis)}
+                    </ReactMarkdown>
+                </div>
+            )}
+
+            {result.recommendations && (
+                <div className="pt-6" style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                    <p className="text-[0.7rem] font-sans font-semibold tracking-widest uppercase mb-4" style={{ color: 'var(--accent-muted)' }}>
+                        {t.recommendations}
+                    </p>
+                    <div className="prose max-w-none prose-p:text-[1.02rem]" style={{ color: 'var(--text-secondary)' }}>
+                        <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={citedComponents}>
+                            {cleanMarkdown(result.recommendations)}
+                        </ReactMarkdown>
+                    </div>
+                </div>
+            )}
+        </>
+    )
+
     return (
         <div className="w-full font-serif space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-500">
+            <div className="flex flex-wrap items-center gap-2">
+                <span
+                    className="inline-flex items-center rounded-full px-3 py-1 text-[0.68rem] font-semibold uppercase tracking-widest font-sans"
+                    style={{ color: 'var(--accent)', backgroundColor: 'var(--accent-bg)', border: '1px solid var(--accent-border)' }}
+                >
+                    {t.resultMode}: {isDeepMode ? t.resultModeDeep : t.resultModeStandard}
+                </span>
+                {isAutoFocused && (
+                    <span
+                        className="inline-flex items-center rounded-full px-3 py-1 text-[0.68rem] font-semibold uppercase tracking-widest font-sans"
+                        style={{ color: 'var(--text-secondary)', backgroundColor: 'var(--surface-hover)', border: '1px solid var(--border-subtle)' }}
+                    >
+                        {t.resultAutoFocused}
+                    </span>
+                )}
+                {profileLabel && (
+                    <span
+                        className="inline-flex items-center rounded-full px-3 py-1 text-[0.68rem] font-semibold uppercase tracking-widest font-sans"
+                        style={{ color: 'var(--text-muted)', backgroundColor: 'var(--surface-hover)', border: '1px solid var(--border-subtle)' }}
+                    >
+                        {t.researchProfile}: {profileLabel}
+                    </span>
+                )}
+                {result.intent_class && (
+                    <span
+                        className="inline-flex items-center rounded-full px-3 py-1 text-[0.68rem] font-semibold uppercase tracking-widest font-sans"
+                        style={{ color: 'var(--text-muted)', backgroundColor: 'var(--surface-hover)', border: '1px solid var(--border-subtle)' }}
+                    >
+                        {t.intentClass}: {result.intent_class.replace(/_/g, ' ')}
+                    </span>
+                )}
+            </div>
+
+            {result.evidence_gate_passed === false && (
+                <div className="rounded-xl p-4 font-sans" style={{ backgroundColor: 'var(--surface-hover)', border: '1px solid var(--border-subtle)' }}>
+                    <p className="text-[0.72rem] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-primary)' }}>
+                        {t.evidenceGateFailedTitle}
+                    </p>
+                    <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>
+                        {t.evidenceGateFailedMessage}
+                    </p>
+                </div>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 rounded-xl p-3 font-sans" style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)' }}>
+                <div className="rounded-lg px-3 py-2" style={{ backgroundColor: 'var(--surface-hover)' }}>
+                    <p className="text-[0.62rem] uppercase tracking-widest font-semibold" style={{ color: 'var(--text-faint)' }}>
+                        {t.sourceCoverage}
+                    </p>
+                    <p className="text-sm mt-1" style={{ color: 'var(--text-primary)' }}>
+                        {result.sources_succeeded}/{result.sources_checked}
+                    </p>
+                </div>
+                <div className="rounded-lg px-3 py-2" style={{ backgroundColor: 'var(--surface-hover)' }}>
+                    <p className="text-[0.62rem] uppercase tracking-widest font-semibold" style={{ color: 'var(--text-faint)' }}>
+                        {t.confidence}
+                    </p>
+                    <p className="text-sm mt-1" style={{ color: 'var(--text-primary)' }}>
+                        {result.confidence_level || 'Medium'}
+                    </p>
+                </div>
+                <div className="rounded-lg px-3 py-2" style={{ backgroundColor: 'var(--surface-hover)' }}>
+                    <p className="text-[0.62rem] uppercase tracking-widest font-semibold" style={{ color: 'var(--text-faint)' }}>
+                        {t.confidenceReason}
+                    </p>
+                    <p className="text-sm mt-1 line-clamp-2" style={{ color: 'var(--text-secondary)' }}>
+                        {result.confidence_reason || t.confidenceReasonUnavailable}
+                    </p>
+                </div>
+                <div className="rounded-lg px-3 py-2" style={{ backgroundColor: 'var(--surface-hover)' }}>
+                    <p className="text-[0.62rem] uppercase tracking-widest font-semibold" style={{ color: 'var(--text-faint)' }}>
+                        {t.authorityMix}
+                    </p>
+                    <p className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
+                        {authorityMix}
+                    </p>
+                    <p className="text-[0.68rem] mt-1" style={{ color: 'var(--text-faint)' }}>
+                        {t.retries}: {retries ?? t.unknownValue} · {t.freshness}: {freshnessLabel}
+                    </p>
+                </div>
+            </div>
+
             {/* Header intro */}
             <p className="text-sm font-sans flex items-center gap-1.5 ml-1" style={{ color: 'var(--text-muted)' }}>
                 {t.synthesizedIntro} <span style={{ opacity: 0.5 }}>›</span>
@@ -1167,16 +1425,16 @@ function ResearchResultCard({ result, markdownComponents: mdComponents }: { resu
             {result.data_table && result.data_table.length > 0 && (
                 <div className="pt-6" style={{ borderTop: '1px solid var(--border-subtle)' }}>
                     <p className="text-[0.7rem] font-sans font-semibold tracking-widest uppercase mb-4" style={{ color: 'var(--accent-muted)' }}>
-                        Veriler
+                        {t.dataTable}
                     </p>
                     <div className="overflow-x-auto rounded-lg" style={{ border: '1px solid var(--border)' }}>
                         <table className="w-full text-left border-collapse">
                             <thead>
                                 <tr style={{ backgroundColor: 'var(--bg-surface)', borderBottom: '2px solid var(--border)' }}>
-                                    <th className="px-5 py-3 text-[0.78rem] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-primary)' }}>Metrik</th>
-                                    <th className="px-5 py-3 text-[0.78rem] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-primary)' }}>Sonuç</th>
-                                    {result.data_table.some(r => r.source) && <th className="px-5 py-3 text-[0.78rem] font-semibold uppercase tracking-wider hidden sm:table-cell" style={{ color: 'var(--text-primary)' }}>Kaynak</th>}
-                                    {result.data_table.some(r => r.date) && <th className="px-5 py-3 text-[0.78rem] font-semibold uppercase tracking-wider hidden sm:table-cell" style={{ color: 'var(--text-primary)' }}>Tarih</th>}
+                                    <th className="px-5 py-3 text-[0.78rem] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-primary)' }}>{t.dataMetric}</th>
+                                    <th className="px-5 py-3 text-[0.78rem] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-primary)' }}>{t.dataResult}</th>
+                                    {result.data_table.some(r => r.source) && <th className="px-5 py-3 text-[0.78rem] font-semibold uppercase tracking-wider hidden sm:table-cell" style={{ color: 'var(--text-primary)' }}>{t.dataSource}</th>}
+                                    {result.data_table.some(r => r.date) && <th className="px-5 py-3 text-[0.78rem] font-semibold uppercase tracking-wider hidden sm:table-cell" style={{ color: 'var(--text-primary)' }}>{t.dataDate}</th>}
                                 </tr>
                             </thead>
                             <tbody>
@@ -1214,27 +1472,19 @@ function ResearchResultCard({ result, markdownComponents: mdComponents }: { resu
                 </div>
             )}
 
-            {/* Detailed analysis */}
-            {result.detailed_analysis && (
-                <div className="pt-6 prose max-w-none prose-p:text-[1.08rem]" style={{ borderTop: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>
-                    <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={citedComponents}>
-                        {cleanMarkdown(result.detailed_analysis)}
-                    </ReactMarkdown>
-                </div>
-            )}
-
-            {/* Recommendations */}
-            {result.recommendations && (
-                <div className="pt-6" style={{ borderTop: '1px solid var(--border-subtle)' }}>
-                    <p className="text-[0.7rem] font-sans font-semibold tracking-widest uppercase mb-4" style={{ color: 'var(--accent-muted)' }}>
-                        {t.recommendations}
-                    </p>
-                    <div className="prose max-w-none prose-p:text-[1.02rem]" style={{ color: 'var(--text-secondary)' }}>
-                        <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={citedComponents}>
-                            {cleanMarkdown(result.recommendations)}
-                        </ReactMarkdown>
+            {!result.extended_analysis_hidden && (result.detailed_analysis || result.recommendations) && (
+                isDeepMode ? (
+                    extendedInsights
+                ) : (
+                    <div className="pt-6" style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                        <details className="rounded-xl p-4 font-sans" style={{ backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)' }}>
+                            <summary className="cursor-pointer text-[0.78rem] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>
+                                {t.showExtendedAnalysis}
+                            </summary>
+                            <div className="pt-2">{extendedInsights}</div>
+                        </details>
                     </div>
-                </div>
+                )
             )}
         </div>
     )

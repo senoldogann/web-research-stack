@@ -1,11 +1,14 @@
 """Tests for research planning and synthesis behavior."""
 
 import asyncio
+from datetime import datetime
 
 import pytest
 
+import web_scraper.playwright_scrapers as pw_mod
 from web_scraper.config import config
 from web_scraper.research_agent import ResearchAgent, ResearchResult
+from web_scraper.scrapers import ScrapedData
 
 
 def test_deep_mode_clamps_requested_sources_to_minimum() -> None:
@@ -187,7 +190,7 @@ def test_collect_search_results_falls_back_to_google_when_duckduckgo_is_insuffic
     monkeypatch.setattr(config, "research_enable_google_fallback", True, raising=False)
     monkeypatch.setattr(config, "research_google_fallback_min_results", 4, raising=False)
 
-    async def fake_ddg(search_queries, search_pool_size, temporal_scope=None):
+    async def fake_ddg(search_queries, search_pool_size, temporal_scope=None, recency_hint=None):
         return [
             {
                 "title": "Sparse DDG result",
@@ -199,7 +202,7 @@ def test_collect_search_results_falls_back_to_google_when_duckduckgo_is_insuffic
             }
         ]
 
-    async def fake_google(search_queries, search_pool_size):
+    async def fake_google(search_queries, search_pool_size, temporal_scope=None):
         return [
             {
                 "title": "Google result 1",
@@ -271,7 +274,7 @@ def test_collect_search_results_skips_google_when_ddg_meets_threshold(
             },
         ]
 
-    async def fake_google(search_queries, search_pool_size):
+    async def fake_google(search_queries, search_pool_size, temporal_scope=None):
         return [
             {
                 "title": "Google result 1",
@@ -392,6 +395,17 @@ def test_classify_source_tier_academic_domain_is_tier_two() -> None:
 
 def test_classify_source_tier_major_media_is_tier_three() -> None:
     assert ResearchAgent._classify_source_tier("https://reuters.com/article") == 3
+
+
+def test_classify_source_tier_openai_release_domain_is_tier_one() -> None:
+    assert (
+        ResearchAgent._classify_source_tier("https://openai.com/index/introducing-gpt-5.3-codex/")
+        == 1
+    )
+
+
+def test_classify_source_tier_lmarena_is_tier_four() -> None:
+    assert ResearchAgent._classify_source_tier("https://lmarena.ai/leaderboard") == 4
 
 
 def test_classify_source_tier_wiki_is_tier_four() -> None:
@@ -615,3 +629,705 @@ def test_metrics_registry_histogram_cumulative_buckets_are_monotonic() -> None:
     counts = [float(ln.split()[-1]) for ln in bucket_lines]
     # Bucket counts must be non-decreasing (cumulative histogram)
     assert all(counts[i] <= counts[i + 1] for i in range(len(counts) - 1))
+
+
+# ---------------------------------------------------------------------------
+# Search quality hardening
+# ---------------------------------------------------------------------------
+
+
+def test_merge_and_rank_filters_soft_error_results() -> None:
+    ranked = ResearchAgent._merge_and_rank_search_results(
+        query="en güçlü yapay zeka modeli",
+        result_sets=[
+            [
+                {
+                    "title": "WordPress › Hata",
+                    "url": "https://mindilot.com/",
+                    "snippet": "WordPress › Hata",
+                    "source": "mindilot",
+                    "search_provider": "google",
+                    "search_query": "en güçlü yapay zeka modeli",
+                },
+                {
+                    "title": "Chatbot Arena Leaderboard",
+                    "url": "https://lmarena.ai/leaderboard",
+                    "snippet": "Live leaderboard for chat model evaluations",
+                    "source": "lmarena",
+                    "search_provider": "google",
+                    "search_query": "en güçlü yapay zeka modeli",
+                },
+            ]
+        ],
+        limit=5,
+        research_profile="general",
+    )
+
+    assert ranked
+    assert all("mindilot.com" not in item["url"] for item in ranked)
+    assert any("lmarena.ai" in item["url"] for item in ranked)
+
+
+def test_collect_search_results_uses_google_when_ddg_only_soft_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = ResearchAgent(model="demo-model", host="http://ollama.local")
+    monkeypatch.setattr(config, "research_enable_google_fallback", True, raising=False)
+    monkeypatch.setattr(config, "research_google_fallback_min_results", 1, raising=False)
+
+    async def fake_ddg(search_queries, search_pool_size, temporal_scope=None):
+        return [
+            {
+                "title": "WordPress › Hata",
+                "url": "https://mindilot.com/",
+                "snippet": "WordPress › Hata",
+                "source": "mindilot",
+                "search_provider": "duckduckgo",
+                "search_query": search_queries[0],
+            }
+        ]
+
+    async def fake_google(search_queries, search_pool_size, temporal_scope=None):
+        return [
+            {
+                "title": "Chatbot Arena Leaderboard",
+                "url": "https://lmarena.ai/leaderboard",
+                "snippet": "Live leaderboard",
+                "source": "lmarena",
+                "search_provider": "google",
+                "search_query": search_queries[0],
+            }
+        ]
+
+    monkeypatch.setattr(agent, "_collect_duckduckgo_results", fake_ddg)
+    monkeypatch.setattr(agent, "_collect_google_results", fake_google)
+
+    collected = asyncio.run(
+        agent._collect_search_results(
+            query="en güçlü yapay zeka modeli",
+            search_queries=["en güçlü yapay zeka modeli"],
+            search_pool_size=3,
+            target_count=3,
+        )
+    )
+
+    assert collected["fallback_used"] is True
+    assert "google" in set(collected["providers_used"])
+    assert any("lmarena.ai" in item["url"] for item in collected["results"])
+
+
+@pytest.mark.asyncio
+async def test_cross_language_variant_adds_current_year_for_non_english_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = ResearchAgent(model="demo-model", host="http://ollama.local")
+    agent._query_lang = "tr"
+
+    async def fake_call_llm(prompt, timeout, max_tokens=None):
+        if "web-search query translator" in prompt:
+            return '{"target_query":"strongest ai model"}'
+        return (
+            '{"normalized_query":"en güçlü yapay zeka modeli",'
+            '"temporal_scope":{"type":"current","resolved_period":null,"reference":null},'
+            '"is_ambiguous":false,"ambiguous_dimensions":[]}'
+        )
+
+    monkeypatch.setattr(agent, "_call_llm", fake_call_llm)
+
+    context = await agent._prepare_search_queries(
+        "en güçlü yapay zeka modeli hangisi?",
+        deep_mode=False,
+    )
+
+    year = str(datetime.now().year)
+    assert any("strongest ai model" in q for q in context["search_queries"])
+    assert any(("strongest ai model" in q) and (year in q) for q in context["search_queries"])
+
+
+@pytest.mark.asyncio
+async def test_scrape_source_uses_playwright_fallback_on_browser_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = ResearchAgent(model="demo-model", host="http://ollama.local")
+
+    class FakeAsyncScraper:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def scrape(self, url: str):
+            return ScrapedData(
+                url=url,
+                title="",
+                content="",
+                error="HTTP error: 403 Forbidden - Cloudflare challenge",
+                status_code=403,
+            )
+
+    class FakePlaywrightScraper:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def scrape(self, url: str):
+            return ScrapedData(
+                url=url,
+                title="Playwright OK",
+                content=("JS rendered content " * 40),
+                status_code=200,
+            )
+
+    monkeypatch.setattr("web_scraper.research.agent.WebScraperAsync", FakeAsyncScraper)
+    monkeypatch.setattr(pw_mod, "PlaywrightScraper", FakePlaywrightScraper)
+
+    result = await agent._scrape_source(
+        source_config={"type": "web", "url": "https://example.com"},
+        original_query="example query",
+        deep_mode=False,
+    )
+
+    assert result.error is None
+    assert result.title == "Playwright OK"
+    assert "JS rendered content" in result.content
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_expansion_runs_only_for_general_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = ResearchAgent(model="demo-model", host="http://ollama.local")
+
+    async def fake_call_llm(prompt, timeout, max_tokens=None):
+        if "search query generator" in prompt:
+            return (
+                '{"dimension_queries":['
+                '{"dimension":"benchmark","query":"best llm leaderboard"},'
+                '{"dimension":"coding","query":"best llm coding model"}'
+                "]}"
+            )
+        return (
+            '{"normalized_query":"en iyi llm modeli",'
+            '"temporal_scope":{"type":"current","resolved_period":null,"reference":null},'
+            '"is_ambiguous":true,"ambiguous_dimensions":["benchmark","coding"]}'
+        )
+
+    monkeypatch.setattr(agent, "_call_llm", fake_call_llm)
+
+    technical_context = await agent._prepare_search_queries(
+        "en iyi llm modeli",
+        deep_mode=False,
+        research_profile="technical",
+    )
+    general_context = await agent._prepare_search_queries(
+        "en iyi llm modeli",
+        deep_mode=False,
+        research_profile="general",
+    )
+
+    assert all("leaderboard" not in q for q in technical_context["search_queries"])
+    assert len(general_context["search_queries"]) > len(technical_context["search_queries"])
+    assert any("leaderboard" in q for q in general_context["search_queries"])
+
+
+def test_collect_search_results_retries_with_release_priority_sites(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = ResearchAgent(model="demo-model", host="http://ollama.local")
+    ddg_batches: list[list[str]] = []
+
+    async def fake_ddg(search_queries, search_pool_size, temporal_scope=None, recency_hint=None):
+        ddg_batches.append(list(search_queries))
+        if any("site:openai.com" in q for q in search_queries):
+            return [
+                {
+                    "title": "Introducing GPT-5.3-codex",
+                    "url": "https://openai.com/index/introducing-gpt-5.3-codex/",
+                    "snippet": "February 10, 2026 official release",
+                    "source": "openai",
+                    "publication_date": "2026-02-10",
+                    "search_provider": "duckduckgo",
+                    "search_query": search_queries[0],
+                }
+            ]
+        return [
+            {
+                "title": "Best LLMs in 2023",
+                "url": "https://example-blog.com/best-llm-2023",
+                "snippet": "A historical list",
+                "source": "example-blog",
+                "publication_date": "2023-02-01",
+                "search_provider": "duckduckgo",
+                "search_query": search_queries[0],
+            }
+        ]
+
+    async def fake_google(search_queries, search_pool_size, temporal_scope=None, recency_hint=None):
+        return []
+
+    monkeypatch.setattr(agent, "_collect_duckduckgo_results", fake_ddg)
+    monkeypatch.setattr(agent, "_collect_google_results", fake_google)
+
+    collected = asyncio.run(
+        agent._collect_search_results(
+            query="latest OpenAI model",
+            search_queries=["latest OpenAI model"],
+            search_pool_size=4,
+            target_count=3,
+            temporal_scope={"type": "current", "resolved_period": None, "reference": None},
+            research_profile="technical",
+            deep_mode=False,
+            intent_class="model_release",
+        )
+    )
+
+    assert any("site:openai.com" in q for batch in ddg_batches for q in batch)
+    assert any("openai.com" in item["url"] for item in collected["results"])
+
+
+def test_collect_search_results_filters_irrelevant_release_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = ResearchAgent(model="demo-model", host="http://ollama.local")
+
+    async def fake_ddg(search_queries, search_pool_size, temporal_scope=None):
+        return [
+            {
+                "title": "OpenAI model release notes",
+                "url": "https://help.openai.com/en/articles/9624314-model-release-notes",
+                "snippet": "Latest model updates and release timeline.",
+                "source": "openai-help",
+                "publication_date": "2026-03-01",
+                "search_provider": "duckduckgo",
+                "search_query": search_queries[0],
+            },
+            {
+                "title": "How to determine if a bash variable is empty?",
+                "url": "https://serverfault.com/questions/123456/bash-variable-empty",
+                "snippet": "shell scripting best practices",
+                "source": "serverfault",
+                "search_provider": "duckduckgo",
+                "search_query": search_queries[0],
+            },
+        ]
+
+    async def fake_google(search_queries, search_pool_size, temporal_scope=None):
+        return []
+
+    monkeypatch.setattr(agent, "_collect_duckduckgo_results", fake_ddg)
+    monkeypatch.setattr(agent, "_collect_google_results", fake_google)
+
+    collected = asyncio.run(
+        agent._collect_search_results(
+            query="Which LLM model is best now?",
+            search_queries=["Which LLM model is best now?"],
+            search_pool_size=5,
+            target_count=4,
+            temporal_scope={"type": "current", "resolved_period": None, "reference": None},
+            research_profile="general",
+            deep_mode=False,
+        )
+    )
+
+    urls = [item["url"] for item in collected["results"]]
+    assert any("help.openai.com" in url for url in urls)
+    assert all("serverfault.com" not in url for url in urls)
+
+
+def test_collect_search_results_flags_evidence_gate_failure_when_authority_low(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = ResearchAgent(model="demo-model", host="http://ollama.local")
+    monkeypatch.setattr(config, "research_enable_google_fallback", False, raising=False)
+    monkeypatch.setattr(config, "research_retry_aggressive_enabled", False, raising=False)
+    monkeypatch.setattr(config, "research_evidence_gate_enabled", True, raising=False)
+
+    async def fake_ddg(search_queries, search_pool_size, temporal_scope=None, recency_hint=None):
+        return [
+            {
+                "title": "World update blog",
+                "url": "https://unknown-blog.example/world-update",
+                "snippet": "Opinionated summary without primary evidence",
+                "source": "unknown-blog",
+                "publication_date": "2024-01-01",
+                "search_provider": "duckduckgo",
+                "search_query": search_queries[0],
+            }
+        ]
+
+    monkeypatch.setattr(agent, "_collect_duckduckgo_results", fake_ddg)
+
+    collected = asyncio.run(
+        agent._collect_search_results(
+            query="what is happening in the world right now",
+            search_queries=["what is happening in the world right now"],
+            search_pool_size=3,
+            target_count=2,
+            temporal_scope={"type": "current", "resolved_period": None, "reference": None},
+            research_profile="technical",
+            deep_mode=False,
+            intent_class="current_events",
+        )
+    )
+
+    assert collected["evidence_gate_passed"] is False
+    assert collected["authority_tier_counts"]["tier1"] == 0
+
+
+def test_resolve_execution_mode_keeps_deep_for_simple_query() -> None:
+    deep_mode, max_sources, auto_focused = ResearchAgent._resolve_execution_mode(
+        query="Which LLM model is best now?",
+        requested_deep_mode=True,
+        requested_max_sources=None,
+        research_profile="general",
+    )
+
+    assert deep_mode is True
+    assert max_sources is None
+    assert auto_focused is False
+
+
+def test_resolve_execution_mode_keeps_explicit_deep_request() -> None:
+    deep_mode, max_sources, auto_focused = ResearchAgent._resolve_execution_mode(
+        query="Do a deep comprehensive benchmark comparison of top LLM models",
+        requested_deep_mode=True,
+        requested_max_sources=None,
+        research_profile="general",
+    )
+
+    assert deep_mode is True
+    assert max_sources is None
+    assert auto_focused is False
+
+
+def test_intent_router_maps_world_happening_query_to_current_events() -> None:
+    intent = ResearchAgent._detect_intent_class("Dünyada neler oluyor?")
+    profile = ResearchAgent._profile_for_intent(intent)
+
+    assert intent == "current_events"
+    assert profile == "news"
+
+
+def test_intent_router_maps_english_world_now_query_to_current_events() -> None:
+    intent = ResearchAgent._detect_intent_class("What is happening in the world right now?")
+    profile = ResearchAgent._profile_for_intent(intent)
+
+    assert intent == "current_events"
+    assert profile == "news"
+
+
+def test_intent_router_maps_latest_openai_model_to_model_release() -> None:
+    intent = ResearchAgent._detect_intent_class("latest OpenAI model")
+    profile = ResearchAgent._profile_for_intent(intent)
+
+    assert intent == "model_release"
+    assert profile == "technical"
+
+
+def test_evaluate_final_evidence_abstains_current_events_with_single_authority() -> None:
+    agent = ResearchAgent(model="demo-model", host="http://ollama.local")
+    evidence = agent._evaluate_final_evidence(
+        query="Dünyada neler oluyor bugün?",
+        intent_class="current_events",
+        temporal_scope={"type": "current", "resolved_period": None, "reference": None},
+        research_results=[
+            ResearchResult(
+                source="bbc",
+                url="https://www.bbc.com/news/world",
+                title="BBC World",
+                content="Global developments",
+                relevance_score=0.9,
+                source_tier=3,
+                publication_date=f"{datetime.now().year}-03-05",
+            ),
+            ResearchResult(
+                source="local",
+                url="https://example-blog.test/world-update",
+                title="Local update",
+                content="Opinion content",
+                relevance_score=0.4,
+                source_tier=5,
+                publication_date=f"{datetime.now().year}-03-05",
+            ),
+        ],
+    )
+
+    assert evidence["evidence_gate_passed"] is True
+    assert evidence["should_abstain"] is True
+
+
+def test_evaluate_final_evidence_abstains_model_release_when_gate_fails() -> None:
+    agent = ResearchAgent(model="demo-model", host="http://ollama.local")
+    evidence = agent._evaluate_final_evidence(
+        query="GPT-5.3-Codex mi daha iyi Claude-Opus-4.6 mi?",
+        intent_class="model_release",
+        temporal_scope={"type": "current", "resolved_period": None, "reference": None},
+        research_results=[
+            ResearchResult(
+                source="openai",
+                url="https://openai.com/news/",
+                title="OpenAI News",
+                content="Official updates",
+                relevance_score=0.9,
+                source_tier=1,
+                publication_date=f"{datetime.now().year}-03-05",
+            ),
+            ResearchResult(
+                source="blog",
+                url="https://example-blog.test/compare-gpt-claude",
+                title="Comparison blog",
+                content="Opinionated summary",
+                relevance_score=0.5,
+                source_tier=5,
+                publication_date=f"{datetime.now().year}-03-05",
+            ),
+        ],
+    )
+
+    assert evidence["evidence_gate_passed"] is False
+    assert evidence["should_abstain"] is True
+
+
+def test_fails_citation_faithfulness_gate_for_model_release() -> None:
+    assert (
+        ResearchAgent._fails_citation_faithfulness_gate(
+            {"citation_audit": {"faithfulness_score": 0.0}},
+            "model_release",
+        )
+        is True
+    )
+    assert (
+        ResearchAgent._fails_citation_faithfulness_gate(
+            {"citation_audit": {"faithfulness_score": 0.9}},
+            "model_release",
+        )
+        is False
+    )
+    assert (
+        ResearchAgent._fails_citation_faithfulness_gate(
+            {"citation_audit": {"faithfulness_score": 0.0}},
+            "evergreen_general",
+        )
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_synthesize_findings_overrides_optimistic_low_confidence_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = ResearchAgent(model="demo-model", host="http://ollama.local")
+    agent._query_lang = "tr"
+
+    async def fake_call_llm(prompt, timeout, max_tokens=None):
+        return (
+            '{"executive_summary":"Özet metni.",'
+            '"summary":"Özet metni.",'
+            '"key_findings":["Bulgu 1"],'
+            '"data_table":[],'
+            '"conflicts_uncertainty":[],'
+            '"confidence_level":"Low",'
+            '"confidence_reason":"Multiple authoritative and recent sources ... confident comparative analysis.",'
+            '"detailed_analysis":"Detaylı analiz.",'
+            '"recommendations":"Öneri 1."}'
+        )
+
+    monkeypatch.setattr(agent, "_call_llm", fake_call_llm)
+
+    synthesis = await agent._synthesize_findings(
+        query="GPT-5.3-Codex mi daha iyi Claude-Opus-4.6 mi?",
+        results=[
+            ResearchResult(
+                source="blog",
+                url="https://example-blog.test/compare",
+                title="Blog comparison",
+                content="Low evidence content " * 20,
+                relevance_score=0.4,
+                source_tier=5,
+                publication_date=f"{datetime.now().year}-03-05",
+            )
+        ],
+        deep_mode=True,
+    )
+
+    reason = synthesis.get("confidence_reason", "")
+    assert "confident comparative analysis" not in reason.lower()
+    assert "kanıt gücü düşüktür" in reason.lower()
+
+
+def test_merge_and_rank_keeps_cloudflare_docs_page() -> None:
+    ranked = ResearchAgent._merge_and_rank_search_results(
+        query="Cloudflare challenge bypass docs",
+        result_sets=[
+            [
+                {
+                    "title": "Cloudflare Turnstile challenge docs",
+                    "url": "https://docs.cloudflare.com/turnstile/",
+                    "snippet": "Official documentation for challenge configuration.",
+                    "source": "cloudflare docs",
+                    "search_provider": "google",
+                    "search_query": "Cloudflare challenge bypass docs",
+                },
+                {
+                    "title": "Just a moment...",
+                    "url": "https://example.com/challenge",
+                    "snippet": "Cloudflare Ray ID - Enable JavaScript and cookies",
+                    "source": "example",
+                    "search_provider": "google",
+                    "search_query": "Cloudflare challenge bypass docs",
+                },
+            ]
+        ],
+        limit=5,
+        research_profile="technical",
+    )
+
+    assert any("docs.cloudflare.com" in item["url"] for item in ranked)
+    assert all("example.com/challenge" not in item["url"] for item in ranked)
+
+
+@pytest.mark.asyncio
+async def test_plan_with_results_replaces_low_authority_ai_selection_for_model_release() -> None:
+    agent = ResearchAgent(model="demo-model", host="http://ollama.local")
+
+    async def fake_call_llm(prompt, timeout, max_tokens=None):
+        return (
+            '{"sources":['
+            '{"type":"web","url":"https://low-blog.example/compare-gpt-claude","title":"Low Blog"}'
+            "]}"
+        )
+
+    agent._call_llm = fake_call_llm  # type: ignore[method-assign]
+
+    strategy = await agent._plan_research_with_results(
+        query="latest OpenAI model",
+        max_sources=15,
+        deep_mode=True,
+        search_results=[
+            {
+                "title": "Introducing GPT-5.3-Codex",
+                "url": "https://openai.com/index/introducing-gpt-5.3-codex/",
+                "snippet": "Official model release",
+                "source": "openai",
+                "publication_date": "2026-02-10",
+                "search_provider": "duckduckgo",
+            },
+            {
+                "title": "LLM Leaderboard",
+                "url": "https://lmarena.ai/leaderboard",
+                "snippet": "Live model rankings",
+                "source": "lmarena",
+                "publication_date": "2026-03-01",
+                "search_provider": "duckduckgo",
+            },
+            {
+                "title": "Random comparison",
+                "url": "https://low-blog.example/compare-gpt-claude",
+                "snippet": "Opinion blog",
+                "source": "low-blog",
+                "publication_date": "2025-01-01",
+                "search_provider": "duckduckgo",
+            },
+        ],
+        research_profile="technical",
+        intent_class="model_release",
+    )
+
+    urls = [source["url"] for source in strategy["sources"]]
+    assert any("openai.com" in url for url in urls)
+    assert any("lmarena.ai" in url for url in urls)
+
+
+@pytest.mark.asyncio
+async def test_plan_with_results_replaces_low_authority_ai_selection_for_current_events() -> None:
+    agent = ResearchAgent(model="demo-model", host="http://ollama.local")
+
+    async def fake_call_llm(prompt, timeout, max_tokens=None):
+        return (
+            '{"sources":['
+            '{"type":"web","url":"https://local-blog.example/world-update","title":"Local Blog"}'
+            "]}"
+        )
+
+    agent._call_llm = fake_call_llm  # type: ignore[method-assign]
+
+    strategy = await agent._plan_research_with_results(
+        query="Dünyada neler oluyor?",
+        max_sources=15,
+        deep_mode=True,
+        search_results=[
+            {
+                "title": "Reuters World",
+                "url": "https://www.reuters.com/world/",
+                "snippet": "Global breaking developments",
+                "source": "reuters",
+                "publication_date": "2026-03-05",
+                "search_provider": "duckduckgo",
+            },
+            {
+                "title": "AP World News",
+                "url": "https://apnews.com/world-news",
+                "snippet": "International current events",
+                "source": "ap",
+                "publication_date": "2026-03-05",
+                "search_provider": "duckduckgo",
+            },
+            {
+                "title": "Local world update",
+                "url": "https://local-blog.example/world-update",
+                "snippet": "Low-authority opinion",
+                "source": "local",
+                "publication_date": "2026-03-05",
+                "search_provider": "duckduckgo",
+            },
+        ],
+        research_profile="news",
+        intent_class="current_events",
+    )
+
+    urls = [source["url"] for source in strategy["sources"]]
+    assert any("reuters.com" in url for url in urls)
+    assert any("apnews.com" in url for url in urls)
+
+
+@pytest.mark.asyncio
+async def test_standard_plan_with_results_keeps_authoritative_cross_language_sources() -> None:
+    agent = ResearchAgent(model="demo-model", host="http://ollama.local")
+
+    strategy = await agent._plan_research_with_results(
+        query="Dünyada neler oluyor?",
+        max_sources=8,
+        deep_mode=False,
+        search_results=[
+            {
+                "title": "Reuters World",
+                "url": "https://www.reuters.com/world/",
+                "snippet": "Global breaking developments",
+                "source": "reuters",
+                "publication_date": "2026-03-05",
+                "search_provider": "duckduckgo",
+            },
+            {
+                "title": "Yerel blog yorumu",
+                "url": "https://local-blog.example/world-update",
+                "snippet": "Yorum odaklı içerik",
+                "source": "local",
+                "publication_date": "2026-03-05",
+                "search_provider": "duckduckgo",
+            },
+        ],
+        research_profile="news",
+        intent_class="current_events",
+    )
+
+    urls = [source["url"] for source in strategy["sources"]]
+    assert any("reuters.com" in url for url in urls)

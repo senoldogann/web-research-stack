@@ -34,10 +34,11 @@ class GoogleSearcher:
         encoded_query = quote_plus(query)
         url = f"{self.BASE_URL}?q={encoded_query}&num={num_results}"
 
-        headers = HeaderFactory.get_headers(url)
+        impersonate_target, headers = HeaderFactory.get_identity(url=url)
 
         async with requests.AsyncSession(
-            timeout=config.google_request_timeout_seconds, impersonate="chrome120"
+            timeout=config.google_request_timeout_seconds,
+            impersonate=impersonate_target,
         ) as client:
             response = await client.get(url, headers=headers)
             response.raise_for_status()

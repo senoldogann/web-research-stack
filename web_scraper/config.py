@@ -98,6 +98,10 @@ class Config:
     research_enable_query_rewrite: bool = True
     research_query_rewrite_max_variants: int = 4
     research_query_rewrite_timeout_seconds: float = 20.0
+    research_strict_deep_mode: bool = True
+    research_evidence_gate_enabled: bool = True
+    research_retry_aggressive_enabled: bool = True
+    research_intent_router_v2: bool = True
     research_enable_google_fallback: bool = True
     research_google_fallback_min_results: int = 5
     research_rerank_domain_diversity_boost: float = 0.25
@@ -106,6 +110,18 @@ class Config:
     duckduckgo_request_timeout_seconds: float = 30.0
     duckduckgo_request_delay_seconds: float = 0.5
     google_request_timeout_seconds: float = 30.0
+    flaresolverr_enabled: bool = True
+    flaresolverr_url: str = "http://web-research-flaresolverr:8191/v1"
+    flaresolverr_fallback_urls: List[str] = field(
+        default_factory=lambda: [
+            "http://localhost:8191/v1",
+            "http://web-research-flaresolverr-dev:8191/v1",
+        ]
+    )
+    flaresolverr_request_timeout_seconds: float = 45.0
+    flaresolverr_max_timeout_ms: int = 60000
+    flaresolverr_max_attempts: int = 2
+    flaresolverr_retry_backoff_seconds: float = 1.0
     max_query_length: int = 500
     max_source_content_chars: int = 12000
     cache_ttl_seconds: int = 300
@@ -251,6 +267,20 @@ class Config:
             self.duckduckgo_request_delay_seconds,
             0.0,
         )
+        self.flaresolverr_url = (
+            self.flaresolverr_url.strip() or "http://web-research-flaresolverr:8191/v1"
+        )
+        self.flaresolverr_fallback_urls = [u for u in self.flaresolverr_fallback_urls if u]
+        self.flaresolverr_request_timeout_seconds = _clamp_float(
+            self.flaresolverr_request_timeout_seconds,
+            1.0,
+        )
+        self.flaresolverr_max_timeout_ms = _clamp_int(self.flaresolverr_max_timeout_ms, 1000, 300000)
+        self.flaresolverr_max_attempts = _clamp_int(self.flaresolverr_max_attempts, 1, 5)
+        self.flaresolverr_retry_backoff_seconds = _clamp_float(
+            self.flaresolverr_retry_backoff_seconds,
+            0.0,
+        )
 
         self.max_query_length = _clamp_int(self.max_query_length, 3, 10000)
         self.max_source_content_chars = _clamp_int(self.max_source_content_chars, 1000, 200000)
@@ -368,6 +398,22 @@ class Config:
             research_query_rewrite_timeout_seconds=_safe_float(
                 os.getenv("RESEARCH_QUERY_REWRITE_TIMEOUT_SECONDS"), 20.0
             ),
+            research_strict_deep_mode=_parse_bool(
+                os.getenv("RESEARCH_STRICT_DEEP_MODE"),
+                True,
+            ),
+            research_evidence_gate_enabled=_parse_bool(
+                os.getenv("RESEARCH_EVIDENCE_GATE_ENABLED"),
+                True,
+            ),
+            research_retry_aggressive_enabled=_parse_bool(
+                os.getenv("RESEARCH_RETRY_AGGRESSIVE_ENABLED"),
+                True,
+            ),
+            research_intent_router_v2=_parse_bool(
+                os.getenv("RESEARCH_INTENT_ROUTER_V2"),
+                True,
+            ),
             research_enable_google_fallback=_parse_bool(
                 os.getenv("RESEARCH_ENABLE_GOOGLE_FALLBACK"),
                 True,
@@ -392,6 +438,34 @@ class Config:
             ),
             google_request_timeout_seconds=_safe_float(
                 os.getenv("GOOGLE_REQUEST_TIMEOUT_SECONDS"), 30.0
+            ),
+            flaresolverr_enabled=_parse_bool(os.getenv("FLARESOLVERR_ENABLED"), True),
+            flaresolverr_url=os.getenv(
+                "FLARESOLVERR_URL",
+                "http://web-research-flaresolverr:8191/v1",
+            ),
+            flaresolverr_fallback_urls=(
+                _parse_csv(os.getenv("FLARESOLVERR_FALLBACK_URLS"))
+                or [
+                    "http://localhost:8191/v1",
+                    "http://web-research-flaresolverr-dev:8191/v1",
+                ]
+            ),
+            flaresolverr_request_timeout_seconds=_safe_float(
+                os.getenv("FLARESOLVERR_REQUEST_TIMEOUT_SECONDS"),
+                45.0,
+            ),
+            flaresolverr_max_timeout_ms=_safe_int(
+                os.getenv("FLARESOLVERR_MAX_TIMEOUT_MS"),
+                60000,
+            ),
+            flaresolverr_max_attempts=_safe_int(
+                os.getenv("FLARESOLVERR_MAX_ATTEMPTS"),
+                2,
+            ),
+            flaresolverr_retry_backoff_seconds=_safe_float(
+                os.getenv("FLARESOLVERR_RETRY_BACKOFF_SECONDS"),
+                1.0,
             ),
             max_query_length=_safe_int(os.getenv("MAX_QUERY_LENGTH"), 500),
             max_source_content_chars=_safe_int(os.getenv("MAX_SOURCE_CONTENT_CHARS"), 12000),

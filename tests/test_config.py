@@ -23,6 +23,11 @@ def test_config_clamps_research_runtime_knobs() -> None:
         research_rerank_same_domain_penalty=-1.0,
         research_rerank_exact_query_boost=-1.0,
         duckduckgo_request_delay_seconds=-1.0,
+        flaresolverr_url="   ",
+        flaresolverr_request_timeout_seconds=-5.0,
+        flaresolverr_max_timeout_ms=999999,
+        flaresolverr_max_attempts=99,
+        flaresolverr_retry_backoff_seconds=-1.0,
     )
 
     assert settings.scraper_max_redirects == 20
@@ -42,6 +47,11 @@ def test_config_clamps_research_runtime_knobs() -> None:
     assert settings.research_rerank_same_domain_penalty == 0.0
     assert settings.research_rerank_exact_query_boost == 0.0
     assert settings.duckduckgo_request_delay_seconds == 0.0
+    assert settings.flaresolverr_url == "http://web-research-flaresolverr:8191/v1"
+    assert settings.flaresolverr_request_timeout_seconds == 1.0
+    assert settings.flaresolverr_max_timeout_ms == 300000
+    assert settings.flaresolverr_max_attempts == 5
+    assert settings.flaresolverr_retry_backoff_seconds == 0.0
 
 
 def test_research_agent_reads_runtime_defaults_from_config(

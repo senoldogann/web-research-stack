@@ -62,7 +62,7 @@ class ResearchToolRequest(BaseModel):
     model: Optional[str] = Field(default=None, min_length=1, max_length=128)
     include_source_content: bool = False
     provider: Literal["ollama", "openai"] = "ollama"
-    research_profile: Literal["technical", "news", "academic", "auto"] = "auto"
+    research_profile: Literal["technical", "news", "academic", "general", "auto"] = "auto"
     openai_api_key: Optional[str] = Field(default=None, max_length=512)
     ollama_api_key: Optional[str] = Field(default=None, max_length=512)
     ollama_base_url: Optional[str] = Field(default=None, max_length=512)
@@ -118,6 +118,21 @@ class ResearchMetadata(BaseModel):
     trace_id: str
     response_ms: float
     query_hash: str = ""
+    intent_class: Optional[
+        Literal[
+            "current_events",
+            "model_release",
+            "technical_docs",
+            "benchmark_compare",
+            "evergreen_general",
+        ]
+    ] = None
+    execution_mode_requested: Optional[Literal["standard", "deep"]] = None
+    execution_mode_effective: Optional[Literal["standard", "deep"]] = None
+    authority_tier_counts: Dict[str, int] = Field(default_factory=dict)
+    freshness_summary: Dict[str, Any] = Field(default_factory=dict)
+    retrieval_attempts: Optional[int] = None
+    evidence_gate_passed: Optional[bool] = None
 
 
 def _coerce_str(v: Any) -> str:
@@ -135,6 +150,7 @@ class WebResearchResponse(BaseModel):
     summary: str
     key_findings: List[str]
     detailed_analysis: str = ""
+    extended_analysis_hidden: bool = False
     recommendations: str = ""
     # FAZ 6 — high-reliability structured output
     executive_summary: str = ""
@@ -170,6 +186,7 @@ class LegacyResearchResponse(BaseModel):
     summary: str
     key_findings: List[str]
     detailed_analysis: str = ""
+    extended_analysis_hidden: bool = False
     recommendations: str = ""
     # FAZ 6 — high-reliability structured output
     executive_summary: str = ""

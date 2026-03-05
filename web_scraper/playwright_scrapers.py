@@ -207,25 +207,72 @@ class PlaywrightScraper:
     # Private helpers
     # ------------------------------------------------------------------
 
-    async def _bypass_cloudflare_if_needed(self) -> str:
-        """Return page HTML, pausing to simulate human input if a CF challenge is detected."""
-        raw_html = await self._page.content()
-        raw_lower = raw_html.lower()
-
-        has_cf = any(sig in raw_lower for sig in _CF_SIGNATURES) or (
-            "ray id" in raw_lower and "cloudflare" in raw_lower
+    @staticmethod
+    def _is_cloudflare_challenge_html(html: str) -> bool:
+        """Return True when HTML still looks like a Cloudflare challenge page."""
+        lower = (html or "").lower()
+        return any(sig in lower for sig in _CF_SIGNATURES) or (
+            "ray id" in lower and "cloudflare" in lower
         )
 
-        if has_cf:
-            # Simulate human mouse movements to trigger Turnstile token generation.
-            for _ in range(5):
-                x = random.randint(100, 700)  # noqa: S311 — non-crypto mouse coords
-                y = random.randint(100, 500)  # noqa: S311
-                await self._page.mouse.move(x, y)
-                await asyncio.sleep(1.5)
-            raw_html = await self._page.content()
+    async def _simulate_human_interaction(self) -> None:
+        """Perform lightweight human-like interactions to unblock challenge scripts."""
+        # Mouse movements
+        for _ in range(4):
+            x = random.randint(80, 900)  # noqa: S311 — non-crypto cursor coords
+            y = random.randint(80, 650)  # noqa: S311
+            await self._page.mouse.move(x, y)
+            await asyncio.sleep(0.6)
 
-        return raw_html
+        # Small scroll jitter
+        await self._page.mouse.wheel(0, random.randint(120, 420))  # noqa: S311
+        await asyncio.sleep(0.4)
+        await self._page.mouse.wheel(0, -random.randint(80, 240))  # noqa: S311
+
+        # Try checkbox/button interactions commonly used in challenge UIs.
+        selectors = (
+            'input[type="checkbox"]',
+            'button:has-text("Verify")',
+            'button:has-text("I am human")',
+            'button:has-text("Continue")',
+        )
+        for selector in selectors:
+            try:
+                locator = self._page.locator(selector)
+                if await locator.count() > 0:
+                    await locator.first.click(timeout=1200)
+                    await asyncio.sleep(0.8)
+                    break
+            except Exception:  # noqa: BLE001
+                continue
+
+    async def _bypass_cloudflare_if_needed(self) -> str:
+        """Return page HTML after bounded Cloudflare challenge handling.
+
+        Raises:
+            RuntimeError: when challenge signatures persist after retries.
+        """
+        raw_html = await self._page.content()
+        if not self._is_cloudflare_challenge_html(raw_html):
+            return raw_html
+
+        max_attempts = 3
+        poll_interval = 1.0
+        settle_seconds = 7.0
+
+        for attempt in range(max_attempts):
+            await self._simulate_human_interaction()
+            deadline = time.monotonic() + settle_seconds + attempt
+
+            while time.monotonic() < deadline:
+                await asyncio.sleep(poll_interval)
+                raw_html = await self._page.content()
+                if not self._is_cloudflare_challenge_html(raw_html):
+                    return raw_html
+
+        raise RuntimeError(
+            "Cloudflare challenge could not be cleared via Playwright interactions"
+        )
 
     def _extract_title(self, soup: BeautifulSoup) -> str:
         """Extract page title."""

@@ -51,15 +51,13 @@ class DuckDuckGoSearcher:
         Returns:
             List of result dictionaries with title, url, snippet
         """
-        import random
-
-        headers = HeaderFactory.get_headers()
-        headers["User-Agent"] = random.choice(self.USER_AGENTS)  # noqa: S311
+        referer = HeaderFactory.get_referer(query=query)
+        impersonate_target, headers = HeaderFactory.get_identity(referer=referer)
 
         results = []
         async with requests.AsyncSession(
             timeout=config.duckduckgo_request_timeout_seconds,
-            impersonate=HeaderFactory.get_impersonate_target(),
+            impersonate=impersonate_target,
         ) as client:
             # Step 1: Get initial VQD token to bypass bot protection
             resp = await client.get(

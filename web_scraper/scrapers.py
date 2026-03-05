@@ -1,7 +1,6 @@
 """Core scraping logic for web content extraction."""
 
 import io
-import os
 import re
 from dataclasses import dataclass, field
 from typing import Optional
@@ -89,12 +88,12 @@ class WebScraper:
     def __enter__(self) -> "WebScraper":
         """Context manager entry - create HTTP client."""
         referer = HeaderFactory.get_referer()
-        headers = HeaderFactory.get_headers(referer=referer)
+        impersonate_target, headers = HeaderFactory.get_identity(referer=referer)
         self._client = requests.Session(
             timeout=self.timeout,
             allow_redirects=False,
             headers=headers,
-            impersonate=HeaderFactory.get_impersonate_target(),
+            impersonate=impersonate_target,
         )
         return self
 
@@ -173,27 +172,52 @@ class WebScraper:
             return self._error_result(url, f"Unexpected error: {str(e)}")
 
     def _run_flaresolverr(self, url: str):
-        """Invoke FlareSolverr to bypass Cloudflare challenges (IUAM, Turnstile, etc.)."""
-        flaresolverr_url = os.environ.get(
-            "FLARESOLVERR_URL", "http://web-research-flaresolverr:8191/v1"
-        )
-        # In local dev it might be localhost, so we attempt both if one fails
-        urls_to_try = [
-            flaresolverr_url,
-            "http://localhost:8191/v1",
-            "http://web-research-flaresolverr-dev:8191/v1",
+        """Invoke FlareSolverr to bypass Cloudflare challenges.
+
+        Uses bounded retries and config-driven timeouts so a single stuck
+        bypass attempt cannot block the whole scrape pipeline for too long.
+        """
+        import time
+
+        if not config.flaresolverr_enabled:
+            raise Exception("FlareSolverr bypass is disabled by configuration")
+
+        primary_url = config.flaresolverr_url
+        fallback_urls = [
+            u for u in config.flaresolverr_fallback_urls if u and u != primary_url
         ]
+        urls_to_try = [primary_url] + fallback_urls
 
-        payload = {"cmd": "request.get", "url": url, "maxTimeout": 110000}
+        payload = {
+            "cmd": "request.get",
+            "url": url,
+            "maxTimeout": int(config.flaresolverr_max_timeout_ms),
+        }
 
-        for fs_url in urls_to_try:
-            try:
-                if not self._client:
-                    self._client = requests.Session(timeout=120)
-                res = self._client.post(fs_url, json=payload, timeout=120)
-                if res.status_code == 200:
+        last_error = "unknown"
+
+        for attempt in range(config.flaresolverr_max_attempts):
+            for fs_url in urls_to_try:
+                try:
+                    with requests.Session(
+                        timeout=config.flaresolverr_request_timeout_seconds,
+                        allow_redirects=False,
+                    ) as fs_client:
+                        res = fs_client.post(
+                            fs_url,
+                            json=payload,
+                            timeout=config.flaresolverr_request_timeout_seconds,
+                        )
+
+                    if res.status_code != 200:
+                        last_error = f"{fs_url}: HTTP {res.status_code}"
+                        continue
+
                     data = res.json()
-                    if data.get("status") == "ok":
+                    solution = data.get("solution") if isinstance(data, dict) else None
+                    html = solution.get("response") if isinstance(solution, dict) else ""
+
+                    if data.get("status") == "ok" and solution and html:
 
                         class MockResponse:
                             def __init__(self, text, url, status_code, headers, content):
@@ -204,17 +228,28 @@ class WebScraper:
                                 self.content = content
 
                         return MockResponse(
-                            text=data["solution"]["response"],
-                            url=data["solution"]["url"],
-                            status_code=data["solution"]["status"],
-                            headers=data["solution"]["headers"],
-                            content=data["solution"]["response"].encode("utf-8"),
+                            text=html,
+                            url=solution.get("url", url),
+                            status_code=solution.get("status", 200),
+                            headers=solution.get("headers", {}),
+                            content=html.encode("utf-8"),
                         )
-            except Exception:  # noqa: S112
-                continue
+
+                    status = data.get("status") if isinstance(data, dict) else "unknown"
+                    message = data.get("message") if isinstance(data, dict) else ""
+                    last_error = f"{fs_url}: status={status} message={message}"
+                except Exception as exc:  # noqa: BLE001
+                    last_error = f"{fs_url}: {exc}"
+                    continue
+
+            if attempt < config.flaresolverr_max_attempts - 1:
+                backoff = config.flaresolverr_retry_backoff_seconds * (attempt + 1)
+                if backoff > 0:
+                    time.sleep(backoff)
 
         raise Exception(
-            "FlareSolverr bypass failed. Please ensure the FlareSolverr container is running on port 8191."
+            "FlareSolverr bypass failed after "
+            f"{config.flaresolverr_max_attempts} attempt(s). Last error: {last_error}"
         )
 
     def _extract_pdf(self, response, url: str, start_time: float) -> ScrapedData:
@@ -256,12 +291,12 @@ class WebScraper:
     def _get_page(self, url: str) -> requests.Response:
         """Fetch the page content."""
         if not self._client:
-            headers = HeaderFactory.get_headers(url)
+            impersonate_target, headers = HeaderFactory.get_identity(url=url)
             self._client = requests.Session(
                 timeout=self.timeout,
                 allow_redirects=False,
                 headers=headers,
-                impersonate="chrome120",
+                impersonate=impersonate_target,
             )
         return self._request_with_safe_redirects(url)
 

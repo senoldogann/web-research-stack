@@ -183,14 +183,6 @@ function cleanMarkdown(text: string): string {
     return text.replace(/\]\(⚠[^)]*\)/g, ']')
 }
 
-function splitRecommendationBlocks(text: string): string[] {
-    if (!text) return []
-    return text
-        .split(/\n\s*\n+/)
-        .map((block) => block.trim())
-        .filter(Boolean)
-}
-
 /** Recursively replace [N] citation markers in text-node children with CitationStack icons. */
 function withCitations(children: ReactNode, sources: CitedSource[]): ReactNode {
     if (!sources.length) return children
@@ -1171,92 +1163,6 @@ function ResearchResultCard({ result, markdownComponents: mdComponents }: { resu
                 </ReactMarkdown>
             </div>
 
-            {/* Key Findings */}
-            {result.key_findings && result.key_findings.length > 0 && (
-                <div className="pt-6" style={{ borderTop: '1px solid var(--border-subtle)' }}>
-                    <p className="text-[0.7rem] font-sans font-semibold tracking-widest uppercase mb-4" style={{ color: 'var(--accent-muted)' }}>
-                        {t.keyFindings}
-                    </p>
-                    <ul className="space-y-3 list-none pl-0">
-                        {result.key_findings.map((finding, i) => {
-                            const cited = result.cited_sources ?? []
-                            return (
-                                <li
-                                    key={i}
-                                    className="rounded-lg px-4 py-3"
-                                    style={{
-                                        border: '1px solid var(--border-subtle)',
-                                        background: 'var(--bg-surface)',
-                                    }}
-                                >
-                                    <div className="flex items-start gap-3 text-[1rem] leading-relaxed font-serif" style={{ color: 'var(--text-secondary)' }}>
-                                        <span
-                                            className="inline-flex h-6 min-w-6 items-center justify-center rounded-full px-2 text-[0.72rem] font-semibold"
-                                            style={{
-                                                color: 'var(--text-primary)',
-                                                background: 'var(--badge-bg)',
-                                                border: '1px solid var(--border)',
-                                            }}
-                                        >
-                                            {i + 1}
-                                        </span>
-                                        <span>{withCitations(cleanMarkdown(finding), cited)}</span>
-                                    </div>
-                                </li>
-                            )
-                        })}
-                    </ul>
-                </div>
-            )}
-
-            {/* Detailed analysis */}
-            {result.detailed_analysis && (
-                <div className="pt-6 prose max-w-none prose-p:text-[1.08rem]" style={{ borderTop: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>
-                    <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={citedComponents}>
-                        {cleanMarkdown(result.detailed_analysis)}
-                    </ReactMarkdown>
-                </div>
-            )}
-
-            {/* Recommendations */}
-            {result.recommendations && (
-                <div className="pt-6" style={{ borderTop: '1px solid var(--border-subtle)' }}>
-                    <p className="text-[0.7rem] font-sans font-semibold tracking-widest uppercase mb-4" style={{ color: 'var(--accent-muted)' }}>
-                        {t.recommendations}
-                    </p>
-                    <div className="space-y-3">
-                        {splitRecommendationBlocks(result.recommendations).map((recommendation, index) => (
-                            <div
-                                key={index}
-                                className="rounded-lg px-4 py-3"
-                                style={{
-                                    border: '1px solid var(--border-subtle)',
-                                    background: 'var(--bg-surface)',
-                                }}
-                            >
-                                <div className="flex items-start gap-3">
-                                    <span
-                                        className="inline-flex h-6 min-w-6 items-center justify-center rounded-full px-2 text-[0.72rem] font-semibold"
-                                        style={{
-                                            color: 'var(--text-primary)',
-                                            background: 'var(--badge-bg)',
-                                            border: '1px solid var(--border)',
-                                        }}
-                                    >
-                                        {index + 1}
-                                    </span>
-                                    <div className="prose max-w-none prose-p:text-[1rem]" style={{ color: 'var(--text-secondary)' }}>
-                                        <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={citedComponents}>
-                                            {cleanMarkdown(recommendation)}
-                                        </ReactMarkdown>
-                                    </div>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            )}
-
             {/* Data table (benchmark / structured results) */}
             {result.data_table && result.data_table.length > 0 && (
                 <div className="pt-6" style={{ borderTop: '1px solid var(--border-subtle)' }}>
@@ -1284,6 +1190,49 @@ function ResearchResultCard({ result, markdownComponents: mdComponents }: { resu
                                 ))}
                             </tbody>
                         </table>
+                    </div>
+                </div>
+            )}
+
+            {/* Key Findings */}
+            {result.key_findings && result.key_findings.length > 0 && (
+                <div className="pt-6" style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                    <p className="text-[0.7rem] font-sans font-semibold tracking-widest uppercase mb-4" style={{ color: 'var(--accent-muted)' }}>
+                        {t.keyFindings}
+                    </p>
+                    <ul className="space-y-3 list-none pl-0">
+                        {result.key_findings.map((finding, i) => {
+                            const cited = result.cited_sources ?? []
+                            return (
+                                <li key={i} className="flex items-start gap-3 text-[1.02rem] leading-loose font-serif" style={{ color: 'var(--text-secondary)' }}>
+                                    <span className="mt-[9px] w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: 'var(--accent-muted)', opacity: 0.6 }} />
+                                    <span>{withCitations(cleanMarkdown(finding), cited)}</span>
+                                </li>
+                            )
+                        })}
+                    </ul>
+                </div>
+            )}
+
+            {/* Detailed analysis */}
+            {result.detailed_analysis && (
+                <div className="pt-6 prose max-w-none prose-p:text-[1.08rem]" style={{ borderTop: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>
+                    <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={citedComponents}>
+                        {cleanMarkdown(result.detailed_analysis)}
+                    </ReactMarkdown>
+                </div>
+            )}
+
+            {/* Recommendations */}
+            {result.recommendations && (
+                <div className="pt-6" style={{ borderTop: '1px solid var(--border-subtle)' }}>
+                    <p className="text-[0.7rem] font-sans font-semibold tracking-widest uppercase mb-4" style={{ color: 'var(--accent-muted)' }}>
+                        {t.recommendations}
+                    </p>
+                    <div className="prose max-w-none prose-p:text-[1.02rem]" style={{ color: 'var(--text-secondary)' }}>
+                        <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={citedComponents}>
+                            {cleanMarkdown(result.recommendations)}
+                        </ReactMarkdown>
                     </div>
                 </div>
             )}

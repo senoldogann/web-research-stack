@@ -145,7 +145,7 @@ async def test_prepare_search_queries_generates_variants_in_standard_mode(
             '"dünyada neler oluyor",'
             '"world news now",'
             '"international current events"'
-            '],'
+            "],"
             '"rewrite_reason":"standard mode variants",'
             '"temporal_scope":{"type":"current","resolved_period":null,"reference":"bugün"}}'
         )

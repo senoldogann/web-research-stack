@@ -1376,7 +1376,7 @@ class ResearchAgent(LLMClient):
 
             # Simple ascii normalization for Turkish characters to match stopwords easily
             normalized = clean_text.replace('ı', 'i').replace('ç','c').replace('ş','s').replace('ö','o').replace('ü','u').replace('ğ', 'g')
-            
+
             words = clean_text.split()
             norm_words = normalized.split()
 

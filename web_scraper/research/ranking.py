@@ -102,7 +102,9 @@ def score_search_result(
     url = result.get("url", "")
 
     # Check if query contains any known tech keywords to adjust ranking behavior
-    is_tech_query = any(re.search(rf"\b{re.escape(kw)}\b", query.lower()) for kw in TECH_DOC_URLS.keys())
+    is_tech_query = any(
+        re.search(rf"\b{re.escape(kw)}\b", query.lower()) for kw in TECH_DOC_URLS.keys()
+    )
 
     if isinstance(url, str):
         try:
@@ -115,7 +117,9 @@ def score_search_result(
                 is_official_doc = False
                 for kw, doc_urls in TECH_DOC_URLS.items():
                     if re.search(rf"\b{re.escape(kw)}\b", query.lower()):
-                        if any(hostname in urlsplit(doc_url).netloc.lower() for doc_url in doc_urls):
+                        if any(
+                            hostname in urlsplit(doc_url).netloc.lower() for doc_url in doc_urls
+                        ):
                             is_official_doc = True
                             break
 
@@ -199,7 +203,9 @@ def merge_and_rank_search_results(
             normalized_url = normalize_result_url(url)
 
             domain_boost = 0.0
-            is_tech_query = any(re.search(rf"\b{re.escape(kw)}\b", query.lower()) for kw in TECH_DOC_URLS.keys())
+            is_tech_query = any(
+                re.search(rf"\b{re.escape(kw)}\b", query.lower()) for kw in TECH_DOC_URLS.keys()
+            )
 
             try:
                 hostname = urlsplit(normalized_url).netloc.lower()
@@ -212,7 +218,9 @@ def merge_and_rank_search_results(
                     is_official_doc = False
                     for kw, doc_urls in TECH_DOC_URLS.items():
                         if re.search(rf"\b{re.escape(kw)}\b", query.lower()):
-                            if any(hostname in urlsplit(doc_url).netloc.lower() for doc_url in doc_urls):
+                            if any(
+                                hostname in urlsplit(doc_url).netloc.lower() for doc_url in doc_urls
+                            ):
                                 is_official_doc = True
                                 break
 

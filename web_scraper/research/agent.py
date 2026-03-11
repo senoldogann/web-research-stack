@@ -1364,18 +1364,76 @@ class ResearchAgent(LLMClient):
         # Helper to extract meaningful words (>3 chars, filtering stop words)
         def _get_meaningful_words(text: str) -> set[str]:
             stopwords = {
-                "nedir", "nasil", "nicin", "kimdir", "hangi", "hakkinda", "olarak", "olan",
-                "icin", "gibi", "kadar", "tarafindan", "neden", "veya", "yahut", "veyahut",
-                "what", "when", "where", "which", "who", "whom", "whose", "why", "how",
-                "that", "this", "these", "those", "then", "than", "here", "there",
-                "about", "above", "across", "after", "against", "along", "among", "around",
-                "with", "within", "without", "would", "should", "could", "have", "been",
-                "from", "into", "onto", "upon", "they", "their", "them", "your", "yours"
+                "nedir",
+                "nasil",
+                "nicin",
+                "kimdir",
+                "hangi",
+                "hakkinda",
+                "olarak",
+                "olan",
+                "icin",
+                "gibi",
+                "kadar",
+                "tarafindan",
+                "neden",
+                "veya",
+                "yahut",
+                "veyahut",
+                "what",
+                "when",
+                "where",
+                "which",
+                "who",
+                "whom",
+                "whose",
+                "why",
+                "how",
+                "that",
+                "this",
+                "these",
+                "those",
+                "then",
+                "than",
+                "here",
+                "there",
+                "about",
+                "above",
+                "across",
+                "after",
+                "against",
+                "along",
+                "among",
+                "around",
+                "with",
+                "within",
+                "without",
+                "would",
+                "should",
+                "could",
+                "have",
+                "been",
+                "from",
+                "into",
+                "onto",
+                "upon",
+                "they",
+                "their",
+                "them",
+                "your",
+                "yours",
             }
-            clean_text = re.sub(r'[^\w\s]', ' ', text.lower())
+            clean_text = re.sub(r"[^\w\s]", " ", text.lower())
 
             # Simple ascii normalization for Turkish characters to match stopwords easily
-            normalized = clean_text.replace('ı', 'i').replace('ç','c').replace('ş','s').replace('ö','o').replace('ü','u').replace('ğ', 'g')
+            normalized = (
+                clean_text.replace("ı", "i")
+                .replace("ç", "c")
+                .replace("ş", "s")
+                .replace("ö", "o")
+                .replace("ü", "u")
+                .replace("ğ", "g")
+            )
 
             words = clean_text.split()
             norm_words = normalized.split()
@@ -1392,11 +1450,11 @@ class ResearchAgent(LLMClient):
         # If the query had no words > 3 chars or they were all stopwords
         # Fall back to words > 2 chars
         if not query_words:
-            clean_text = re.sub(r'[^\w\s]', ' ', query.lower())
+            clean_text = re.sub(r"[^\w\s]", " ", query.lower())
             query_words = {w for w in clean_text.split() if len(w) > 2}
             # Absolute fallback
             if not query_words:
-                query_words = set(re.sub(r'[^\w\s]', ' ', query.lower()).split())
+                query_words = set(re.sub(r"[^\w\s]", " ", query.lower()).split())
                 if not query_words:
                     return 0.0
 

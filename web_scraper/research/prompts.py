@@ -728,7 +728,7 @@ SOURCE MATERIALS (sorted by authority tier, tier 1 = highest):
 • If multiple sources confirm a claim, cite ALL of them using COMMA-SEPARATED format: use [1, 3, 24] NOT [1][3][24].
 
 ━━━ NUMERICAL & STATISTICAL DATA RULES (MANDATORY) ━━━
-• CROSS-SOURCE VERIFICATION: In NORMAL MODE, any number/statistic MUST appear in at least TWO independent sources. 
+• CROSS-SOURCE VERIFICATION: In NORMAL MODE, any number/statistic MUST appear in at least TWO independent sources.
 • DEEP MODE EXCEPTION: In DEEP MODE, if a numerical claim comes from a TIER-1 source (Official Doc, Engineering Blog), you MAY state it as fact without a second source, provided you anchor it with the date.
 • SINGLE-SOURCE (LOW TIER): If a figure appears in only ONE source and it is NOT Tier-1, you MUST flag it: "(unverified — single source [N])".
 • NO TABLE ROW FOR UNVERIFIED NUMBERS: Do NOT add a data_table row for any figure that is flagged as unverified. Include it in key_findings instead.

@@ -9,7 +9,7 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 from web_scraper.config import config
-from web_scraper.research.constants import BLACKLISTED_DOMAINS, TRUSTED_DOMAINS, TECH_DOC_URLS
+from web_scraper.research.constants import BLACKLISTED_DOMAINS, TECH_DOC_URLS, TRUSTED_DOMAINS
 from web_scraper.research.url_utils import extract_result_domain, normalize_result_url
 
 ResearchProfile = Literal["technical", "news", "academic"]
@@ -99,7 +99,8 @@ def score_search_result(
 
     domain_boost = 0.0
     url = result.get("url", "")
-    
+    url = result.get("url", "")
+
     # Check if query contains any known tech keywords to adjust ranking behavior
     is_tech_query = any(re.search(rf"\b{re.escape(kw)}\b", query.lower()) for kw in TECH_DOC_URLS.keys())
     

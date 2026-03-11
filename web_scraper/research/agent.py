@@ -1359,9 +1359,8 @@ class ResearchAgent(LLMClient):
     # ------------------------------------------------------------------
 
     async def _calculate_relevance(self, query: str, content: str) -> float:
-        """Improved lexical relevance score focusing on meaningful words."""
         import re
-        
+
         # Helper to extract meaningful words (>3 chars, filtering stop words)
         def _get_meaningful_words(text: str) -> set[str]:
             stopwords = {

@@ -103,13 +103,13 @@ def score_search_result(
 
     # Check if query contains any known tech keywords to adjust ranking behavior
     is_tech_query = any(re.search(rf"\b{re.escape(kw)}\b", query.lower()) for kw in TECH_DOC_URLS.keys())
-    
+
     if isinstance(url, str):
         try:
             hostname = urlsplit(url).netloc.lower()
             if hostname.startswith("www."):
                 hostname = hostname[4:]
-            
+
             # 1. Tech Query Mode: Prioritize documentation, neutralize government/edu noise
             if is_tech_query:
                 is_official_doc = False
@@ -118,7 +118,7 @@ def score_search_result(
                         if any(hostname in urlsplit(doc_url).netloc.lower() for doc_url in doc_urls):
                             is_official_doc = True
                             break
-                            
+
                 if is_official_doc:
                     domain_boost = 0.6  # Massive boost for official docs
                 elif hostname in TRUSTED_DOMAINS:
@@ -127,7 +127,7 @@ def score_search_result(
                     domain_boost = 0.0  # NO BOOST for gov/edu in tech queries!
                 elif hostname.endswith(".org"):
                     domain_boost = 0.1
-            
+
             # 2. Standard Mode: Default trusted domain scaling
             else:
                 if hostname in TRUSTED_DOMAINS:
@@ -200,7 +200,7 @@ def merge_and_rank_search_results(
 
             domain_boost = 0.0
             is_tech_query = any(re.search(rf"\b{re.escape(kw)}\b", query.lower()) for kw in TECH_DOC_URLS.keys())
-            
+
             try:
                 hostname = urlsplit(normalized_url).netloc.lower()
                 if hostname.startswith("www."):
@@ -215,7 +215,7 @@ def merge_and_rank_search_results(
                             if any(hostname in urlsplit(doc_url).netloc.lower() for doc_url in doc_urls):
                                 is_official_doc = True
                                 break
-                                
+
                     if is_official_doc:
                         domain_boost = 0.8
                     elif hostname in TRUSTED_DOMAINS:

@@ -1373,13 +1373,13 @@ class ResearchAgent(LLMClient):
                 "from", "into", "onto", "upon", "they", "their", "them", "your", "yours"
             }
             clean_text = re.sub(r'[^\w\s]', ' ', text.lower())
-            
+
             # Simple ascii normalization for Turkish characters to match stopwords easily
-            normalized = clean_text.replace('ı', 'i').replace('ç','c').replace('ş','s').replace('ö','o').replace('ü','u').replace('ğ','g')
+            normalized = clean_text.replace('ı', 'i').replace('ç','c').replace('ş','s').replace('ö','o').replace('ü','u').replace('ğ', 'g')
             
             words = clean_text.split()
             norm_words = normalized.split()
-            
+
             meaningful = set()
             for w, nw in zip(words, norm_words):
                 # keep words > 3 chars and not in the explicit stopword list
@@ -1388,7 +1388,7 @@ class ResearchAgent(LLMClient):
             return meaningful
 
         query_words = _get_meaningful_words(query)
-        
+
         # If the query had no words > 3 chars or they were all stopwords
         # Fall back to words > 2 chars
         if not query_words:

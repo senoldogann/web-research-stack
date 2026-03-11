@@ -316,7 +316,28 @@ class WebScraper:
             Cleaned text content with code blocks in markdown fences.
         """
         # Remove unwanted elements
-        for tag in soup(["script", "style", "nav", "header", "footer", "aside"]):
+        for tag in soup(
+            [
+                "script",
+                "style",
+                "nav",
+                "header",
+                "footer",
+                "aside",
+                "form",
+                "iframe",
+                "noscript",
+                "svg",
+                "canvas",
+                "dialog",
+                "video",
+                "audio",
+                "button",
+                "input",
+                "select",
+                "textarea",
+            ]
+        ):
             tag.decompose()
 
         # Convert <pre>/<code> to markdown fences BEFORE get_text() strips them

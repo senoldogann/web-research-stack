@@ -89,14 +89,14 @@ class Config:
     research_search_pool_extra_normal: int = 5
     research_search_pool_extra_deep: int = 10
     research_normal_content_limit_chars: int = 4000
-    research_deep_content_limit_chars: int = 8000
-    research_non_deep_source_char_cap: int = 10000
+    research_deep_content_limit_chars: int = 25000
+    research_non_deep_source_char_cap: int = 30000
     research_planning_timeout_seconds: float = 30.0
     research_source_selection_timeout_seconds: float = 60.0
     research_synthesis_timeout_seconds: float = 120.0
     research_deep_synthesis_timeout_seconds: float = 240.0
     research_enable_query_rewrite: bool = True
-    research_query_rewrite_max_variants: int = 4
+    research_query_rewrite_max_variants: int = 5
     research_query_rewrite_timeout_seconds: float = 20.0
     research_enable_google_fallback: bool = True
     research_google_fallback_min_results: int = 5
@@ -363,7 +363,7 @@ class Config:
                 True,
             ),
             research_query_rewrite_max_variants=_safe_int(
-                os.getenv("RESEARCH_QUERY_REWRITE_MAX_VARIANTS"), 4
+                os.getenv("RESEARCH_QUERY_REWRITE_MAX_VARIANTS"), 5
             ),
             research_query_rewrite_timeout_seconds=_safe_float(
                 os.getenv("RESEARCH_QUERY_REWRITE_TIMEOUT_SECONDS"), 20.0

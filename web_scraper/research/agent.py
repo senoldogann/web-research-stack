@@ -686,12 +686,8 @@ class ResearchAgent(LLMClient):
                 # Accumulate from multiple profile collectors
                 profile_results.extend(list(outcome))  # type: ignore[arg-type]
 
-        min_google_fallback = min(
-            max(1, config.research_google_fallback_min_results),
-            max(1, search_pool_size),
-        )
-        if ddg_results and len(ddg_results) >= min_google_fallback:
-            google_results = []
+        # In both Standard and Deep Mode, we keep Google results if they were collected,
+        # as Google often provides higher quality technical content.
 
         ranked = merge_and_rank_search_results(
             query=query,
@@ -1363,8 +1359,48 @@ class ResearchAgent(LLMClient):
     # ------------------------------------------------------------------
 
     async def _calculate_relevance(self, query: str, content: str) -> float:
-        """Simple lexical relevance score (0–1)."""
-        query_words = set(query.lower().split())
+        """Improved lexical relevance score focusing on meaningful words."""
+        import re
+        
+        # Helper to extract meaningful words (>3 chars, filtering stop words)
+        def _get_meaningful_words(text: str) -> set[str]:
+            stopwords = {
+                "nedir", "nasil", "nicin", "kimdir", "hangi", "hakkinda", "olarak", "olan",
+                "icin", "gibi", "kadar", "tarafindan", "neden", "veya", "yahut", "veyahut",
+                "what", "when", "where", "which", "who", "whom", "whose", "why", "how",
+                "that", "this", "these", "those", "then", "than", "here", "there",
+                "about", "above", "across", "after", "against", "along", "among", "around",
+                "with", "within", "without", "would", "should", "could", "have", "been",
+                "from", "into", "onto", "upon", "they", "their", "them", "your", "yours"
+            }
+            clean_text = re.sub(r'[^\w\s]', ' ', text.lower())
+            
+            # Simple ascii normalization for Turkish characters to match stopwords easily
+            normalized = clean_text.replace('ı', 'i').replace('ç','c').replace('ş','s').replace('ö','o').replace('ü','u').replace('ğ','g')
+            
+            words = clean_text.split()
+            norm_words = normalized.split()
+            
+            meaningful = set()
+            for w, nw in zip(words, norm_words):
+                # keep words > 3 chars and not in the explicit stopword list
+                if len(w) > 3 and nw not in stopwords:
+                    meaningful.add(w)
+            return meaningful
+
+        query_words = _get_meaningful_words(query)
+        
+        # If the query had no words > 3 chars or they were all stopwords
+        # Fall back to words > 2 chars
+        if not query_words:
+            clean_text = re.sub(r'[^\w\s]', ' ', query.lower())
+            query_words = {w for w in clean_text.split() if len(w) > 2}
+            # Absolute fallback
+            if not query_words:
+                query_words = set(re.sub(r'[^\w\s]', ' ', query.lower()).split())
+                if not query_words:
+                    return 0.0
+
         content_lower = content.lower()
         matches = sum(1 for word in query_words if word in content_lower)
         return round(min(matches / max(len(query_words), 1), 1.0), 2)

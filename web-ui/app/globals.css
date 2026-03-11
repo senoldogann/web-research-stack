@@ -188,8 +188,13 @@ select option {
 
 /* Source card shine sweep animation */
 @keyframes shine-sweep {
-    0%   { transform: translateX(-100%); }
-    100% { transform: translateX(300%); }
+    0% {
+        transform: translateX(-100%);
+    }
+
+    100% {
+        transform: translateX(300%);
+    }
 }
 
 .source-shine-overlay {
@@ -198,14 +203,12 @@ select option {
     left: 0;
     right: 0;
     bottom: 0;
-    background: linear-gradient(
-        90deg,
-        transparent 0%,
-        var(--shine-warm) 35%,
-        var(--shine-bright) 50%,
-        var(--shine-warm) 65%,
-        transparent 100%
-    );
+    background: linear-gradient(90deg,
+            transparent 0%,
+            var(--shine-warm) 35%,
+            var(--shine-bright) 50%,
+            var(--shine-warm) 65%,
+            transparent 100%);
     animation: shine-sweep 2.8s ease-in-out infinite;
     pointer-events: none;
 }

@@ -393,7 +393,7 @@ export default function Home() {
     // Translate backend status messages
     const translateStatusMessage = (message: string): string => {
         const lowerMsg = message.toLowerCase();
-        
+
         if (lowerMsg.includes('preparing search')) {
             return t.researchStatusPreparingSearchQueries;
         }
@@ -417,7 +417,7 @@ export default function Home() {
             const countMatch = message.match(/generated\s+(\d+)/i);
             return t.researchStatusGeneratingQueries.replace('{count}', countMatch?.[1] || '0');
         }
-        
+
         return message; // Return original if no match
     };
 
@@ -934,62 +934,62 @@ function LoadingState({ sources, statusLogs, isCompleted }: { sources: SourceSta
     const getIcon = (type: StatusLog['type'], message: string, isLast: boolean, isProcessing: boolean) => {
         const color = isProcessing ? 'var(--text-secondary)' : 'var(--text-ghost)';
         const lowerMessage = message.toLowerCase();
-        
+
         // Araştırma başlatma - Rocket/Sparkles
         if (lowerMessage.includes('başlatılıyor') || lowerMessage.includes('starting')) {
             return <Rocket className="w-4 h-4" style={{ color }} />;
         }
-        
+
         // Sorgu hazırlama - FileText
         if (lowerMessage.includes('sorguları hazırlanıyor') || lowerMessage.includes('preparing search')) {
             return <FileText className="w-4 h-4" style={{ color }} />;
         }
-        
+
         // Varyant oluşturma - GitBranch
         if (lowerMessage.includes('varyantı') || lowerMessage.includes('variants') || lowerMessage.includes('query variant')) {
             return <GitBranch className="w-4 h-4" style={{ color }} />;
         }
-        
+
         // Strateji planlama - Compass
         if (lowerMessage.includes('stratejisi') || lowerMessage.includes('strategy') || lowerMessage.includes('planlanıyor')) {
             return <Compass className="w-4 h-4" style={{ color }} />;
         }
-        
+
         // Sıralama ve seçme - BarChart3/Target
         if (lowerMessage.includes('sıralanıp') || lowerMessage.includes('ranking') || lowerMessage.includes('selecting')) {
             return <BarChart3 className="w-4 h-4" style={{ color }} />;
         }
-        
+
         // Kaynak bulma - Database/Layers
         if (lowerMessage.includes('kaynak bulundu') || lowerMessage.includes('sources found') || lowerMessage.includes('potential sources')) {
             return <Database className="w-4 h-4" style={{ color }} />;
         }
-        
+
         // Veri toplama - CloudDownload
         if (lowerMessage.includes('veri toplanıyor') || lowerMessage.includes('gathering data') || lowerMessage.includes('toplanıyor')) {
             return <CloudDownload className="w-4 h-4" style={{ color }} />;
         }
-        
+
         // Karakter toplandı - FileCheck
         if (lowerMessage.includes('karakter') || lowerMessage.includes('characters')) {
             return <FileCheck className="w-4 h-4" style={{ color }} />;
         }
-        
+
         // Analiz - Brain/Scan
         if (lowerMessage.includes('analiz') || lowerMessage.includes('analyzing') || lowerMessage.includes('sentez')) {
             return <Brain className="w-4 h-4" style={{ color }} />;
         }
-        
+
         // Arama tipi için Globe
         if (type === 'search') {
             return <Globe className="w-4 h-4" style={{ color }} />;
         }
-        
+
         // Başarı tipi için CheckCircle
         if (type === 'success') {
             return <CheckCircle className="w-4 h-4" style={{ color }} />;
         }
-        
+
         // Varsayılan - Sparkles (sihirli efekt)
         return <Sparkles className="w-4 h-4" style={{ color }} />;
     };

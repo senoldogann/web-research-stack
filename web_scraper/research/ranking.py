@@ -9,7 +9,7 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 from web_scraper.config import config
-from web_scraper.research.constants import BLACKLISTED_DOMAINS, TRUSTED_DOMAINS
+from web_scraper.research.constants import BLACKLISTED_DOMAINS, TRUSTED_DOMAINS, TECH_DOC_URLS
 from web_scraper.research.url_utils import extract_result_domain, normalize_result_url
 
 ResearchProfile = Literal["technical", "news", "academic"]
@@ -99,17 +99,43 @@ def score_search_result(
 
     domain_boost = 0.0
     url = result.get("url", "")
+    
+    # Check if query contains any known tech keywords to adjust ranking behavior
+    is_tech_query = any(re.search(rf"\b{re.escape(kw)}\b", query.lower()) for kw in TECH_DOC_URLS.keys())
+    
     if isinstance(url, str):
         try:
             hostname = urlsplit(url).netloc.lower()
             if hostname.startswith("www."):
                 hostname = hostname[4:]
-            if hostname in TRUSTED_DOMAINS:
-                domain_boost = 0.3
-            elif any(hostname.endswith(f".{tld}") for tld in ["gov", "edu", "int"]):
-                domain_boost = 0.3
-            elif hostname.endswith(".org"):
-                domain_boost = 0.15
+            
+            # 1. Tech Query Mode: Prioritize documentation, neutralize government/edu noise
+            if is_tech_query:
+                is_official_doc = False
+                for kw, doc_urls in TECH_DOC_URLS.items():
+                    if re.search(rf"\b{re.escape(kw)}\b", query.lower()):
+                        if any(hostname in urlsplit(doc_url).netloc.lower() for doc_url in doc_urls):
+                            is_official_doc = True
+                            break
+                            
+                if is_official_doc:
+                    domain_boost = 0.6  # Massive boost for official docs
+                elif hostname in TRUSTED_DOMAINS:
+                    domain_boost = 0.2  # Slight boost, but docs are better
+                elif any(hostname.endswith(f".{tld}") for tld in ["gov", "edu", "int"]):
+                    domain_boost = 0.0  # NO BOOST for gov/edu in tech queries!
+                elif hostname.endswith(".org"):
+                    domain_boost = 0.1
+            
+            # 2. Standard Mode: Default trusted domain scaling
+            else:
+                if hostname in TRUSTED_DOMAINS:
+                    domain_boost = 0.3
+                elif any(hostname.endswith(f".{tld}") for tld in ["gov", "edu", "int"]):
+                    domain_boost = 0.3
+                elif hostname.endswith(".org"):
+                    domain_boost = 0.15
+
             if any(token in hostname for token in query_tokens if len(token) > 3):
                 domain_boost += 0.1
         except Exception:  # noqa: S110
@@ -172,6 +198,8 @@ def merge_and_rank_search_results(
             normalized_url = normalize_result_url(url)
 
             domain_boost = 0.0
+            is_tech_query = any(re.search(rf"\b{re.escape(kw)}\b", query.lower()) for kw in TECH_DOC_URLS.keys())
+            
             try:
                 hostname = urlsplit(normalized_url).netloc.lower()
                 if hostname.startswith("www."):
@@ -179,12 +207,29 @@ def merge_and_rank_search_results(
                 if hostname in BLACKLISTED_DOMAINS:
                     continue
 
-                if hostname in TRUSTED_DOMAINS:
-                    domain_boost = 0.5
-                elif any(hostname.endswith(f".{tld}") for tld in ["gov", "edu", "int"]):
-                    domain_boost = 0.4
-                elif hostname.endswith(".org"):
-                    domain_boost = 0.2
+                if is_tech_query:
+                    is_official_doc = False
+                    for kw, doc_urls in TECH_DOC_URLS.items():
+                        if re.search(rf"\b{re.escape(kw)}\b", query.lower()):
+                            if any(hostname in urlsplit(doc_url).netloc.lower() for doc_url in doc_urls):
+                                is_official_doc = True
+                                break
+                                
+                    if is_official_doc:
+                        domain_boost = 0.8
+                    elif hostname in TRUSTED_DOMAINS:
+                        domain_boost = 0.3
+                    elif any(hostname.endswith(f".{tld}") for tld in ["gov", "edu", "int"]):
+                        domain_boost = 0.0  # ZERO BOOST for gov/edu on tech queries
+                    elif hostname.endswith(".org"):
+                        domain_boost = 0.1
+                else:
+                    if hostname in TRUSTED_DOMAINS:
+                        domain_boost = 0.5
+                    elif any(hostname.endswith(f".{tld}") for tld in ["gov", "edu", "int"]):
+                        domain_boost = 0.4
+                    elif hostname.endswith(".org"):
+                        domain_boost = 0.2
 
                 if any(token in hostname for token in query_tokens if len(token) > 3):
                     domain_boost += 0.1

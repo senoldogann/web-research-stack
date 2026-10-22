@@ -670,7 +670,11 @@ class WebToolsService:
         browser_ms = (time.perf_counter() - started) * 1000
         self.metrics.observe("browser_render", browser_ms, outcome="ok")
 
-        interstitial = detect_interstitial(rendered.html, rendered.final_url)
+        interstitial = detect_interstitial(
+            rendered.html,
+            rendered.final_url,
+            rendered.status_code or 200,
+        )
         if interstitial:
             raise WebToolError(
                 "blocked",
@@ -715,7 +719,11 @@ class WebToolsService:
         rendered: BrowserPage,
         max_chars: int,
     ) -> LoadedDocument:
-        interstitial = detect_interstitial(rendered.html, rendered.final_url)
+        interstitial = detect_interstitial(
+            rendered.html,
+            rendered.final_url,
+            rendered.status_code or 200,
+        )
         if interstitial:
             raise WebToolError(
                 "blocked",

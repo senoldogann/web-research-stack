@@ -463,3 +463,28 @@ Modified:
 - `tests/test_duckduckgo_search.py`
 - `README.md`
 - `.env.example`
+
+## Reliability fixes (2026-10-22)
+
+Behavior changes from live testing of the tools.
+
+### Challenge detection
+
+- A captcha is reported only on evidence a visitor would meet: a widget in the
+  DOM (`g-recaptcha`, `h-captcha`, `cf-turnstile`, `px-captcha`), a captcha
+  iframe, a form that posts to a captcha endpoint, or a challenge phrase
+  (`unusual traffic`, `verify you are human`, `are you a robot`) in the visible
+  text with scripts, styles, and templates removed. The word `captcha` inside a
+  script no longer counts; it made Wikipedia, GitHub, Instagram, and
+  Verkkokauppa fail as captchas.
+- A 2xx response over 100 KB is content, never a captcha, with one exception: a
+  page with at most 3,000 visible characters that carries a captcha form.
+  Reddit's "Prove your humanity" page is 167 KB of inline assets around one, and
+  it is reported as `captcha` rather than handed over as the subreddit.
+- Challenge, block, and wall phrases count only on pages with at most 3,000
+  visible characters, so an article about "access denied" errors is content.
+- Invisible reCAPTCHA (the v3 badge, `data-size="invisible"`) is not a challenge.
+- A 401/403 HTML page of 20 KB or less is `access_blocked`, which may fall back
+  to one headless render; a JSON 401/403 stays an `http_error`.
+- A login wall needs a login title plus a login path or a password field; the
+  word "password" in scripts no longer counts.

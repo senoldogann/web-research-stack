@@ -54,6 +54,7 @@ from web_scraper.web_tools.urls import (
     matches_search_filter,
     matches_url_filters,
     normalize_request_url,
+    upgrade_to_https,
     url_in_scope,
 )
 
@@ -672,7 +673,7 @@ class WebToolsService:
         base = canonical_target(url)
         resolved = CrawlOptions.from_dict(options, self.settings)
         manager = self._crawl_manager()
-        snapshot = await manager.create(base, resolved)
+        snapshot = await manager.create(base, resolved, upgraded=base != self._canonical(url))
         self.metrics.count("crawls_started_total")
         return snapshot
 
@@ -727,19 +728,37 @@ class WebToolsService:
         return self._crawl
 
     async def _crawl_page(self, url: str) -> dict[str, Any]:
-        document = await self._load_page(
-            url,
-            max_chars=self.settings.crawl_content_limit_chars,
-        )
+        limit = self.settings.crawl_content_limit_chars
+        document = await self._load_page(url, max_chars=limit)
+        final_url = document.final_url
+        page = document.page
+        secure = upgrade_to_https(final_url)
+        if (
+            url.startswith("https://")
+            and secure != final_url
+            and urlsplit(final_url).hostname == urlsplit(url).hostname
+        ):
+            # The site redirected an https request to http on the same host
+            # (quotes.toscrape.com does it for every trailing slash). Read the
+            # page as its https self, so its links stay https and the same
+            # content hashes the same whichever scheme reached it.
+            final_url = secure
+            if document.html:
+                page = extract_page(
+                    document.html,
+                    final_url,
+                    max_links=self.settings.max_links,
+                    max_chars=limit,
+                )
         return {
-            "url": document.final_url,
-            "title": document.page.title,
-            "description": document.page.description,
-            "markdown": document.page.markdown,
+            "url": final_url,
+            "title": page.title,
+            "description": page.description,
+            "markdown": page.markdown,
             "status_code": document.status_code,
-            "content_hash": content_hash(document.page.markdown),
+            "content_hash": content_hash(page.markdown),
             "fetched_with": document.fetched_with,
-            "links": [link.url for link in document.page.links],
+            "links": [link.url for link in page.links],
         }
 
     async def _load_page(self, url: str, *, max_chars: int) -> LoadedDocument:

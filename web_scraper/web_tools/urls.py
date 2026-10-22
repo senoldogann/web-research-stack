@@ -138,6 +138,22 @@ def normalize_request_url(url: str) -> str:
     return urlunsplit((scheme, netloc, parsed.path or "/", parsed.query, ""))
 
 
+def upgrade_to_https(url: str) -> str:
+    """Rewrite an ``http`` URL on the default port to ``https``; leave others alone.
+
+    An explicit port is kept as it is: a service on ``:8080`` speaks plain HTTP.
+    """
+    parsed = urlsplit(url)
+    if parsed.scheme.lower() != "http":
+        return url
+    try:
+        if parsed.port is not None:
+            return url
+    except ValueError:
+        return url
+    return urlunsplit(("https", parsed.netloc, parsed.path, parsed.query, parsed.fragment))
+
+
 def is_http_url(url: str) -> bool:
     """Whether *url* is an http(s) string, without resolving or canonicalising it."""
     try:

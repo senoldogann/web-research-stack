@@ -568,3 +568,19 @@ Behavior changes from live testing of the tools.
   (`regulation-ai.eu`, `artificialintelligenceact.eu`) stay `other` with no
   authority weight, so the European Commission's AI Act timeline outranks a
   blog about it.
+
+### Crawl schemes
+
+- A crawl runs on https: the seed and every discovered `http://` link on a
+  default port are rewritten to `https://`, and a page is queued once per host
+  and path whichever scheme linked to it.
+- quotes.toscrape.com answers `https://…/author/Albert-Einstein` with a 308 to
+  `http://…/author/Albert-Einstein/`, so most results came back as `http://`
+  with `http://` links, and one page could enter the results twice. A page an
+  https request reached through such a same-host downgrade is now read as its
+  https self: its URL and links stay https, and the same content hashes the
+  same whichever scheme reached it, so content-hash dedupe catches it. A
+  30-page crawl of quotes.toscrape.com now returns no `http://` URL; before
+  the change 28 of 30 were `http://`.
+- A host that refuses https (a network error on a rewritten URL) is crawled
+  over http for the rest of the job.

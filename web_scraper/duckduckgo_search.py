@@ -1,6 +1,7 @@
 """DuckDuckGo Search integration - privacy-friendly, less bot protection."""
 
 import asyncio
+import random
 import re
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import quote_plus, unquote, urlparse
@@ -36,6 +37,42 @@ class DuckDuckGoSearcher:
         "month": "m",
         "year": "y",
     }
+    MAX_QUERY_LENGTH = 499
+
+    def __init__(
+        self,
+        *,
+        region: str = "wt-wt",
+        language: str = "en-US,en;q=0.9",
+    ) -> None:
+        self.region = region or "wt-wt"
+        self.language = language or "en-US,en;q=0.9"
+
+    def _build_headers(self) -> Dict[str, str]:
+        headers = HeaderFactory.get_headers()
+        headers["User-Agent"] = random.choice(self.USER_AGENTS)  # noqa: S311
+        headers["accept-language"] = self.language
+        return headers
+
+    def _normalise_query(self, query: str) -> str:
+        return " ".join((query or "").split())[: self.MAX_QUERY_LENGTH]
+
+    def _build_params(
+        self,
+        query: str,
+        date_filter: Optional[str] = None,
+        *,
+        vqd: Optional[str] = None,
+    ) -> Dict[str, str]:
+        params = {
+            "q": self._normalise_query(query),
+            "kl": self.region,
+        }
+        if vqd:
+            params["vqd"] = vqd
+        if date_filter in self.DATE_FILTERS:
+            params["df"] = self.DATE_FILTERS[date_filter]
+        return params
 
     async def search(
         self,
@@ -55,11 +92,11 @@ class DuckDuckGoSearcher:
         Returns:
             List of result dictionaries with title, url, snippet
         """
-        import random
+        query = self._normalise_query(query)
+        if not query:
+            return []
 
-        headers = HeaderFactory.get_headers()
-        headers["User-Agent"] = random.choice(self.USER_AGENTS)  # noqa: S311
-
+        headers = self._build_headers()
         results = []
         async with requests.AsyncSession(
             timeout=config.duckduckgo_request_timeout_seconds,
@@ -70,18 +107,11 @@ class DuckDuckGoSearcher:
                 f"https://duckduckgo.com/?q={quote_plus(query)}", headers=headers
             )
             vqd_match = re.search(r"vqd=([\d-]+)", resp.text)
-
-            # Fallback data if VQD extraction fails, prepare params for GET
-            params = {
-                "q": query,
-                "kl": "us-en",
-            }
-            if vqd_match:
-                params["vqd"] = vqd_match.group(1)
-
-            # Add date filter if specified (e.g., df=y for last year)
-            if date_filter and date_filter in self.DATE_FILTERS:
-                params["df"] = self.DATE_FILTERS[date_filter]
+            params = self._build_params(
+                query,
+                date_filter,
+                vqd=vqd_match.group(1) if vqd_match else None,
+            )
 
             # Step 2: Extract results via pagination loop
             while len(results) < num_results:
@@ -112,11 +142,11 @@ class DuckDuckGoSearcher:
                 if not next_params or len(results) >= num_results:
                     break
 
-                # Preserve date filter across pagination
+                params = dict(next_params)
+                params["q"] = query
+                params["kl"] = self.region
                 if date_filter and date_filter in self.DATE_FILTERS:
-                    next_params["df"] = self.DATE_FILTERS[date_filter]
-
-                params = next_params
+                    params["df"] = self.DATE_FILTERS[date_filter]
                 await asyncio.sleep(config.duckduckgo_request_delay_seconds)
 
         return results[:num_results]

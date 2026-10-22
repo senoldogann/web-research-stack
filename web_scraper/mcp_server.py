@@ -124,12 +124,14 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
                 "name": "web_search",
                 "description": (
                     "Discover result URLs with a replaceable search provider. depth=discover "
-                    "(default) runs base, current-year, and historical queries and ranks "
-                    "results by source type, inferred recency, authority, and domain "
-                    "diversity; depth=fast sends one query; depth=deep adds an official or "
-                    "primary-source angle. Results carry source_type, year, recency, angles, "
-                    "and score, with coverage facets. Search discovers URLs only; use "
-                    "web_scrape to read a result."
+                    "(default) runs base, current-year, and historical queries; depth=deep adds "
+                    "an official or primary-source angle; depth=fast sends one query. Ranking "
+                    "uses field-weighted BM25, weighted cross-angle consensus, source authority, "
+                    "inferred recency, and near-duplicate/domain diversity. Explicit freshness "
+                    "queries get provider date filters; responses are cached per query and a "
+                    "blocking provider is cooled down. Results carry source_type, year, recency, "
+                    "angles, relevance, bm25, score, and cache_hit, with coverage facets. Search "
+                    "discovers URLs only; use web_scrape to read a result."
                 ),
                 "inputSchema": WebSearchRequest.model_json_schema(),
                 "annotations": _annotations(

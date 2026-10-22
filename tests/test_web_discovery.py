@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Iterable
 
 import pytest
@@ -9,6 +10,7 @@ import pytest
 from web_scraper.api_runtime import InMemoryTTLCache
 from web_scraper.web_tools.discovery import (
     DiscoveryCandidate,
+    annotate_candidates,
     build_facets,
     build_search_angles,
     classify_recency,
@@ -35,9 +37,17 @@ class RoutingSearch:
         self.results_by_query = results_by_query or {}
         self.failures = set(failures or ())
         self.calls: list[tuple[str, int]] = []
+        self.date_filters: list[str | None] = []
 
-    async def search(self, query: str, limit: int) -> list[SearchResult]:
+    async def search(
+        self,
+        query: str,
+        limit: int,
+        *,
+        date_filter: str | None = None,
+    ) -> list[SearchResult]:
         self.calls.append((query, limit))
+        self.date_filters.append(date_filter)
         if query in self.failures:
             raise WebToolError("search_failed", "refused", detail="bot_detected")
         return list(self.results_by_query.get(query, []))
@@ -155,7 +165,14 @@ def test_turkish_letters_fold_for_lexical_relevance() -> None:
         ("https://github.com/python/cpython", "code"),
         ("https://www.nasa.gov/mission", "official"),
         ("https://mit.edu/research", "academic"),
-        ("https://example.com/docs/getting-started", "official"),
+        ("https://docs.opensearch.org/latest/vector-search/", "official"),
+        ("https://sqlite.org/fts5.html", "official"),
+        ("https://python-httpx.org/async/", "official"),
+        # A path that says "docs" is a documentation mirror, not the project's own site: mdn.org.cn and
+        # runebook.dev copy another project's docs and must not wear the authority of its canonical host.
+        ("https://example.com/docs/getting-started", "reference"),
+        ("https://mdn.org.cn/en-US/docs/Web/API/AbortController", "reference"),
+        ("https://runebook.dev/docs/postgresql/textsearch", "reference"),
         ("https://example.com/blog/post", "other"),
     ],
 )
@@ -518,3 +535,205 @@ async def test_deep_runs_four_angles() -> None:
     assert len(search.calls) == 4
     assert search.calls[-1][0] == "python asyncio official documentation"
     assert result["depth"] == "deep"
+
+
+def test_bm25f_weights_title_matches_above_snippet_matches() -> None:
+    title_match = _candidate(
+        "https://alpha.example.com/title",
+        "Asyncio cancellation",
+    )
+    snippet_match = _candidate(
+        "https://beta.example.com/snippet",
+        "Guide",
+        "Asyncio cancellation",
+    )
+
+    results = annotate_candidates(
+        "asyncio cancellation",
+        [snippet_match, title_match],
+        year_now=2026,
+    )
+
+    by_url = {item["url"]: item for item in results}
+    assert by_url[title_match.result.url]["bm25"] > by_url[snippet_match.result.url]["bm25"]
+    assert (
+        by_url[title_match.result.url]["relevance"] == by_url[snippet_match.result.url]["relevance"]
+    )
+
+
+def test_bm25f_saturates_repeated_terms() -> None:
+    single = _candidate(
+        "https://alpha.example.com/single",
+        "Asyncio guide",
+    )
+    repeated = _candidate(
+        "https://beta.example.com/repeated",
+        "Asyncio asyncio asyncio asyncio asyncio guide",
+    )
+
+    results = annotate_candidates("asyncio guide", [single, repeated], year_now=2026)
+
+    by_url = {item["url"]: item for item in results}
+    assert by_url[single.result.url]["bm25"] > 0
+    assert by_url[repeated.result.url]["bm25"] < 2 * by_url[single.result.url]["bm25"]
+
+
+def test_weighted_rrf_prefers_current_angle_over_background() -> None:
+    background = _candidate(
+        "https://a.example.com/background",
+        "Asyncio event loop",
+        "Asyncio guide",
+        {"background": 0},
+    )
+    current = _candidate(
+        "https://z.example.com/current",
+        "Asyncio event loop",
+        "Asyncio guide",
+        {"current": 0},
+    )
+
+    results = rank_candidates("asyncio", [background, current], 2, year_now=2026)
+
+    assert [item["url"] for item in results] == [current.result.url, background.result.url]
+
+
+def test_mmr_prefers_a_distinct_result_over_a_near_duplicate() -> None:
+    snippet = "Complete asyncio guide with examples"
+    first = _candidate(
+        "https://alpha.example.com/guide",
+        "Asyncio guide",
+        snippet,
+        {"base": 0},
+    )
+    duplicate = _candidate(
+        "https://mirror.example.net/guide",
+        "Asyncio guide",
+        snippet,
+        {"base": 1},
+    )
+    distinct = _candidate(
+        "https://beta.example.org/guide",
+        "Asyncio guide",
+        "Threads tasks cancellation event loop debugging testing",
+        {"base": 2},
+    )
+
+    results = rank_candidates(
+        "asyncio guide",
+        [first, duplicate, distinct],
+        2,
+        year_now=2026,
+    )
+
+    assert [item["url"] for item in results] == [first.result.url, distinct.result.url]
+
+
+def test_freshness_intent_adds_provider_date_filters() -> None:
+    discover = build_search_angles("latest python release", "discover", year=2026)
+    turkish = build_search_angles("güncel yapay zeka haberleri", "fast", year=2026)
+    general = build_search_angles("python asyncio", "discover", year=2026)
+
+    assert [(angle.name, angle.date_filter) for angle in discover] == [
+        ("base", "year"),
+        ("current", "year"),
+        ("background", None),
+    ]
+    assert turkish[0].date_filter == "year"
+    assert general[0].date_filter is None
+    assert general[1].date_filter == "year"
+    assert general[2].date_filter is None
+
+
+@pytest.mark.asyncio
+async def test_freshness_query_forwards_date_filter_to_provider() -> None:
+    search = RoutingSearch(
+        {
+            "latest asyncio release": [
+                SearchResult(
+                    "Asyncio release notes",
+                    "https://docs.python.org/3/library/asyncio.html",
+                    "Latest changes",
+                    "docs.python.org",
+                )
+            ]
+        }
+    )
+
+    result = await _service(search).search("latest asyncio release", limit=5, depth="fast")
+
+    assert search.date_filters == ["year"]
+    assert result["queries"][0]["date_filter"] == "year"
+
+
+@pytest.mark.asyncio
+async def test_provider_cooldown_stops_repeated_failures() -> None:
+    search = RoutingSearch(failures={"asyncio"})
+    service = _service(search)
+
+    with pytest.raises(WebToolError):
+        await service.search("asyncio", limit=5, depth="fast")
+
+    with pytest.raises(WebToolError) as exc:
+        await service.search("asyncio", limit=5, depth="fast")
+
+    assert exc.value.detail == "provider_cooldown"
+    assert len(search.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_multiple_blocked_angles_put_provider_on_cooldown() -> None:
+    angles = build_search_angles("asyncio", "discover")
+    base_query, current_query, background_query = [angle.query for angle in angles]
+    search = RoutingSearch(
+        {
+            base_query: [
+                SearchResult(
+                    "Asyncio guide",
+                    "https://docs.python.org/3/library/asyncio.html",
+                    "Official guide",
+                    "docs.python.org",
+                )
+            ]
+        },
+        failures={current_query, background_query},
+    )
+    service = _service(search)
+
+    first = await service.search("asyncio", limit=5)
+
+    assert first["results"]
+    assert first["warnings"] == [
+        "current_query_failed",
+        "background_query_failed",
+    ]
+
+    with pytest.raises(WebToolError) as exc:
+        await service.search("different query", limit=5)
+
+    assert exc.value.detail == "provider_cooldown"
+    assert len(search.calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_search_timeout_is_reported_as_a_provider_failure() -> None:
+    class HangingSearch:
+        name = "fake"
+
+        async def search(
+            self,
+            query: str,
+            limit: int,
+            *,
+            date_filter: str | None = None,
+        ) -> list[SearchResult]:
+            await asyncio.sleep(0.05)
+            return []
+
+    service = _service(HangingSearch())  # type: ignore[arg-type]
+    service.settings.search_timeout_seconds = 0.01
+
+    with pytest.raises(WebToolError) as exc:
+        await service.search("asyncio", limit=5, depth="fast")
+
+    assert exc.value.code == "timeout"
+    assert exc.value.detail == "search_timeout"

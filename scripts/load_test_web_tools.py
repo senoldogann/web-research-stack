@@ -182,7 +182,13 @@ class TrackingHostGate(HostGate):
 class StubSearchAdapter:
     name = "stub"
 
-    async def search(self, query: str, limit: int) -> list[SearchResult]:
+    async def search(
+        self,
+        query: str,
+        limit: int,
+        *,
+        date_filter: str | None = None,
+    ) -> list[SearchResult]:
         await asyncio.sleep(0.25)
         return [
             SearchResult(

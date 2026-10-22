@@ -78,7 +78,13 @@ class FakeSearch:
         self.results = results
         self.calls: list[tuple[str, int]] = []
 
-    async def search(self, query: str, limit: int) -> list[SearchResult]:
+    async def search(
+        self,
+        query: str,
+        limit: int,
+        *,
+        date_filter: str | None = None,
+    ) -> list[SearchResult]:
         self.calls.append((query, limit))
         if isinstance(self.results, Exception):
             raise self.results
@@ -221,6 +227,48 @@ async def test_search_canonicalises_deduplicates_and_drops_unsafe_results() -> N
 
 
 @pytest.mark.asyncio
+async def test_ttl_cache_honours_a_per_entry_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = [1000.0]
+    monkeypatch.setattr(
+        "web_scraper.api_runtime.time.monotonic",
+        lambda: now[0],
+    )
+    cache = InMemoryTTLCache(ttl_seconds=60, max_entries=4)
+    await cache.set("short", "value", ttl_seconds=5)
+
+    now[0] += 6.0
+
+    assert await cache.get("short") is None
+
+
+@pytest.mark.asyncio
+async def test_search_cache_returns_repeat_query_without_provider_call() -> None:
+    search = FakeSearch([SearchResult("One", "https://example.com/a", "asyncio", "example")])
+    service = _service(FakeFetcher({}), search=search)
+
+    first = await service.search("asyncio", limit=5, depth="fast")
+    second = await service.search("asyncio", limit=5, depth="fast")
+
+    assert first["cache_hit"] is False
+    assert second["cache_hit"] is True
+    assert search.calls == [("asyncio", 5)]
+    assert second["timings"]["cache_lookup_ms"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_search_cache_is_scoped_by_depth() -> None:
+    search = FakeSearch([SearchResult("One", "https://example.com/a", "asyncio", "example")])
+    service = _service(FakeFetcher({}), search=search)
+
+    await service.search("asyncio", limit=5, depth="fast")
+    await service.search("asyncio", limit=5, depth="discover")
+
+    assert len(search.calls) == 4
+
+
+@pytest.mark.asyncio
 async def test_extract_returns_values_provenance_and_page_metadata() -> None:
     url = "https://example.com/product"
     fetcher = FakeFetcher({url: _html_result(url, PRODUCT_HTML)})
@@ -338,6 +386,24 @@ def test_settings_read_web_tool_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.search_provider == "duckduckgo"
     assert settings.search_default_depth == "fast"
     assert settings.search_angle_delay_ms == 0
+
+
+def test_settings_read_search_locale_cache_and_cooldown_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WEB_TOOLS_SEARCH_REGION", "tr-tr")
+    monkeypatch.setenv("WEB_TOOLS_SEARCH_LANGUAGE", "tr-TR,tr;q=0.9")
+    monkeypatch.setenv("WEB_TOOLS_SEARCH_CACHE_TTL_SECONDS", "120")
+    monkeypatch.setenv("WEB_TOOLS_SEARCH_PROVIDER_COOLDOWN_SECONDS", "10")
+    monkeypatch.setenv("WEB_TOOLS_SEARCH_PROVIDER_MAX_COOLDOWN_SECONDS", "60")
+
+    settings = WebToolsSettings.from_env()
+
+    assert settings.search_region == "tr-tr"
+    assert settings.search_language == "tr-TR,tr;q=0.9"
+    assert settings.search_cache_ttl_seconds == 120
+    assert settings.search_provider_cooldown_seconds == 10
+    assert settings.search_provider_max_cooldown_seconds == 60
 
 
 def test_settings_fall_back_to_discover_for_unknown_depth() -> None:

@@ -66,7 +66,12 @@ def test_parse_results_preserves_spacing_around_inline_tags() -> None:
 @pytest.mark.asyncio
 async def test_adapter_reports_bot_detection_as_search_failure() -> None:
     class _BlockedSearcher:
-        async def search(self, query: str, num_results: int = 10) -> list[dict]:
+        async def search(
+            self,
+            query: str,
+            num_results: int = 10,
+            date_filter: str | None = None,
+        ) -> list[dict]:
             raise DuckDuckGoBlocked("bot check")
 
     adapter = DuckDuckGoSearchAdapter(_BlockedSearcher())
@@ -76,3 +81,38 @@ async def test_adapter_reports_bot_detection_as_search_failure() -> None:
 
     assert exc.value.code == "search_failed"
     assert exc.value.detail == "bot_detected"
+
+
+def test_params_use_configured_locale_and_cap_provider_query_length() -> None:
+    searcher = DuckDuckGoSearcher(region="tr-tr", language="tr-TR,tr;q=0.9")
+
+    params = searcher._build_params("x" * 600, "year", vqd="token-123")
+
+    assert params["q"] == "x" * 499
+    assert params["kl"] == "tr-tr"
+    assert params["df"] == "y"
+    assert params["vqd"] == "token-123"
+    assert searcher._build_headers()["accept-language"] == "tr-TR,tr;q=0.9"
+
+
+@pytest.mark.asyncio
+async def test_adapter_forwards_date_filter_to_searcher() -> None:
+    class _RecordingSearcher:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int, str | None]] = []
+
+        async def search(
+            self,
+            query: str,
+            num_results: int = 10,
+            date_filter: str | None = None,
+        ) -> list[dict]:
+            self.calls.append((query, num_results, date_filter))
+            return []
+
+    searcher = _RecordingSearcher()
+    adapter = DuckDuckGoSearchAdapter(searcher)
+
+    await adapter.search("query", 5, date_filter="month")
+
+    assert searcher.calls == [("query", 5, "month")]

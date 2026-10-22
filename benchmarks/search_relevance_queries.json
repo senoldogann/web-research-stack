@@ -1,0 +1,81 @@
+[
+  {
+    "query": "python asyncio best practices",
+    "expected_domains": [
+      "python.org",
+      "realpython.com",
+      "superfastpython.com"
+    ],
+    "freshness": false
+  },
+  {
+    "query": "python httpx async client timeout",
+    "expected_domains": [
+      "python-httpx.org",
+      "encode.io"
+    ],
+    "freshness": false
+  },
+  {
+    "query": "rust tokio select cancellation",
+    "expected_domains": [
+      "tokio.rs",
+      "docs.rs"
+    ],
+    "freshness": false
+  },
+  {
+    "query": "postgresql full text search tsvector",
+    "expected_domains": [
+      "postgresql.org"
+    ],
+    "freshness": false
+  },
+  {
+    "query": "react useEffect cleanup",
+    "expected_domains": [
+      "react.dev",
+      "legacy.reactjs.org"
+    ],
+    "freshness": false
+  },
+  {
+    "query": "latest python release",
+    "expected_domains": [
+      "python.org"
+    ],
+    "freshness": true
+  },
+  {
+    "query": "Türkiye yapay zeka eylem planı 2026",
+    "expected_domains": [
+      "turkiye.ai",
+      "tbb.gov.tr",
+      "cbddo.gov.tr",
+      "mevzuat.gov.tr"
+    ],
+    "freshness": true
+  },
+  {
+    "query": "sqlite fts5 bm25",
+    "expected_domains": [
+      "sqlite.org"
+    ],
+    "freshness": false
+  },
+  {
+    "query": "MDN AbortController",
+    "expected_domains": [
+      "developer.mozilla.org"
+    ],
+    "freshness": false
+  },
+  {
+    "query": "OpenSearch reciprocal rank fusion",
+    "expected_domains": [
+      "opensearch.org",
+      "elastic.co"
+    ],
+    "freshness": false
+  }
+]

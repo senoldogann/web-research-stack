@@ -90,11 +90,25 @@ rate-limit pressure. `discover` and `deep` request a larger per-angle limit
 (`2 × limit`, clamped to 8..`search_max_results`) so ranking has candidates to
 choose from; the response is still cut to `limit`.
 
+Freshness is explicit, not assumed. Queries that ask for it (`latest`, `today`,
+`this week`, `güncel`, `son dakika`, or the current year) get a provider date
+filter (`day`, `week`, `month`, or `year`); the `current` angle always uses
+`year`. General queries stay unfiltered so historical material is not discarded.
+DuckDuckGo honours the filter with `df`; the legacy Google adapter accepts the
+parameter but has no date-filter implementation. Per-angle `queries` reports
+include the applied `date_filter`.
+
 Results from all angles are canonicalised, deduplicated by URL, and ranked
 deterministically:
 
-- lexical overlap with the query (Turkish-aware folding, so `İstanbul` matches
-  `Istanbul`) and reciprocal rank fusion across angles;
+- BM25F lexical scoring over separate title (weight 3.0), snippet (1.2), and URL
+  (0.5) fields, with per-field length normalisation and term-frequency
+  saturation. Document frequency is computed over the candidate pool, so the
+  score reflects how distinctive a term is for this search. Turkish letters are
+  folded, so `İstanbul` matches `Istanbul`.
+- weighted reciprocal-rank fusion across angles: base 1.0, current 0.9, primary
+  0.8, background 0.75. Agreement between angles is still valuable, but a hit
+  from the historical angle cannot outweigh the exact query as easily.
 - source-type authority (`official`, `academic`, `news`, `reference`, `code`,
   `community`, `other`), classified from the host and path;
 - publication year inferred from title, snippet, and URL, with `current`,
@@ -103,17 +117,25 @@ deterministically:
   older primary material is not automatically buried;
 - an exact-phrase bonus and a bonus when the matching angle agrees with the
   inferred recency;
+- MMR-style near-duplicate suppression: results whose title+snippet Jaccard
+  similarity exceeds 0.55 are penalised, so syndicated copies do not occupy
+  several slots;
 - a per-domain cap of `ceil(limit / 3)` and a source-type diversity adjustment,
   so one site or one kind of source cannot fill the page.
 
 Scores are relative ranking weights, not probabilities. Every result carries
-`source_type`, `year`, `recency`, `angles`, `relevance`, and `score`. The
+`source_type`, `year`, `recency`, `angles`, `relevance`, `bm25`, and `score`. The
 response also includes `facets` (source types, recency buckets, domains, angles,
-candidate count), per-angle `queries` with result/new counts and errors, and
-`warnings`. If an enrichment angle fails, usable results from the remaining
-angles are returned with a warning; if every angle fails, the first provider
-error is raised. `fast` keeps provider order and does not fan out, so it sends
-the fewest requests.
+candidate count), per-angle `queries` with result/new counts, date filters and
+errors, `warnings`, and `cache_hit`. If an enrichment angle fails, usable
+results from the remaining angles are returned with a warning. A total failure,
+a failed `base` angle, or two or more failed angles put the provider into an
+exponential cooldown (30 s doubling to 300 s, reset on a clean run), so the
+service fails fast instead of immediately re-hammering a provider that is
+blocking it. `fast` keeps provider order and does not fan out, so it sends the
+fewest requests. Successful responses are cached for
+`WEB_TOOLS_SEARCH_CACHE_TTL_SECONDS` (default 300 s) per provider/depth/limit/
+query/locale, so a repeated search skips the provider entirely.
 
 ## Configuration
 
@@ -125,6 +147,12 @@ Copy `.env.example` to `.env` and set what you need. The important web tool knob
 | `SEARCH_PROVIDER` | `duckduckgo` | `duckduckgo` or `google` |
 | `SEARCH_DEPTH` | `discover` | Default `fast`, `discover`, or `deep` |
 | `SEARCH_ANGLE_DELAY_MS` | `150` | Pause between discovery angles (0..5000) |
+| `SEARCH_REGION` | `wt-wt` | DuckDuckGo `kl` region, e.g. `tr-tr`; `wt-wt` is neutral |
+| `SEARCH_LANGUAGE` | `en-US,en;q=0.9` | `Accept-Language` value |
+| `SEARCH_CACHE_TTL_SECONDS` | `300` | Search response cache TTL |
+| `SEARCH_TIMEOUT_SECONDS` | `30` | Per-angle provider timeout |
+| `SEARCH_PROVIDER_COOLDOWN_SECONDS` | `30` | First cooldown after total/base/multi-angle failure |
+| `SEARCH_PROVIDER_MAX_COOLDOWN_SECONDS` | `300` | Cap for the doubling cooldown |
 | `FETCH_TIMEOUT_SECONDS` | `20` | Per-request timeout |
 | `FETCH_RETRIES` | `1` | Retries for transient failures only |
 | `MAX_RESPONSE_BYTES` | `5000000` | Response body cap |
@@ -319,6 +347,11 @@ Final run: 2026-10-22, macOS 26.6.2 arm64, Python 3.13.16, Chrome 155.
 | HTTP cached: wall | 20 | 0.05 ms | 0.35 ms |
 | Browser warm: render | 3 | 3451.27 ms | 3524.30 ms |
 
+The search row predates multi-angle discovery becoming the default: each sample
+was one provider query. Scrape and browser rows are unaffected by ranking
+changes. Use the live discovery comparison below for per-depth latency and
+candidate yield.
+
 - HTTP cold succeeded 20/20; cached returned 20/20 hits (cache speedup at P50:
   about 11,957×). A cached hit still pays the public-call wrapper, hence 0.05 ms.
 - No browser was started during the HTTP suite (`engine_after=null`,
@@ -372,35 +405,40 @@ Query `python asyncio best practices`, `limit=8`, 2026-10-22, DuckDuckGo:
 
 | Depth | Provider calls | Unique candidates | Results (official / other / community) | Current-year results | Wall |
 |---|---:|---:|---|---:|---:|
-| `fast` | 1 | 8 | 2 / 4 / 2 | 1 | 1,642 ms |
-| `discover` | 3 (2 succeeded) | 26 | 3 / 3 / 2 | 2 | 5,949 ms |
-| `deep` | 4 (2 succeeded) | 29 | 3 / 3 / 2 | 3 | 5,305 ms |
+| `fast` | 1 (1 succeeded) | 8 | 2 / 4 / 2 | 1 | 991 ms |
+| `discover` | 3 (2 succeeded) | 31 | 2 / 5 / 1 | 3 | 4,436 ms |
+| `deep` | 4 (3 succeeded) | 38 | 3 / 4 / 1 | 3 | 6,362 ms |
 
-`fast` kept provider order, which put a tutorial ahead of the official
-`docs.python.org` pages. `discover` and `deep` promoted the official asyncio
-documentation to rank 1, kept a current 2026 guide at rank 2, and filled the
-page with distinct domains (cap 3). DuckDuckGo bot-detected the `background`
-angle in both discovery runs and the `primary` angle in the deep run; the
-service returned the successful angles with `background_query_failed` and
-`primary_query_failed` warnings instead of failing the search. That is the
-designed partial-failure behavior, not a complete four-angle result. When the
-provider cooperates, `deep` adds its fourth angle; when it does not, retry later
-or use `fast` to conserve provider budget.
+`fast` kept provider order, which put a Real Python walkthrough ahead of the
+official `docs.python.org` pages. `discover` and `deep` promoted official
+material to the top two slots — `discuss.python.org` and `docs.python.org` for
+`discover`, both `docs.python.org` pages for `deep` — and placed a 2026 guide at
+rank 3 while keeping the page on distinct domains (cap 3). DuckDuckGo
+bot-detected the `background` angle in both discovery runs; the service returned
+the successful angles with a `background_query_failed` warning instead of
+failing the search. The `primary` angle succeeded in the `deep` run. That is the
+designed partial-failure behavior, not a complete four-angle result. A repeated
+`discover` search returned from cache in 0.35 ms with `cache_hit=true`; a provider
+failure or two blocked angles would instead trip the cooldown. When the provider
+cooperates, `deep` adds its fourth angle; when it does not, retry later or use
+`fast` to conserve provider budget.
 
 ## Verification
 
 Checks actually run during this work:
 
 ```bash
-.venv/bin/python -m pytest -q          # 219 passed
-.venv/bin/python -m ruff check .       # All checks passed
+.venv/bin/python -m pytest -q          # 234 passed
+.venv/bin/python -m ruff check web_scraper tests scripts   # All checks passed
+.venv/bin/python -m ruff format --check web_scraper tests  # 60 files already formatted
 .venv/bin/python scripts/benchmark_web_tools.py   # 6/6 checks passed
 .venv/bin/python scripts/load_test_web_tools.py   # 10/10 checks passed
 ```
 
 The live `fast` / `discover` / `deep` comparison above was also run against
-DuckDuckGo on 2026-10-22. The full suite count includes the discovery tests in
-`tests/test_web_discovery.py`.
+DuckDuckGo on 2026-10-22. The full suite count includes the discovery, search
+cache, cooldown, timeout, locale, and BM25F tests in `tests/test_web_discovery.py`
+and `tests/test_web_service.py`.
 
 The MCP server was also started through Dot's own MCP SDK (`Client(mode="auto")`)
 and exercised live: protocol `2025-11-25`, 8 tools, a DuckDuckGo search returning
@@ -419,12 +457,14 @@ pick up the new schema.
   of boilerplate may stay on the HTTP path. Raise or lower that threshold only
   with a benchmark.
 - `web_extract` fetches the page fresh; it does not use the scrape cache.
-- Crawl jobs and the scrape cache live in one process and are lost on restart.
-  REST and MCP have separate caches.
+- Crawl jobs and the scrape/search caches live in one process and are lost on
+  restart. REST and MCP have separate caches. Provider cooldown state is also
+  per process.
 - The default DuckDuckGo path can be rate-limited. A 202 bot-detection response
   is reported as `search_failed` with `detail=bot_detected`; a 200 response with
   no result nodes still returns an empty list, which is a provider quality
-  signal. The adapter can be replaced without changing the service contract.
+  signal. A blocked base angle, a total failure, or two blocked angles trip the
+  cooldown. The adapter can be replaced without changing the service contract.
 - `discover` and `deep` send 3 and 4 provider queries instead of 1. They cost
   more latency and provider budget than `fast`; use `fast` when that matters.
   An individual angle failure is surfaced in `warnings` and may reduce coverage.

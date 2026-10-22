@@ -27,7 +27,7 @@ from web_scraper.web_tools.crawl import CrawlManager, CrawlOptions, canonical_ta
 from web_scraper.web_tools.discovery import (
     DEPTHS,
     DiscoveryCandidate,
-    annotate_candidate,
+    annotate_candidates,
     build_facets,
     build_search_angles,
     rank_candidates,
@@ -66,6 +66,12 @@ class LoadedDocument:
     timings: dict[str, float] = field(default_factory=dict)
 
 
+@dataclass
+class _ProviderHealth:
+    consecutive_failures: int = 0
+    cooldown_until: float = 0.0
+
+
 class WebToolsService:
     """Shared implementation used by the REST API, MCP server, and benchmark."""
 
@@ -93,6 +99,7 @@ class WebToolsService:
             metrics_registry,
         )
         self._crawl: Optional[CrawlManager] = None
+        self._provider_health: dict[str, _ProviderHealth] = {}
 
     @classmethod
     def from_env(
@@ -126,7 +133,10 @@ class WebToolsService:
             else None
         )
         adapters: dict[str, SearchAdapter] = {
-            "duckduckgo": DuckDuckGoSearchAdapter(),
+            "duckduckgo": DuckDuckGoSearchAdapter(
+                region=settings.search_region,
+                language=settings.search_language,
+            ),
             "google": GoogleSearchAdapter(),
         }
         return cls(
@@ -187,6 +197,36 @@ class WebToolsService:
             else min(max(resolved_limit * 2, 8), self.settings.max_search_limit)
         )
 
+        cache_key = (
+            f"search:{provider_name}:{resolved_depth}:{resolved_limit}:"
+            f"{self.settings.search_region}:{self.settings.search_language}:"
+            f"{cleaned.casefold()}"
+        )
+        cache_started = time.perf_counter()
+        cached = await self.cache.get(cache_key)
+        if cached is not None:
+            cache_ms = (time.perf_counter() - cache_started) * 1000
+            self.metrics.count("cache_hits_total", operation="search")
+            payload = dict(cached)
+            payload["timings"] = dict(cached["timings"])
+            payload["timings"]["cache_lookup_ms"] = round(cache_ms, 2)
+            payload["cache_hit"] = True
+            return payload
+
+        health = self._provider_health.setdefault(provider_name, _ProviderHealth())
+        now = time.monotonic()
+        if health.cooldown_until > now:
+            retry_after = max(1, int(health.cooldown_until - now) + 1)
+            self.metrics.count(
+                "search_provider_cooldown_total",
+                provider=provider_name,
+            )
+            raise WebToolError(
+                "search_failed",
+                f"Search provider {provider_name} is cooling down; retry in {retry_after}s",
+                detail="provider_cooldown",
+            )
+
         started = time.perf_counter()
         angles = build_search_angles(
             cleaned,
@@ -198,13 +238,28 @@ class WebToolsService:
         angle_timings: dict[str, float] = {}
         warnings: list[str] = []
         first_error: Optional[WebToolError] = None
+        angle_failures = 0
+        base_failed = False
 
         for index, angle in enumerate(angles):
             if index and self.settings.search_angle_delay_ms > 0:
                 await asyncio.sleep(self.settings.search_angle_delay_ms / 1000)
             angle_started = time.perf_counter()
             try:
-                raw_results = await adapter.search(angle.query, angle_limit)
+                raw_results = await asyncio.wait_for(
+                    adapter.search(
+                        angle.query,
+                        angle_limit,
+                        date_filter=angle.date_filter,
+                    ),
+                    timeout=self.settings.search_timeout_seconds,
+                )
+            except TimeoutError:
+                error = WebToolError(
+                    "timeout",
+                    "Search provider timed out",
+                    detail="search_timeout",
+                )
             except WebToolError as exc:
                 error: Optional[WebToolError] = exc
             except Exception as exc:  # noqa: BLE001 - provider boundary
@@ -246,6 +301,7 @@ class WebToolsService:
                     {
                         "angle": angle.name,
                         "query": angle.query,
+                        "date_filter": angle.date_filter,
                         "results": len(raw_results),
                         "new": contributed,
                         "error": None,
@@ -262,12 +318,16 @@ class WebToolsService:
                 )
 
             if error is not None:
+                angle_failures += 1
+                if angle.name == "base":
+                    base_failed = True
                 if first_error is None:
                     first_error = error
                 query_reports.append(
                     {
                         "angle": angle.name,
                         "query": angle.query,
+                        "date_filter": angle.date_filter,
                         "results": 0,
                         "new": 0,
                         "error": error.to_dict(),
@@ -278,8 +338,14 @@ class WebToolsService:
 
         if not candidates:
             if first_error is not None:
+                self._record_provider_failure(provider_name, health)
                 raise first_error
             raise WebToolError("search_failed", "Search provider returned no usable results")
+
+        if base_failed or angle_failures >= 2:
+            self._record_provider_failure(provider_name, health)
+        elif angle_failures == 0:
+            self._record_provider_success(health)
 
         if any(
             report["angle"] == "base" and report["error"] is not None for report in query_reports
@@ -289,9 +355,7 @@ class WebToolsService:
         search_ms = (time.perf_counter() - started) * 1000
         ranking_started = time.perf_counter()
         if resolved_depth == "fast":
-            results = [annotate_candidate(cleaned, candidate) for candidate in candidates.values()][
-                :resolved_limit
-            ]
+            results = annotate_candidates(cleaned, candidates.values())[:resolved_limit]
         else:
             results = rank_candidates(cleaned, candidates.values(), resolved_limit)
         ranking_ms = (time.perf_counter() - ranking_started) * 1000
@@ -322,7 +386,7 @@ class WebToolsService:
         }
         for name, value in angle_timings.items():
             timings[f"angle_{name}_ms"] = value
-        return {
+        payload = {
             "query": cleaned,
             "provider": provider_name,
             "depth": resolved_depth,
@@ -331,7 +395,33 @@ class WebToolsService:
             "queries": query_reports,
             "warnings": warnings,
             "timings": timings,
+            "cache_hit": False,
         }
+        await self.cache.set(
+            cache_key,
+            payload,
+            ttl_seconds=self.settings.search_cache_ttl_seconds,
+        )
+        return payload
+
+    def _record_provider_failure(
+        self,
+        provider_name: str,
+        health: _ProviderHealth,
+    ) -> None:
+        health.consecutive_failures += 1
+        base = self.settings.search_provider_cooldown_seconds
+        if base <= 0:
+            health.cooldown_until = 0.0
+            return
+        maximum = self.settings.search_provider_max_cooldown_seconds
+        cooldown = min(maximum, base * (2 ** (health.consecutive_failures - 1)))
+        health.cooldown_until = time.monotonic() + cooldown
+        self.metrics.count("search_provider_failures_total", provider=provider_name)
+
+    def _record_provider_success(self, health: _ProviderHealth) -> None:
+        health.consecutive_failures = 0
+        health.cooldown_until = 0.0
 
     async def scrape(self, url: str, *, max_chars: Optional[int] = None) -> dict[str, Any]:
         requested = self._canonical(url)

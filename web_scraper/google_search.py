@@ -82,6 +82,17 @@ _EXTRACT_JS = """() => {
 _CAMOUFOX_STATE: Dict[str, object] = {"browser": None, "manager": None, "last": 0.0}
 _CAMOUFOX_IDLE_S = 180.0
 
+# The shared Chrome: a normal browser, its window minimised over CDP.
+_CHROME_STATE: Dict[str, object] = {
+    "proc": None,
+    "profile": None,
+    "manager": None,
+    "browser": None,
+    "page": None,
+    "last": 0.0,
+}
+_CHROME_IDLE_S = 180.0
+
 
 class GoogleSearcher:
     """Search Google and extract top results."""
@@ -113,10 +124,10 @@ class GoogleSearcher:
     async def search(self, query: str, num_results: int = 10) -> List[Dict]:
         """Search Google and return top results.
 
-        The browser paths run without a visible window: Camoufox (a patched
-        Firefox with a coherent fingerprint) passes Google while headless
-        Chromium does not.  A window is opened only when the caller asked for
-        it with ``GOOGLE_ALLOW_VISIBLE_BROWSER=true``.
+        Two browser paths, neither of which leaves a window on screen for
+        longer than the start-up flash: the installed Chrome with its window
+        minimised over CDP, then Camoufox (a patched headless Firefox).  A
+        refused Chrome falls through to Camoufox instead of ending the search.
 
         Raises ``GoogleSearchBlocked`` when every path fails, so callers can
         tell "Google refused" from "Google found nothing".
@@ -128,15 +139,22 @@ class GoogleSearcher:
         except Exception as exc:  # network error, curl_cffi missing, bot check
             logger.debug("Google HTTP search failed for %r: %s", query, exc)
 
-        if not results and config.google_use_playwright:
-            results = await self._search_camoufox(query, num_results)
-
-        if not results and config.google_use_playwright and config.google_allow_visible_browser:
-            results = await self._search_browser(query, num_results)
+        blocked: List[str] = []
+        paths = (self._search_chrome, self._search_camoufox)
+        for path in paths:
+            if results or not config.google_use_playwright:
+                break
+            try:
+                results = await path(query, num_results)
+            except GoogleSearchBlocked as exc:
+                # A refused Chrome must not end the search: Camoufox may pass.
+                blocked.append(str(exc))
 
         if not results:
+            detail = f" ({'; '.join(blocked)})" if blocked else ""
             raise GoogleSearchBlocked(
                 "Google returned no parseable results (consent page, bot check or JavaScript-only page)"
+                + detail
             )
 
         return results[:num_results]
@@ -273,73 +291,154 @@ class GoogleSearcher:
         return results
 
     # ------------------------------------------------------------------
-    # Chrome path: visible window, only when asked for
+    # Chrome path: one browser, window minimised before it is seen
     # ------------------------------------------------------------------
 
-    async def _search_browser(self, query: str, num_results: int) -> List[Dict]:
-        async with _browser_lock():
-            return await self._search_browser_once(query, num_results)
+    async def _search_chrome(self, query: str, num_results: int) -> List[Dict]:
+        """Search through a Chrome whose window is minimised at once.
 
-    async def _search_browser_once(self, query: str, num_results: int) -> List[Dict]:
-        """Render Google in a normal Chrome started without automation flags.
-
-        Playwright's own launch leaves ``--enable-automation`` and a
-        remote-debugging pipe behind, which Google detects at once ("unusual
-        traffic").  A Chrome started by hand with only ``--remote-debugging-port``
-        and a throwaway profile gets the real results page, so we start the
-        browser ourselves and attach over CDP.
+        Headless Chrome is caught within a request; a headed one gets the real
+        results page.  Minimising the window over CDP keeps it off the screen
+        while the page still renders, so the only trace is a short flash when
+        Chrome starts.  One Chrome and one tab serve every search: ~2 s to
+        start, ~0.4 s a query after that.
         """
-        try:
-            from playwright.async_api import async_playwright
-        except ImportError as exc:  # pragma: no cover - optional dependency
-            raise GoogleSearchBlocked(
-                "playwright is not installed: pip install -e '.[playwright]'"
-            ) from exc
+        page = await self._chrome_page()
+        if page is None:
+            return []
 
         url = self._build_url(query, num_results)
         timeout_ms = int(config.google_playwright_timeout_seconds * 1000)
 
-        port = self._free_port()
-        profile_dir = tempfile.mkdtemp(prefix="google-search-profile-")
-        process = self._start_chrome(port, profile_dir)
-        try:
-            await self._wait_for_cdp(port)
-
-            async with async_playwright() as pw:
-                browser = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
-                context = browser.contexts[0] if browser.contexts else await browser.new_context()
-                page = await context.new_page()
-                try:
-                    await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-                    try:
-                        await page.wait_for_selector("div#rso, div#search", timeout=timeout_ms // 2)
-                    except Exception:
-                        pass
-                    # Results stream in after the container appears; a fixed
-                    # sleep sometimes caught only the first two.
-                    try:
-                        await page.wait_for_function(
-                            "() => document.querySelectorAll('div#rso a h3, div#search a h3').length >= 5",
-                            timeout=5000,
-                        )
-                    except Exception:
-                        pass
-                    await page.wait_for_timeout(300)
-
-                    raw = await page.evaluate(_EXTRACT_JS)
-                    html = await page.content()
-                finally:
-                    await page.close()
-        finally:
-            self._stop_chrome(process, profile_dir)
+        async with _browser_lock():
+            await page.goto(url, wait_until="commit", timeout=timeout_ms)
+            try:
+                await page.wait_for_selector("div#rso, div#search", timeout=timeout_ms // 2)
+            except Exception:
+                pass
+            try:
+                await page.wait_for_function(
+                    "() => document.querySelectorAll('div#rso a h3, div#search a h3').length >= 5",
+                    timeout=3000,
+                )
+            except Exception:
+                pass
+            raw = await page.evaluate(_EXTRACT_JS)
+            html = await page.content() if not raw else ""
 
         results = await self._results_from_raw(raw)
-
         if not results:
             lowered = html.lower()
             if "unusual traffic" in lowered or "captcha" in lowered or "enablejs" in lowered:
-                raise GoogleSearchBlocked("Google served a bot check to the browser")
+                raise GoogleSearchBlocked("Google served a bot check to Chrome")
         return results
+
+    async def _chrome_page(self):
+        """The shared Chrome tab, started once and minimised at once."""
+        state = _CHROME_STATE
+        now = time.monotonic()
+        process = state.get("proc")
+        page = state.get("page")
+
+        if page is not None and now - float(state["last"]) > _CHROME_IDLE_S:
+            await self.close_chrome()
+            page = None
+
+        if (
+            page is not None
+            and not page.is_closed()
+            and process is not None
+            and process.poll() is None
+        ):
+            state["last"] = now
+            return page
+
+        await self.close_chrome()
+
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            logger.debug("playwright is not installed; skipping the Chrome path")
+            return None
+
+        port = self._free_port()
+        profile = tempfile.mkdtemp(prefix="google-chrome-profile-")
+        process = self._start_chrome(port, profile)
+        if process is None:
+            shutil.rmtree(profile, ignore_errors=True)
+            return None
+
+        manager = async_playwright()
+        pw = await manager.__aenter__()
+        browser = None
+        try:
+            await self._wait_for_cdp(port)
+            browser = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
+            context = browser.contexts[0] if browser.contexts else await browser.new_context()
+            page = await context.new_page()
+            if not config.google_allow_visible_browser:
+                await self._minimize(page)
+        except Exception as exc:
+            logger.warning("Chrome could not be started: %s", exc)
+            await manager.__aexit__(None, None, None)
+            self._stop_chrome(process, profile)
+            return None
+
+        state.update(
+            {
+                "proc": process,
+                "profile": profile,
+                "manager": manager,
+                "browser": browser,
+                "page": page,
+                "last": now,
+            }
+        )
+        return page
+
+    @staticmethod
+    async def _minimize(page) -> None:
+        """Minimise the window over CDP: no Accessibility permission needed."""
+        session = await page.context.new_cdp_session(page)
+        window = await session.send("Browser.getWindowForTarget")
+        await session.send(
+            "Browser.setWindowBounds",
+            {"windowId": window["windowId"], "bounds": {"windowState": "minimized"}},
+        )
+        await session.detach()
+
+    async def close_chrome(self) -> None:
+        """Shut the shared Chrome down (idle timeout, or at process end)."""
+        state = _CHROME_STATE
+        manager = state.get("manager")
+        process = state.get("proc")
+        profile = state.get("profile")
+        state.update(
+            {
+                "proc": None,
+                "profile": None,
+                "manager": None,
+                "browser": None,
+                "page": None,
+                "last": 0.0,
+            }
+        )
+        if manager is not None:
+            try:
+                await manager.__aexit__(None, None, None)
+            except Exception:
+                pass
+        if process is not None:
+            try:
+                process.terminate()
+                process.wait(timeout=5)
+            except Exception:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+        if isinstance(profile, str):
+            shutil.rmtree(profile, ignore_errors=True)
 
     @staticmethod
     def _free_port() -> int:
@@ -398,7 +497,7 @@ class GoogleSearcher:
             "--no-default-browser-check",
             "--disable-background-networking",
             "--disable-sync",
-            "--window-size=1366,900",
+            "--window-size=400,300" if not config.google_allow_visible_browser else "--window-size=1366,900",
         ]
         if self.headless:
             args.append("--headless=new")

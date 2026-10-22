@@ -26,15 +26,19 @@ from web_scraper.web_tools.content import (
 from web_scraper.web_tools.crawl import CrawlManager, CrawlOptions, canonical_target
 from web_scraper.web_tools.discovery import (
     DEPTHS,
+    MIN_RESULT_RELEVANCE,
     DiscoveryCandidate,
     annotate_candidates,
     build_facets,
     build_search_angles,
+    has_relevant_result,
     rank_candidates,
 )
 from web_scraper.web_tools.errors import WebToolError
-from web_scraper.web_tools.fetcher import FetchError, HostGate, SafeFetcher
+from web_scraper.web_tools.fetcher import FetchError, FetchResult, HostGate, SafeFetcher
 from web_scraper.web_tools.metrics import LatencyTracker, WebToolsMetrics
+from web_scraper.web_tools.pdf import PDF_CONTENT_TYPE, PdfError, extract_pdf
+from web_scraper.web_tools.providers import ProviderGate, ProviderHealth
 from web_scraper.web_tools.robots import RobotsPolicy
 from web_scraper.web_tools.search import (
     DuckDuckGoSearchAdapter,
@@ -50,6 +54,7 @@ from web_scraper.web_tools.urls import (
     matches_search_filter,
     matches_url_filters,
     normalize_request_url,
+    upgrade_to_https,
     url_in_scope,
 )
 
@@ -64,12 +69,21 @@ class LoadedDocument:
     fetched_with: str
     warnings: list[str] = field(default_factory=list)
     timings: dict[str, float] = field(default_factory=dict)
+    pages: Optional[int] = None
 
 
 @dataclass
-class _ProviderHealth:
-    consecutive_failures: int = 0
-    cooldown_until: float = 0.0
+class _AngleOutcome:
+    """What one search angle got: who answered, and how a fallback went."""
+
+    provider: str
+    results: list[SearchResult] = field(default_factory=list)
+    error: Optional[WebToolError] = None
+    fallback: Optional[dict[str, Any]] = None
+
+
+class _ProviderCoolingDown(Exception):
+    """A provider skipped for its cooldown while a healthy fallback exists."""
 
 
 class WebToolsService:
@@ -99,7 +113,8 @@ class WebToolsService:
             metrics_registry,
         )
         self._crawl: Optional[CrawlManager] = None
-        self._provider_health: dict[str, _ProviderHealth] = {}
+        self._provider_gates: dict[str, ProviderGate] = {}
+        self._provider_health: dict[str, ProviderHealth] = {}
 
     @classmethod
     def from_env(
@@ -184,8 +199,7 @@ class WebToolsService:
             )
 
         provider_name = (provider or self.settings.search_provider).strip().lower()
-        adapter = self.search_adapters.get(provider_name)
-        if adapter is None:
+        if provider_name not in self.search_adapters:
             raise WebToolError("invalid_request", f"Unknown search provider: {provider_name}")
         resolved_limit = min(
             max(limit or self.settings.default_search_limit, 1),
@@ -213,20 +227,6 @@ class WebToolsService:
             payload["cache_hit"] = True
             return payload
 
-        health = self._provider_health.setdefault(provider_name, _ProviderHealth())
-        now = time.monotonic()
-        if health.cooldown_until > now:
-            retry_after = max(1, int(health.cooldown_until - now) + 1)
-            self.metrics.count(
-                "search_provider_cooldown_total",
-                provider=provider_name,
-            )
-            raise WebToolError(
-                "search_failed",
-                f"Search provider {provider_name} is cooling down; retry in {retry_after}s",
-                detail="provider_cooldown",
-            )
-
         started = time.perf_counter()
         angles = build_search_angles(
             cleaned,
@@ -238,126 +238,105 @@ class WebToolsService:
         angle_timings: dict[str, float] = {}
         warnings: list[str] = []
         first_error: Optional[WebToolError] = None
-        angle_failures = 0
-        base_failed = False
+        answered_by: list[str] = []
+        responded: list[str] = []
+        fallback_answered = False
 
         for index, angle in enumerate(angles):
             if index and self.settings.search_angle_delay_ms > 0:
                 await asyncio.sleep(self.settings.search_angle_delay_ms / 1000)
             angle_started = time.perf_counter()
-            try:
-                raw_results = await asyncio.wait_for(
-                    adapter.search(
-                        angle.query,
-                        angle_limit,
-                        date_filter=angle.date_filter,
-                    ),
-                    timeout=self.settings.search_timeout_seconds,
-                )
-            except TimeoutError:
-                error = WebToolError(
-                    "timeout",
-                    "Search provider timed out",
-                    detail="search_timeout",
-                )
-            except WebToolError as exc:
-                error: Optional[WebToolError] = exc
-            except Exception as exc:  # noqa: BLE001 - provider boundary
-                error = WebToolError(
-                    "search_failed",
-                    "Search provider failed",
-                    detail=type(exc).__name__,
-                )
-            else:
-                error = None
-                contributed = 0
-                for rank, item in enumerate(raw_results):
-                    try:
-                        target = canonicalize_url(item.url)
-                    except UnsafeUrlError:
-                        continue
-                    existing = candidates.get(target)
-                    if existing is None:
-                        candidates[target] = DiscoveryCandidate(
-                            result=SearchResult(
-                                title=item.title,
-                                url=target,
-                                snippet=item.snippet,
-                                source=item.source,
-                            ),
-                            angle_ranks={angle.name: rank},
-                        )
-                        contributed += 1
-                    else:
-                        existing.angle_ranks.setdefault(angle.name, rank)
-                        if len(item.snippet) > len(existing.result.snippet):
-                            existing.result = SearchResult(
-                                title=item.title or existing.result.title,
-                                url=target,
-                                snippet=item.snippet,
-                                source=item.source or existing.result.source,
-                            )
-                query_reports.append(
-                    {
-                        "angle": angle.name,
-                        "query": angle.query,
-                        "date_filter": angle.date_filter,
-                        "results": len(raw_results),
-                        "new": contributed,
-                        "error": None,
-                    }
-                )
-            finally:
-                angle_ms = (time.perf_counter() - angle_started) * 1000
-                angle_timings[angle.name] = round(angle_ms, 2)
-                self.metrics.observe(
-                    "search_angle",
-                    angle_ms,
-                    provider=provider_name,
-                    angle=angle.name,
-                )
+            outcome = await self._search_angle(
+                provider_name,
+                angle.query,
+                angle_limit,
+                angle.date_filter,
+            )
+            angle_ms = (time.perf_counter() - angle_started) * 1000
+            angle_timings[angle.name] = round(angle_ms, 2)
+            self.metrics.observe(
+                "search_angle",
+                angle_ms,
+                provider=outcome.provider,
+                angle=angle.name,
+            )
+            report: dict[str, Any] = {
+                "angle": angle.name,
+                "query": angle.query,
+                "date_filter": angle.date_filter,
+                "provider": outcome.provider,
+                "results": len(outcome.results),
+                "new": 0,
+                "error": outcome.error.to_dict() if outcome.error is not None else None,
+            }
+            if outcome.fallback is not None:
+                report["fallback"] = outcome.fallback
+            query_reports.append(report)
 
-            if error is not None:
-                angle_failures += 1
-                if angle.name == "base":
-                    base_failed = True
+            if outcome.error is not None:
                 if first_error is None:
-                    first_error = error
-                query_reports.append(
-                    {
-                        "angle": angle.name,
-                        "query": angle.query,
-                        "date_filter": angle.date_filter,
-                        "results": 0,
-                        "new": 0,
-                        "error": error.to_dict(),
-                    }
-                )
+                    first_error = outcome.error
                 if angle.name != "base":
                     warnings.append(f"{angle.name}_query_failed")
+                continue
 
-        if not candidates:
-            if first_error is not None:
-                self._record_provider_failure(provider_name, health)
-                raise first_error
-            raise WebToolError("search_failed", "Search provider returned no usable results")
+            if outcome.provider not in responded:
+                responded.append(outcome.provider)
+            if outcome.results and outcome.provider not in answered_by:
+                answered_by.append(outcome.provider)
+            if outcome.provider != provider_name:
+                fallback_answered = True
+            for rank, item in enumerate(outcome.results):
+                try:
+                    target = canonicalize_url(item.url)
+                except UnsafeUrlError:
+                    continue
+                existing = candidates.get(target)
+                if existing is None:
+                    candidates[target] = DiscoveryCandidate(
+                        result=SearchResult(
+                            title=item.title,
+                            url=target,
+                            snippet=item.snippet,
+                            source=item.source,
+                        ),
+                        angle_ranks={angle.name: rank},
+                    )
+                    report["new"] += 1
+                else:
+                    existing.angle_ranks.setdefault(angle.name, rank)
+                    if len(item.snippet) > len(existing.result.snippet):
+                        existing.result = SearchResult(
+                            title=item.title or existing.result.title,
+                            url=target,
+                            snippet=item.snippet,
+                            source=item.source or existing.result.source,
+                        )
 
-        if base_failed or angle_failures >= 2:
-            self._record_provider_failure(provider_name, health)
-        elif angle_failures == 0:
-            self._record_provider_success(health)
+        if not candidates and first_error is not None:
+            raise first_error
 
         if any(
             report["angle"] == "base" and report["error"] is not None for report in query_reports
         ):
             warnings.append("base_query_failed")
+        if fallback_answered:
+            warnings.append("provider_fallback")
 
         search_ms = (time.perf_counter() - started) * 1000
         ranking_started = time.perf_counter()
         if resolved_depth == "fast":
-            results = annotate_candidates(cleaned, candidates.values())[:resolved_limit]
+            # Provider order, minus results that share nothing with the query.
+            annotated = annotate_candidates(cleaned, candidates.values())
+            relevant = [item for item in annotated if item["relevance"] > 0]
+            results = relevant[:resolved_limit] if has_relevant_result(cleaned, relevant) else []
         else:
             results = rank_candidates(cleaned, candidates.values(), resolved_limit)
+        if not results:
+            # The provider answered, but nothing it returned is about the query.
+            warnings.append("no_relevant_results")
+        elif all(item["relevance"] < MIN_RESULT_RELEVANCE for item in results):
+            warnings.append("low_relevance_results")
         ranking_ms = (time.perf_counter() - ranking_started) * 1000
         facets = build_facets(
             results,
@@ -388,7 +367,10 @@ class WebToolsService:
             timings[f"angle_{name}_ms"] = value
         payload = {
             "query": cleaned,
-            "provider": provider_name,
+            # Who answered: the fallback's name when it stood in for the
+            # requested provider, both joined with "+" when they shared angles.
+            "provider": "+".join(answered_by or responded) or provider_name,
+            "requested_provider": provider_name,
             "depth": resolved_depth,
             "results": results,
             "facets": facets,
@@ -404,24 +386,148 @@ class WebToolsService:
         )
         return payload
 
-    def _record_provider_failure(
+    async def _search_angle(
         self,
-        provider_name: str,
-        health: _ProviderHealth,
-    ) -> None:
-        health.consecutive_failures += 1
-        base = self.settings.search_provider_cooldown_seconds
-        if base <= 0:
-            health.cooldown_until = 0.0
-            return
-        maximum = self.settings.search_provider_max_cooldown_seconds
-        cooldown = min(maximum, base * (2 ** (health.consecutive_failures - 1)))
-        health.cooldown_until = time.monotonic() + cooldown
-        self.metrics.count("search_provider_failures_total", provider=provider_name)
+        primary: str,
+        query: str,
+        limit: int,
+        date_filter: Optional[str] = None,
+    ) -> _AngleOutcome:
+        """Ask the primary provider; on any failure, ask the fallback once.
 
-    def _record_provider_success(self, health: _ProviderHealth) -> None:
-        health.consecutive_failures = 0
-        health.cooldown_until = 0.0
+        A primary that is cooling down after a recent failure is skipped in
+        favour of the fallback. If that fallback fails too, the primary is
+        still asked: a cooldown only steers calls, it never fails a search.
+        """
+        fallback = self._fallback_for(primary)
+        if fallback is None:
+            try:
+                results = await self._call_provider(primary, query, limit, date_filter)
+            except WebToolError as exc:
+                return _AngleOutcome(primary, error=exc)
+            return _AngleOutcome(primary, results)
+
+        primary_error: Optional[WebToolError] = None
+        try:
+            results = await self._call_provider(
+                primary, query, limit, date_filter, yield_to=fallback
+            )
+        except _ProviderCoolingDown:
+            reason = "provider_cooldown"
+        except WebToolError as exc:
+            if self._provider_health_for(fallback).cooling_down():
+                return _AngleOutcome(primary, error=exc)
+            primary_error, reason = exc, exc.detail or exc.code
+        else:
+            return _AngleOutcome(primary, results)
+
+        record: dict[str, Any] = {"from": primary, "to": fallback, "reason": reason, "error": None}
+        self.metrics.count("search_fallbacks_total", provider=fallback)
+        try:
+            # A cold headless browser (Google) can take longer than a plain HTTP search.
+            results = await self._call_provider(
+                fallback,
+                query,
+                limit,
+                date_filter,
+                timeout=self.settings.search_fallback_timeout_seconds,
+            )
+        except WebToolError as exc:
+            record["error"] = exc.to_dict()
+            if primary_error is not None:
+                return _AngleOutcome(primary, error=primary_error, fallback=record)
+            try:
+                results = await self._call_provider(primary, query, limit, date_filter)
+            except WebToolError as last:
+                return _AngleOutcome(primary, error=last, fallback=record)
+            return _AngleOutcome(primary, results, fallback=record)
+        return _AngleOutcome(fallback, results, fallback=record)
+
+    async def _call_provider(
+        self,
+        name: str,
+        query: str,
+        limit: int,
+        date_filter: Optional[str] = None,
+        *,
+        yield_to: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> list[SearchResult]:
+        """One paced provider call; failures update only this provider's health.
+
+        With ``yield_to`` set, a provider that is cooling down raises
+        ``_ProviderCoolingDown`` instead of being called, as long as the
+        provider it would yield to is not cooling down itself.
+        """
+        adapter = self.search_adapters[name]
+        health = self._provider_health_for(name)
+        gate = self._provider_gate_for(name)
+
+        def should_yield() -> bool:
+            return (
+                yield_to is not None
+                and health.cooling_down()
+                and not self._provider_health_for(yield_to).cooling_down()
+            )
+
+        if should_yield():
+            raise _ProviderCoolingDown(name)
+        async with gate.turn():
+            # A call queued behind a failure re-checks before spending its turn.
+            if should_yield():
+                raise _ProviderCoolingDown(name)
+            await gate.pace()
+            try:
+                results = await asyncio.wait_for(
+                    adapter.search(query, limit, date_filter=date_filter),
+                    timeout=timeout or self.settings.search_timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                failure = WebToolError(
+                    "timeout",
+                    f"Search provider {name} timed out",
+                    detail="search_timeout",
+                )
+            except WebToolError as exc:
+                failure = exc
+            except Exception as exc:  # noqa: BLE001 - provider boundary
+                failure = WebToolError(
+                    "search_failed",
+                    "Search provider failed",
+                    detail=type(exc).__name__,
+                )
+            else:
+                health.record_success()
+                return results
+            finally:
+                gate.finish()
+
+        health.record_failure(
+            self.settings.search_provider_cooldown_seconds,
+            self.settings.search_provider_max_cooldown_seconds,
+        )
+        self.metrics.count("search_provider_failures_total", provider=name)
+        raise failure
+
+    def _fallback_for(self, primary: str) -> Optional[str]:
+        name = self.settings.search_fallback_provider
+        if not name or name == primary or name not in self.search_adapters:
+            return None
+        return name
+
+    def _provider_gate_for(self, name: str) -> ProviderGate:
+        gate = self._provider_gates.get(name)
+        if gate is None:
+            gate = ProviderGate(
+                self.settings.search_provider_concurrency,
+                self.settings.search_jitter_min_ms,
+                self.settings.search_jitter_max_ms,
+            )
+            self._provider_gates[name] = gate
+        return gate
+
+    def _provider_health_for(self, name: str) -> ProviderHealth:
+        return self._provider_health.setdefault(name, ProviderHealth())
 
     async def scrape(self, url: str, *, max_chars: Optional[int] = None) -> dict[str, Any]:
         requested = self._canonical(url)
@@ -611,7 +717,7 @@ class WebToolsService:
         base = canonical_target(url)
         resolved = CrawlOptions.from_dict(options, self.settings)
         manager = self._crawl_manager()
-        snapshot = await manager.create(base, resolved)
+        snapshot = await manager.create(base, resolved, upgraded=base != self._canonical(url))
         self.metrics.count("crawls_started_total")
         return snapshot
 
@@ -639,6 +745,13 @@ class WebToolsService:
             "latency": self.metrics.tracker.snapshot(),
             "cache": cache,
             "browser": self.browser.snapshot() if self.browser is not None else {"enabled": False},
+            "search_providers": {
+                name: {
+                    "consecutive_failures": health.consecutive_failures,
+                    "cooldown_remaining_s": round(health.retry_after(), 2),
+                }
+                for name, health in self._provider_health.items()
+            },
         }
 
     def _crawl_manager(self) -> CrawlManager:
@@ -659,19 +772,37 @@ class WebToolsService:
         return self._crawl
 
     async def _crawl_page(self, url: str) -> dict[str, Any]:
-        document = await self._load_page(
-            url,
-            max_chars=self.settings.crawl_content_limit_chars,
-        )
+        limit = self.settings.crawl_content_limit_chars
+        document = await self._load_page(url, max_chars=limit)
+        final_url = document.final_url
+        page = document.page
+        secure = upgrade_to_https(final_url)
+        if (
+            url.startswith("https://")
+            and secure != final_url
+            and urlsplit(final_url).hostname == urlsplit(url).hostname
+        ):
+            # The site redirected an https request to http on the same host
+            # (quotes.toscrape.com does it for every trailing slash). Read the
+            # page as its https self, so its links stay https and the same
+            # content hashes the same whichever scheme reached it.
+            final_url = secure
+            if document.html:
+                page = extract_page(
+                    document.html,
+                    final_url,
+                    max_links=self.settings.max_links,
+                    max_chars=limit,
+                )
         return {
-            "url": document.final_url,
-            "title": document.page.title,
-            "description": document.page.description,
-            "markdown": document.page.markdown,
+            "url": final_url,
+            "title": page.title,
+            "description": page.description,
+            "markdown": page.markdown,
             "status_code": document.status_code,
-            "content_hash": content_hash(document.page.markdown),
+            "content_hash": content_hash(page.markdown),
             "fetched_with": document.fetched_with,
-            "links": [link.url for link in document.page.links],
+            "links": [link.url for link in page.links],
         }
 
     async def _load_page(self, url: str, *, max_chars: int) -> LoadedDocument:
@@ -684,11 +815,23 @@ class WebToolsService:
                 and exc.detail == "access_blocked"
                 and self.browser is not None
             ):
-                return await self._render_document(url, max_chars, warnings=["http_access_blocked"])
+                try:
+                    return await self._render_document(
+                        url,
+                        max_chars,
+                        warnings=["http_access_blocked"],
+                    )
+                except WebToolError as render_error:
+                    if render_error.code == "blocked":
+                        raise
+                    # The browser got nowhere either: report what the HTTP fetch saw.
+                    raise self._translate_fetch_error(exc) from render_error
             raise self._translate_fetch_error(exc) from exc
 
         self.metrics.observe("http_fetch", fetched.total_ms, mode="http")
         self.metrics.observe("http_network", fetched.network_ms, mode="http")
+        if fetched.content_type == PDF_CONTENT_TYPE:
+            return await self._pdf_document(fetched, max_chars, started)
 
         extraction_started = time.perf_counter()
         page = extract_page(
@@ -742,6 +885,70 @@ class WebToolsService:
         document.timings["total_ms"] = round((time.perf_counter() - started) * 1000, 2)
         return document
 
+    async def _pdf_document(
+        self,
+        fetched: FetchResult,
+        max_chars: int,
+        started: float,
+    ) -> LoadedDocument:
+        extraction_started = time.perf_counter()
+        try:
+            # pypdf is pure Python: keep it off the event loop that serves other calls.
+            pdf = await asyncio.wait_for(
+                asyncio.to_thread(extract_pdf, fetched.content, max_chars=max_chars),
+                timeout=self.settings.fetch_timeout_seconds,
+            )
+        except asyncio.TimeoutError as exc:
+            raise WebToolError(
+                "timeout",
+                "PDF text extraction timed out",
+                url=fetched.final_url,
+                status_code=fetched.status_code,
+                detail="pdf_extract_timeout",
+            ) from exc
+        except PdfError as exc:
+            raise WebToolError(
+                exc.code,
+                str(exc),
+                url=fetched.final_url,
+                status_code=fetched.status_code,
+                detail=exc.detail,
+            ) from exc
+        extract_ms = (time.perf_counter() - extraction_started) * 1000
+        self.metrics.observe("extraction", extract_ms, mode="pdf")
+
+        try:
+            canonical = canonicalize_url(fetched.final_url)
+        except UnsafeUrlError:
+            canonical = fetched.final_url
+        page = ParsedPage(
+            title=pdf.title,
+            description=pdf.description,
+            canonical_url=canonical,
+            markdown=pdf.markdown,
+            metadata={"canonical_url": canonical, "pdf": pdf.metadata},
+        )
+        warnings = list(pdf.warnings)
+        if not pdf.markdown.strip():
+            warnings.append("empty_content")
+        return LoadedDocument(
+            final_url=fetched.final_url,
+            status_code=fetched.status_code,
+            content_type=PDF_CONTENT_TYPE,
+            html="",
+            page=page,
+            fetched_with="http",
+            warnings=warnings,
+            timings={
+                "network_ms": round(fetched.network_ms, 2),
+                "http_ms": round(fetched.total_ms, 2),
+                "extract_ms": round(extract_ms, 2),
+                "browser_ms": 0.0,
+                "total_ms": round((time.perf_counter() - started) * 1000, 2),
+            },
+            pages=pdf.pages,
+        )
+
     async def _render_document(
         self,
         url: str,
@@ -760,12 +967,17 @@ class WebToolsService:
         browser_ms = (time.perf_counter() - started) * 1000
         self.metrics.observe("browser_render", browser_ms, outcome="ok")
 
-        interstitial = detect_interstitial(rendered.html, rendered.final_url)
+        interstitial = detect_interstitial(
+            rendered.html,
+            rendered.final_url,
+            rendered.status_code or 200,
+        )
         if interstitial:
             raise WebToolError(
                 "blocked",
                 f"Target returned a {interstitial} interstitial",
                 url=url,
+                status_code=rendered.status_code or None,
                 detail=interstitial,
             )
 
@@ -805,12 +1017,17 @@ class WebToolsService:
         rendered: BrowserPage,
         max_chars: int,
     ) -> LoadedDocument:
-        interstitial = detect_interstitial(rendered.html, rendered.final_url)
+        interstitial = detect_interstitial(
+            rendered.html,
+            rendered.final_url,
+            rendered.status_code or 200,
+        )
         if interstitial:
             raise WebToolError(
                 "blocked",
                 f"Target returned a {interstitial} interstitial",
                 url=document.final_url,
+                status_code=rendered.status_code or None,
                 detail=interstitial,
             )
 
@@ -841,7 +1058,11 @@ class WebToolsService:
         )
 
     def _page_payload(self, document: LoadedDocument, requested: str) -> dict[str, Any]:
-        return {
+        # The page's own links, without menus, banners, footers, and sidebars,
+        # capped; map and crawl still see every link.
+        content_links = [link for link in document.page.links if not link.chrome]
+        shown = content_links[: self.settings.scrape_max_links]
+        payload: dict[str, Any] = {
             "url": document.final_url,
             "requested_url": requested,
             "title": document.page.title,
@@ -850,10 +1071,8 @@ class WebToolsService:
             "markdown": document.page.markdown,
             "status_code": document.status_code,
             "content_type": document.content_type,
-            "links": [
-                {"url": link.url, "text": link.text, "kind": link.kind}
-                for link in document.page.links
-            ],
+            "links": [{"url": link.url, "text": link.text, "kind": link.kind} for link in shown],
+            "links_truncated": len(shown) < len(document.page.links),
             "metadata": document.page.metadata,
             "content_hash": content_hash(document.page.markdown),
             "fetched_with": document.fetched_with,
@@ -861,6 +1080,9 @@ class WebToolsService:
             "warnings": list(document.warnings),
             "timings": dict(document.timings),
         }
+        if document.pages is not None:
+            payload["pages"] = document.pages
+        return payload
 
     def _markdown_limit(self, value: Optional[int]) -> int:
         if value is None:

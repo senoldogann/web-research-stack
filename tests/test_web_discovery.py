@@ -58,6 +58,8 @@ def _service(search: RoutingSearch) -> WebToolsService:
         settings=WebToolsSettings(
             search_provider="fake",
             search_angle_delay_ms=0,
+            search_jitter_min_ms=0,
+            search_jitter_max_ms=0,
         ),
         fetcher=object(),  # type: ignore[arg-type]
         search_adapters={search.name: search},
@@ -303,7 +305,7 @@ def test_ranking_drops_results_without_any_query_overlap() -> None:
     assert [item["url"] for item in results] == [relevant.result.url]
 
 
-def test_ranking_falls_back_when_no_result_matches_lexically() -> None:
+def test_ranking_returns_nothing_when_no_result_matches_lexically() -> None:
     unrelated = _candidate(
         "https://food.example.com/pasta",
         "Cooking pasta",
@@ -312,7 +314,7 @@ def test_ranking_falls_back_when_no_result_matches_lexically() -> None:
 
     results = rank_candidates("python asyncio", [unrelated], 5, year_now=2026)
 
-    assert [item["url"] for item in results] == [unrelated.result.url]
+    assert results == []
 
 
 def test_facets_summarise_source_type_recency_domains_and_angles() -> None:
@@ -666,22 +668,25 @@ async def test_freshness_query_forwards_date_filter_to_provider() -> None:
 
 
 @pytest.mark.asyncio
-async def test_provider_cooldown_stops_repeated_failures() -> None:
+async def test_repeated_failures_lengthen_only_that_providers_cooldown() -> None:
+    # With no fallback registered, a cooldown never fails a search by itself:
+    # the provider is asked again, and each failure doubles its cooldown.
     search = RoutingSearch(failures={"asyncio"})
     service = _service(search)
 
-    with pytest.raises(WebToolError):
-        await service.search("asyncio", limit=5, depth="fast")
+    for _ in range(2):
+        with pytest.raises(WebToolError) as exc:
+            await service.search("asyncio", limit=5, depth="fast")
+        assert exc.value.detail == "bot_detected"
 
-    with pytest.raises(WebToolError) as exc:
-        await service.search("asyncio", limit=5, depth="fast")
-
-    assert exc.value.detail == "provider_cooldown"
-    assert len(search.calls) == 1
+    snapshot = await service.metrics_snapshot()
+    assert len(search.calls) == 2
+    assert snapshot["search_providers"]["fake"]["consecutive_failures"] == 2
+    assert 5 < snapshot["search_providers"]["fake"]["cooldown_remaining_s"] <= 10
 
 
 @pytest.mark.asyncio
-async def test_multiple_blocked_angles_put_provider_on_cooldown() -> None:
+async def test_blocked_angles_put_the_provider_on_cooldown() -> None:
     angles = build_search_angles("asyncio", "discover")
     base_query, current_query, background_query = [angle.query for angle in angles]
     search = RoutingSearch(
@@ -706,12 +711,9 @@ async def test_multiple_blocked_angles_put_provider_on_cooldown() -> None:
         "current_query_failed",
         "background_query_failed",
     ]
-
-    with pytest.raises(WebToolError) as exc:
-        await service.search("different query", limit=5)
-
-    assert exc.value.detail == "provider_cooldown"
-    assert len(search.calls) == 3
+    snapshot = await service.metrics_snapshot()
+    assert snapshot["search_providers"]["fake"]["consecutive_failures"] == 2
+    assert snapshot["search_providers"]["fake"]["cooldown_remaining_s"] > 0
 
 
 @pytest.mark.asyncio

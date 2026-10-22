@@ -245,22 +245,53 @@ _OFFICIAL_HOSTS = frozenset(
         "vuejs.org",
     }
 )
+# Public bodies whose hosts carry no government suffix: every EU institution
+# under europa.eu, the UK government, and Finnish authorities and public
+# services (Yle is the public broadcaster, Oamk a public university of applied
+# sciences, ouka.fi the City of Oulu).
+_PUBLIC_SECTOR_HOSTS = frozenset(
+    {
+        "dvv.fi",
+        "eduskunta.fi",
+        "europa.eu",
+        "gov.uk",
+        "kela.fi",
+        "oamk.fi",
+        "ouka.fi",
+        "stat.fi",
+        "traficom.fi",
+        "vero.fi",
+        "yle.fi",
+    }
+)
+_GOVERNMENT_SUFFIX = re.compile(r"(?:^|\.)(?:gov|mil|int)$|(?:^|\.)gov\.[a-z]{2}$")
 _ACADEMIC_HOSTS = frozenset(
     {
+        "aalto.fi",
+        "abo.fi",
         "acm.org",
         "arxiv.org",
         "biorxiv.org",
+        "helsinki.fi",
         "ieee.org",
         "jstor.org",
+        "jyu.fi",
+        "lappeenranta.fi",
+        "lut.fi",
         "medrxiv.org",
         "nature.com",
         "ncbi.nlm.nih.gov",
+        "oulu.fi",
         "pubmed.ncbi.nlm.nih.gov",
         "science.org",
         "springer.com",
         "ssrn.com",
+        "tuni.fi",
+        "utu.fi",
+        "uwasa.fi",
     }
 )
+_ACADEMIC_SUFFIX = re.compile(r"\.edu$|\.(?:edu|ac)\.[a-z]{2}$")
 _NEWS_HOSTS = frozenset(
     {
         "aljazeera.com",
@@ -316,6 +347,13 @@ _AUTHORITY = {
     "community": 0.04,
     "other": 0.0,
 }
+# The score of a result matching about a third of the query from a single
+# angle's middle ranks; below it, a result is listed only when nothing
+# relevant scores higher.
+MIN_RESULT_SCORE = 0.25
+# A result naming fewer than this share of the query's words is a weak match;
+# when every result is one, the search says so (``low_relevance_results``).
+MIN_RESULT_RELEVANCE = 0.3
 
 
 @dataclass(frozen=True)
@@ -470,9 +508,13 @@ def classify_source_type(url: str) -> str:
     if not host:
         return "other"
 
-    if _host_matches(host, _OFFICIAL_HOSTS):
+    if (
+        _host_matches(host, _OFFICIAL_HOSTS)
+        or _host_matches(host, _PUBLIC_SECTOR_HOSTS)
+        or _GOVERNMENT_SUFFIX.search(host)
+    ):
         return "official"
-    if _host_matches(host, _ACADEMIC_HOSTS) or host.endswith((".edu", ".ac.uk")):
+    if _host_matches(host, _ACADEMIC_HOSTS) or _ACADEMIC_SUFFIX.search(host):
         return "academic"
     if _host_matches(host, _NEWS_HOSTS):
         return "news"
@@ -482,8 +524,6 @@ def classify_source_type(url: str) -> str:
         return "code"
     if _host_matches(host, _COMMUNITY_HOSTS):
         return "community"
-    if host.endswith((".gov", ".mil", ".int")):
-        return "official"
     # A docs-looking path alone does not make a host official: mirrors (mdn.org.cn, runebook.dev) copy another
     # project's documentation. Give them the weight of a reference, below the canonical project's own domain.
     if any(
@@ -667,6 +707,19 @@ def _annotate_candidate(
     }
 
 
+def has_relevant_result(query: str, items: Iterable[dict[str, Any]]) -> bool:
+    """Whether any annotated result shares a word of the query.
+
+    Bare numbers do not count when the query has words too: a year or a code
+    such as ``9237`` also appears on pages about something else entirely.
+    """
+    wanted = query_tokens(query)
+    words = {token for token in wanted if not token.isdigit()} or wanted
+    return any(
+        words & query_tokens(f"{item['title']} {item['snippet']} {item['url']}") for item in items
+    )
+
+
 def rank_candidates(
     query: str,
     candidates: Iterable[DiscoveryCandidate],
@@ -674,13 +727,19 @@ def rank_candidates(
     *,
     year_now: Optional[int] = None,
 ) -> list[dict[str, Any]]:
-    """Rank candidates by relevance, agreement, authority, and recency, then diversify."""
+    """Rank candidates by relevance, agreement, authority, and recency, then diversify.
+
+    Results that share nothing with the query are dropped, and when nothing
+    relevant is left the list is empty: an empty answer is honest, a page of
+    unrelated links is not. Relevant results scoring under
+    ``MIN_RESULT_SCORE`` are dropped beside better ones and kept only when no
+    relevant result reaches it.
+    """
     annotated = annotate_candidates(query, candidates, year_now=year_now)
-    eligible = [item for item in annotated if item["relevance"] > 0]
-    if not eligible:
-        # A provider can return useful results whose wording differs from the
-        # query. Keep them rather than turning a non-empty search into an empty one.
-        eligible = annotated
+    if not has_relevant_result(query, annotated):
+        return []
+    relevant = [item for item in annotated if item["relevance"] > 0]
+    eligible = [item for item in relevant if item["score"] >= MIN_RESULT_SCORE] or relevant
 
     eligible.sort(
         key=lambda item: (

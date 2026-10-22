@@ -128,12 +128,11 @@ Scores are relative ranking weights, not probabilities. Every result carries
 response also includes `facets` (source types, recency buckets, domains, angles,
 candidate count), per-angle `queries` with result/new counts, date filters and
 errors, `warnings`, and `cache_hit`. If an enrichment angle fails, usable
-results from the remaining angles are returned with a warning. A total failure,
-a failed `base` angle, or two or more failed angles put the provider into an
-exponential cooldown (30 s doubling to 300 s, reset on a clean run), so the
-service fails fast instead of immediately re-hammering a provider that is
-blocking it. `fast` keeps provider order and does not fan out, so it sends the
-fewest requests. Successful responses are cached for
+results from the remaining angles are returned with a warning. Every failed
+provider call puts that provider into a cooldown (5 s doubling to 300 s, reset by
+a successful call) during which its calls go to the Google fallback; see
+"Search provider pacing, fallback, and cooldown" below. `fast` keeps provider
+order and does not fan out, so it sends the fewest requests. Successful responses are cached for
 `WEB_TOOLS_SEARCH_CACHE_TTL_SECONDS` (default 300 s) per provider/depth/limit/
 query/locale, so a repeated search skips the provider entirely.
 
@@ -150,9 +149,14 @@ Copy `.env.example` to `.env` and set what you need. The important web tool knob
 | `SEARCH_REGION` | `wt-wt` | DuckDuckGo `kl` region, e.g. `tr-tr`; `wt-wt` is neutral |
 | `SEARCH_LANGUAGE` | `en-US,en;q=0.9` | `Accept-Language` value |
 | `SEARCH_CACHE_TTL_SECONDS` | `300` | Search response cache TTL |
-| `SEARCH_TIMEOUT_SECONDS` | `30` | Per-angle provider timeout |
-| `SEARCH_PROVIDER_COOLDOWN_SECONDS` | `30` | First cooldown after total/base/multi-angle failure |
+| `SEARCH_TIMEOUT_SECONDS` | `30` | Per-call provider timeout |
+| `SEARCH_PROVIDER_CONCURRENCY` | `1` | Calls one provider takes at a time |
+| `SEARCH_JITTER_MIN_MS` / `SEARCH_JITTER_MAX_MS` | `250` / `500` | Random gap between a provider's calls |
+| `SEARCH_FALLBACK_PROVIDER` | `google` | Asked once when a call fails; `none` turns it off |
+| `SEARCH_FALLBACK_TIMEOUT_SECONDS` | `60` | Timeout of a fallback call (a cold headless browser) |
+| `SEARCH_PROVIDER_COOLDOWN_SECONDS` | `5` | First cooldown after a failed provider call |
 | `SEARCH_PROVIDER_MAX_COOLDOWN_SECONDS` | `300` | Cap for the doubling cooldown |
+| `SCRAPE_MAX_LINKS` | `50` | Links `web_scrape` lists, from the page content |
 | `FETCH_TIMEOUT_SECONDS` | `20` | Per-request timeout |
 | `FETCH_RETRIES` | `1` | Retries for transient failures only |
 | `MAX_RESPONSE_BYTES` | `5000000` | Response body cap |
@@ -418,8 +422,9 @@ bot-detected the `background` angle in both discovery runs; the service returned
 the successful angles with a `background_query_failed` warning instead of
 failing the search. The `primary` angle succeeded in the `deep` run. That is the
 designed partial-failure behavior, not a complete four-angle result. A repeated
-`discover` search returned from cache in 0.35 ms with `cache_hit=true`; a provider
-failure or two blocked angles would instead trip the cooldown. When the provider
+`discover` search returned from cache in 0.35 ms with `cache_hit=true`; a failed
+provider call would instead cool that provider down and send its next calls to
+the fallback. When the provider
 cooperates, `deep` adds its fourth angle; when it does not, retry later or use
 `fast` to conserve provider budget.
 
@@ -463,8 +468,9 @@ pick up the new schema.
 - The default DuckDuckGo path can be rate-limited. A 202 bot-detection response
   is reported as `search_failed` with `detail=bot_detected`; a 200 response with
   no result nodes still returns an empty list, which is a provider quality
-  signal. A blocked base angle, a total failure, or two blocked angles trip the
-  cooldown. The adapter can be replaced without changing the service contract.
+  signal. Every failed call cools the provider down and sends its next calls to
+  the Google fallback. The adapter can be replaced without changing the service
+  contract.
 - `discover` and `deep` send 3 and 4 provider queries instead of 1. They cost
   more latency and provider budget than `fast`; use `fast` when that matters.
   An individual angle failure is surfaced in `warnings` and may reduce coverage.
@@ -503,3 +509,150 @@ Modified:
 - `tests/test_duckduckgo_search.py`
 - `README.md`
 - `.env.example`
+
+## Reliability fixes (2026-10-22)
+
+Behavior changes from live testing of the tools. The unit tests never reach the
+network; `scripts/verify_web_tools_live.py` runs the live checks by hand
+(`--only scrape,pdf,search,empty,crawl,links`, or `--only matrix --urls FILE`
+to scrape a list of URLs and count blocks). On a 29-URL list of news, social,
+Finnish public, and test sites, scrapes that succeeded went from 14 to 18; the
+four captchas left (Reddit, Reuters, NYT, WSJ) are real challenge pages, which a
+headless browser met as well.
+
+### Challenge detection
+
+- A captcha is reported only on evidence a visitor would meet: a widget in the
+  DOM (`g-recaptcha`, `h-captcha`, `cf-turnstile`, `px-captcha`), a captcha
+  iframe, a form that posts to a captcha endpoint, or a challenge phrase
+  (`unusual traffic`, `verify you are human`, `are you a robot`) in the visible
+  text with scripts, styles, and templates removed. The word `captcha` inside a
+  script no longer counts; it made Wikipedia, GitHub, Instagram, and
+  Verkkokauppa fail as captchas.
+- A 2xx response over 100 KB is content, never a captcha, with one exception: a
+  page with at most 3,000 visible characters that carries a captcha form.
+  Reddit's "Prove your humanity" page is 167 KB of inline assets around one, and
+  it is reported as `captcha` rather than handed over as the subreddit.
+- Challenge, block, and wall phrases count only on pages with at most 3,000
+  visible characters, so an article about "access denied" errors is content.
+- Invisible reCAPTCHA (the v3 badge, `data-size="invisible"`) is not a challenge.
+- A 401/403 HTML page of 20 KB or less is `access_blocked`, which may fall back
+  to one headless render; a JSON 401/403 stays an `http_error`. When that render
+  fails, the error is the HTTP refusal with its status (not the browser's
+  `navigation_failed`); a challenge the browser meets carries the browser's
+  status. DataDome sites (Reuters, NYT, WSJ) take this path: their 401/403 page
+  names the captcha only in a script, and the rendered page shows its iframe.
+- A login wall needs a login title plus a login path or a password field; the
+  word "password" in scripts no longer counts.
+
+### PDF documents
+
+- `web_scrape` reads PDFs instead of refusing them as `unsupported_content_type`.
+  A response is a PDF when it says `application/pdf` (or `application/x-pdf`) or
+  its body starts with `%PDF-`. The download stays inside `MAX_RESPONSE_BYTES`.
+- pypdf extracts the text off the event loop, page by page, into Markdown with a
+  `## Page N` section per page, until `max_chars` is reached (at most 500 pages
+  are read). The response carries `content_type: "application/pdf"`, `pages`
+  (the document's full page count), the PDF's title when its metadata has a
+  real one, and its author, dates, and producer under `metadata.pdf`.
+- Warnings: `pdf_truncated` when pages were left unread, `pdf_no_text` for a
+  scanned PDF without a text layer.
+- Errors: `pdf_encrypted` for a PDF that needs a user password (one with only an
+  owner password opens normally; AES needs the optional `cryptography`
+  package, which this environment does not install), `pdf_invalid` for one
+  that cannot be parsed, and `timeout` (`pdf_extract_timeout`) when extraction
+  takes longer than `FETCH_TIMEOUT_SECONDS`. Both PDF codes map to HTTP 422.
+
+### Search provider pacing, fallback, and cooldown
+
+- Each provider takes one call at a time (`SEARCH_PROVIDER_CONCURRENCY`, default
+  1), shared by every search and angle in the process, with a random 250–500 ms
+  gap between calls (`SEARCH_JITTER_MIN_MS`, `SEARCH_JITTER_MAX_MS`). Each call
+  is bounded by `SEARCH_TIMEOUT_SECONDS` (30), a fallback call by
+  `SEARCH_FALLBACK_TIMEOUT_SECONDS` (60): the headless Google browser's first
+  search took 36 s in testing.
+- A failed call (`bot_detected`, a timeout, or another provider error) is asked
+  once of the fallback provider (`SEARCH_FALLBACK_PROVIDER`, default `google`;
+  `none` turns it off). `provider` names who answered (`google`, or
+  `duckduckgo+google` when the angles were split), `requested_provider` keeps
+  the requested one, the angle's entry in `queries` carries
+  `fallback: {from, to, reason, error}`, and `warnings` gets `provider_fallback`.
+- A failure cools down only the provider that failed: 5 s
+  (`SEARCH_PROVIDER_COOLDOWN_SECONDS`), doubling while failures repeat up to
+  300 s (`SEARCH_PROVIDER_MAX_COOLDOWN_SECONDS`); a success resets it. While it
+  cools down, its calls go to a healthy fallback (`reason: provider_cooldown`).
+  With no fallback, or when the fallback fails too, the provider is still
+  asked: a cooldown steers calls and never fails a search by itself.
+  `GET /api/v1/web/stats` lists each provider's failures and remaining cooldown.
+- Measured on 2026-10-22: six `discover` searches sent in parallel each
+  returned 5 results with no failed query. DuckDuckGo still refused 2 of the 10
+  calls it got at this pace; Google answered those two and the 8 angles sent
+  while DuckDuckGo cooled down. Asked one query at a time with 3 s pauses,
+  DuckDuckGo answered every call, so a wider jitter trades latency for fewer
+  refusals.
+- The Google fallback is the headless `GoogleSearchAdapter` (Camoufox): its
+  first call starts the browser (6–36 s measured), which holds memory until it
+  has been idle for three minutes.
+
+### Honest empty searches
+
+- A result that shares no word with the query is dropped at every depth. When
+  nothing relevant is left, `results` is empty and `warnings` holds
+  `no_relevant_results`; the old fallback returned five unrelated results
+  (relevance 0.0) for `qzxvbnmp flurbulator 9237`. A bare number (a year, a
+  code like `9237`) does not count as a shared word when the query has words.
+- A provider that answers with no results at all gives the same empty answer
+  instead of a `search_failed` error. `facets.total_candidates` still counts
+  what the provider returned.
+- In `discover` and `deep`, a relevant result scoring under 0.25 is dropped
+  beside better ones and kept only when no relevant result reaches 0.25. When
+  every returned result names less than 30% of the query's words, `warnings`
+  holds `low_relevance_results`. `fast` keeps the provider's order.
+
+### Official and academic sources
+
+- `official` now also covers every host under `europa.eu`, `gov.uk` and any
+  `gov.<country>` (`gov.tr`, `gov.au`), `.gov`, `.mil`, and `.int` (checked
+  before every other class), and a curated list of Finnish public bodies:
+  `kela.fi`, `traficom.fi`, `stat.fi`, `vero.fi`, `dvv.fi`, `eduskunta.fi`,
+  `oamk.fi`, `yle.fi`, and `ouka.fi` (the City of Oulu).
+- `academic` now also covers `.edu.<country>` and `.ac.<country>` (`edu.tr`,
+  `ac.jp`, `ac.uk`) and the Finnish universities `oulu.fi` (University of Oulu),
+  `helsinki.fi`, `aalto.fi`, `utu.fi`, `jyu.fi`, `tuni.fi`, `uwasa.fi`,
+  `abo.fi`, `lut.fi`, and `lappeenranta.fi`.
+- Commercial compliance and consultancy sites on other `.eu` hosts
+  (`regulation-ai.eu`, `artificialintelligenceact.eu`) stay `other` with no
+  authority weight, so the European Commission's AI Act timeline outranks a
+  blog about it.
+
+### Crawl schemes
+
+- A crawl runs on https: the seed and every discovered `http://` link on a
+  default port are rewritten to `https://`, and a page is queued once per host
+  and path whichever scheme linked to it.
+- quotes.toscrape.com answers `https://…/author/Albert-Einstein` with a 308 to
+  `http://…/author/Albert-Einstein/`, so most results came back as `http://`
+  with `http://` links, and one page could enter the results twice. A page an
+  https request reached through such a same-host downgrade is now read as its
+  https self: its URL and links stay https, and the same content hashes the
+  same whichever scheme reached it, so content-hash dedupe catches it. A
+  30-page crawl of quotes.toscrape.com now returns no `http://` URL; before
+  the change 28 of 30 were `http://`.
+- A host that refuses https (a network error on a rewritten URL) is crawled
+  over http for the rest of the job.
+
+### Scrape output hygiene
+
+- `web_scrape` lists at most 50 links (`SCRAPE_MAX_LINKS`), taken from the page
+  content: links inside `nav`, `header`, `footer`, and `aside` elements and their
+  ARIA landmarks (`navigation`, `banner`, `contentinfo`, `complementary`,
+  `search`) are left out. `links_truncated` is `true` when the page has links
+  the list leaves out, menus included. `web_map` lists them all, and crawls
+  still follow menu links (pagination often sits in a `nav`).
+- The Markdown also drops the ARIA landmark versions of that chrome, as it
+  already dropped `nav`, `header`, `footer`, and `aside` elements.
+- Measured on ouka.fi: the front page's links went from 102 entries (12.9 KB)
+  to 45 (7.5 KB) and its response from 24.8 KB to 19.4 KB;
+  `/tietoja-ja-tilastoja` went from 15.8 KB to 9.9 KB, and to 6.2 KB with
+  `max_chars=1500`. What is left is page content: those 45 front-page links are
+  its news, topic, and service links, and the rest is its Markdown.

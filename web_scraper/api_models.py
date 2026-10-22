@@ -256,9 +256,14 @@ class WebSearchQuery(BaseModel):
     angle: str
     query: str
     date_filter: Optional[str] = None
+    provider: Optional[str] = None
     results: int = 0
     new: int = 0
     error: Optional[Dict[str, Any]] = None
+    fallback: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Set when the fallback provider was asked: from, to, reason, error",
+    )
 
 
 class WebSearchFacets(BaseModel):
@@ -272,7 +277,8 @@ class WebSearchFacets(BaseModel):
 
 class WebSearchResponse(BaseModel):
     query: str
-    provider: str
+    provider: str = Field(..., description="Provider(s) that answered, joined with + when mixed")
+    requested_provider: Optional[str] = None
     depth: str = "discover"
     results: List[WebSearchResult]
     facets: WebSearchFacets = Field(default_factory=WebSearchFacets)
@@ -310,12 +316,17 @@ class WebScrapeResponse(BaseModel):
     status_code: int
     content_type: str
     links: List[WebLink]
+    links_truncated: bool = Field(
+        default=False,
+        description="True when the page has links that links leaves out (page chrome or cap)",
+    )
     metadata: Dict[str, Any]
     content_hash: str
     fetched_with: str
     cache_hit: bool = False
     warnings: List[str] = Field(default_factory=list)
     timings: Dict[str, float]
+    pages: Optional[int] = Field(default=None, description="Page count of a PDF document")
 
 
 class WebMapRequest(BaseModel):

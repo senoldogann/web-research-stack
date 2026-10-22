@@ -416,9 +416,7 @@ class Config:
             ),
             google_playwright_headless=_parse_bool(os.getenv("GOOGLE_PLAYWRIGHT_HEADLESS"), False),
             google_browser_channel=os.getenv("GOOGLE_BROWSER_CHANNEL", "chrome"),
-            google_warmup_on_startup=_parse_bool(
-                os.getenv("GOOGLE_WARMUP_ON_STARTUP"), True
-            ),
+            google_warmup_on_startup=_parse_bool(os.getenv("GOOGLE_WARMUP_ON_STARTUP"), True),
             max_query_length=_safe_int(os.getenv("MAX_QUERY_LENGTH"), 500),
             max_source_content_chars=_safe_int(os.getenv("MAX_SOURCE_CONTENT_CHARS"), 12000),
             cache_ttl_seconds=_safe_int(os.getenv("CACHE_TTL_SECONDS"), 300),

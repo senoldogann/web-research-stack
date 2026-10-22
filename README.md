@@ -57,6 +57,18 @@ web-scraper serve
 docker compose up --build
 ```
 
+### Google search stays off your screen
+
+Google no longer serves results to plain HTTP clients, and headless Chrome is caught within one request. A headed Chrome gets the real page, so the searcher starts Chrome itself, **minimises its window over CDP before the first search**, and keeps one browser and one tab for the process: ~2 s to start (a brief flash of a small window), then 0.4–1 s per search. If Chrome is missing or refused, **Camoufox** — a patched headless Firefox — takes over.
+
+```bash
+pip install -e ".[playwright]"   # the Chrome path
+pip install -e ".[camoufox]" && python -m camoufox fetch   # the headless fallback
+```
+
+- `GOOGLE_ALLOW_VISIBLE_BROWSER=true` — leave the Chrome window on screen (debugging).
+- `GOOGLE_USE_PLAYWRIGHT=false` — skip Google entirely and rely on DuckDuckGo.
+
 ### API Endpoints
 
 | Endpoint | Method | Description |
@@ -146,6 +158,18 @@ web-scraper serve
 # Veya Docker kullan
 docker compose up --build
 ```
+
+### Google araması ekranda görünmez
+
+Google artık düz HTTP istemcilerine sonuç döndürmüyor ve headless Chrome tek istekte yakalanıyor. Başlı (headed) Chrome gerçek sayfayı alıyor; bu yüzden arayıcı Chrome'u kendisi başlatıp **penceresini ilk aramadan önce CDP ile küçültüyor** ve süreç boyunca tek tarayıcı + tek sekme kullanıyor: başlatma ~2 sn (küçük bir pencere kısa süre görünür), sonrası arama başına 0,4–1 sn. Chrome yoksa ya da reddederse **Camoufox** — yamalı, headless Firefox — devralıyor.
+
+```bash
+pip install -e ".[playwright]"   # Chrome yolu
+pip install -e ".[camoufox]" && python -m camoufox fetch   # görünmez yedek
+```
+
+- `GOOGLE_ALLOW_VISIBLE_BROWSER=true` — Chrome penceresi ekranda kalsın (hata ayıklama).
+- `GOOGLE_USE_PLAYWRIGHT=false` — Google'ı tamamen atla, DuckDuckGo kullan.
 
 ### API Uç Noktaları
 

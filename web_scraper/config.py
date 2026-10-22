@@ -106,6 +106,20 @@ class Config:
     duckduckgo_request_timeout_seconds: float = 30.0
     duckduckgo_request_delay_seconds: float = 0.5
     google_request_timeout_seconds: float = 30.0
+    # Google serves no results to plain HTTP clients any more: the browser
+    # fallback renders the page.  "chrome" uses the installed Chrome; an empty
+    # channel uses Playwright's bundled Chromium.
+    google_use_playwright: bool = True
+    google_playwright_timeout_seconds: float = 30.0
+    # A visible Chrome is the last resort and only when asked for: the default
+    # path is headless Camoufox, which Google answers without a window.
+    google_allow_visible_browser: bool = False
+    # Google detects headless Chrome ("unusual traffic"), so this only matters
+    # for the visible-Chrome fallback.
+    google_playwright_headless: bool = False
+    google_browser_channel: str = "chrome"
+    # Open Google once at API start-up so the first search is not the slow one.
+    google_warmup_on_startup: bool = True
     max_query_length: int = 500
     max_source_content_chars: int = 12000
     cache_ttl_seconds: int = 300
@@ -393,6 +407,16 @@ class Config:
             google_request_timeout_seconds=_safe_float(
                 os.getenv("GOOGLE_REQUEST_TIMEOUT_SECONDS"), 30.0
             ),
+            google_use_playwright=_parse_bool(os.getenv("GOOGLE_USE_PLAYWRIGHT"), True),
+            google_playwright_timeout_seconds=_safe_float(
+                os.getenv("GOOGLE_PLAYWRIGHT_TIMEOUT_SECONDS"), 30.0
+            ),
+            google_allow_visible_browser=_parse_bool(
+                os.getenv("GOOGLE_ALLOW_VISIBLE_BROWSER"), False
+            ),
+            google_playwright_headless=_parse_bool(os.getenv("GOOGLE_PLAYWRIGHT_HEADLESS"), False),
+            google_browser_channel=os.getenv("GOOGLE_BROWSER_CHANNEL", "chrome"),
+            google_warmup_on_startup=_parse_bool(os.getenv("GOOGLE_WARMUP_ON_STARTUP"), True),
             max_query_length=_safe_int(os.getenv("MAX_QUERY_LENGTH"), 500),
             max_source_content_chars=_safe_int(os.getenv("MAX_SOURCE_CONTENT_CHARS"), 12000),
             cache_ttl_seconds=_safe_int(os.getenv("CACHE_TTL_SECONDS"), 300),

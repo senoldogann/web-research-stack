@@ -3,6 +3,11 @@ FROM python:3.13-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
+    # Inside the container there is no screen to disturb: the Chrome fallback
+    # runs on the Xvfb display below, so it is allowed.  With Camoufox
+    # installed (the local default) this flag is never reached.
+    GOOGLE_ALLOW_VISIBLE_BROWSER=true \
+    GOOGLE_CHROME_NO_SANDBOX=true \
     # Store Playwright browser binaries inside /app so they are
     # accessible by the non-root appuser after chown below.
     PLAYWRIGHT_BROWSERS_PATH=/app/.playwright
@@ -17,6 +22,11 @@ RUN pip install --upgrade pip \
     && pip install ".[playwright,redis]" \
     # Download Chromium + its system-level OS dependencies in one step
     && playwright install --with-deps chromium \
+    # xvfb gives the container a display: Google blocks a headless browser,
+    # so the searcher drives a visible Chromium under a virtual screen.
+    && apt-get update \
+    && apt-get install -y --no-install-recommends xvfb \
+    && rm -rf /var/lib/apt/lists/* \
     && addgroup --system appgroup \
     && adduser --system --ingroup appgroup --no-create-home appuser \
     && mkdir -p /app/data \
@@ -27,5 +37,5 @@ USER appuser
 
 EXPOSE 8000
 
-CMD ["uvicorn", "web_scraper.api:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
+CMD ["xvfb-run", "-a", "--server-args=-screen 0 1366x900x24", "uvicorn", "web_scraper.api:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
 

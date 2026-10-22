@@ -767,9 +767,23 @@ def create_app(settings: Optional[Config] = None) -> FastAPI:
     )
     _mem_limiter = SlidingWindowRateLimiter(app_settings.api_rate_limit_per_minute)
 
+    async def _warm_google() -> None:
+        """Open Google once at start-up so the first search is not the slow one."""
+        try:
+            from web_scraper.google_search import GoogleSearcher
+
+            await GoogleSearcher().warm_up()
+            logger.info("google_warmup_done")
+        except Exception as exc:  # never keep the API from starting
+            logger.info("google_warmup_failed err=%s", exc)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):  # noqa: ANN001
-        """Try to connect Redis on startup; tear down on shutdown."""
+        """Connect Redis and warm the Google browser on startup; tear down on shutdown."""
+        warmup: Optional[asyncio.Task] = None
+        if config.google_use_playwright and config.google_warmup_on_startup:
+            warmup = asyncio.create_task(_warm_google())
+
         redis_url = os.getenv("REDIS_URL")
         _redis_cache: Optional[RedisCache] = None
         _redis_limiter: Optional[RedisRateLimiter] = None
@@ -805,6 +819,8 @@ def create_app(settings: Optional[Config] = None) -> FastAPI:
         yield
 
         # Cleanup
+        if warmup is not None and not warmup.done():
+            warmup.cancel()
         if _redis_cache is not None:
             await _redis_cache.close()
         if _redis_limiter is not None:

@@ -209,22 +209,53 @@ _OFFICIAL_HOSTS = frozenset(
         "vuejs.org",
     }
 )
+# Public bodies whose hosts carry no government suffix: every EU institution
+# under europa.eu, the UK government, and Finnish authorities and public
+# services (Yle is the public broadcaster, Oamk a public university of applied
+# sciences, ouka.fi the City of Oulu).
+_PUBLIC_SECTOR_HOSTS = frozenset(
+    {
+        "dvv.fi",
+        "eduskunta.fi",
+        "europa.eu",
+        "gov.uk",
+        "kela.fi",
+        "oamk.fi",
+        "ouka.fi",
+        "stat.fi",
+        "traficom.fi",
+        "vero.fi",
+        "yle.fi",
+    }
+)
+_GOVERNMENT_SUFFIX = re.compile(r"(?:^|\.)(?:gov|mil|int)$|(?:^|\.)gov\.[a-z]{2}$")
 _ACADEMIC_HOSTS = frozenset(
     {
+        "aalto.fi",
+        "abo.fi",
         "acm.org",
         "arxiv.org",
         "biorxiv.org",
+        "helsinki.fi",
         "ieee.org",
         "jstor.org",
+        "jyu.fi",
+        "lappeenranta.fi",
+        "lut.fi",
         "medrxiv.org",
         "nature.com",
         "ncbi.nlm.nih.gov",
+        "oulu.fi",
         "pubmed.ncbi.nlm.nih.gov",
         "science.org",
         "springer.com",
         "ssrn.com",
+        "tuni.fi",
+        "utu.fi",
+        "uwasa.fi",
     }
 )
+_ACADEMIC_SUFFIX = re.compile(r"\.edu$|\.(?:edu|ac)\.[a-z]{2}$")
 _NEWS_HOSTS = frozenset(
     {
         "aljazeera.com",
@@ -417,9 +448,13 @@ def classify_source_type(url: str) -> str:
     if not host:
         return "other"
 
-    if _host_matches(host, _OFFICIAL_HOSTS):
+    if (
+        _host_matches(host, _OFFICIAL_HOSTS)
+        or _host_matches(host, _PUBLIC_SECTOR_HOSTS)
+        or _GOVERNMENT_SUFFIX.search(host)
+    ):
         return "official"
-    if _host_matches(host, _ACADEMIC_HOSTS) or host.endswith((".edu", ".ac.uk")):
+    if _host_matches(host, _ACADEMIC_HOSTS) or _ACADEMIC_SUFFIX.search(host):
         return "academic"
     if _host_matches(host, _NEWS_HOSTS):
         return "news"
@@ -429,8 +464,6 @@ def classify_source_type(url: str) -> str:
         return "code"
     if _host_matches(host, _COMMUNITY_HOSTS):
         return "community"
-    if host.endswith((".gov", ".mil", ".int")):
-        return "official"
     if any(
         segment in path
         for segment in ("/docs/", "/documentation/", "/api/", "/reference/", "/manual/")

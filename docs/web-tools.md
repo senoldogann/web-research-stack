@@ -552,3 +552,19 @@ Behavior changes from live testing of the tools.
   beside better ones. When no relevant result reaches 0.25, the relevant ones
   are returned with the warning `low_relevance_results`. `fast` keeps the
   provider's order.
+
+### Official and academic sources
+
+- `official` now also covers every host under `europa.eu`, `gov.uk` and any
+  `gov.<country>` (`gov.tr`, `gov.au`), `.gov`, `.mil`, and `.int` (checked
+  before every other class), and a curated list of Finnish public bodies:
+  `kela.fi`, `traficom.fi`, `stat.fi`, `vero.fi`, `dvv.fi`, `eduskunta.fi`,
+  `oamk.fi`, `yle.fi`, and `ouka.fi` (the City of Oulu).
+- `academic` now also covers `.edu.<country>` and `.ac.<country>` (`edu.tr`,
+  `ac.jp`, `ac.uk`) and the Finnish universities `oulu.fi` (University of Oulu),
+  `helsinki.fi`, `aalto.fi`, `utu.fi`, `jyu.fi`, `tuni.fi`, `uwasa.fi`,
+  `abo.fi`, `lut.fi`, and `lappeenranta.fi`.
+- Commercial compliance and consultancy sites on other `.eu` hosts
+  (`regulation-ai.eu`, `artificialintelligenceact.eu`) stay `other` with no
+  authority weight, so the European Commission's AI Act timeline outranks a
+  blog about it.

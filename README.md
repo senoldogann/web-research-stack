@@ -57,6 +57,15 @@ web-scraper serve
 docker compose up --build
 ```
 
+### Google search needs a browser
+
+Google no longer serves results to plain HTTP clients: a normal request gets a consent page or a JavaScript shell with nothing in it. The searcher falls back to a real Chrome that the app starts and drives over CDP. Headless Chrome is detected at once ("unusual traffic"), so a visible window is the default.
+
+- `pip install -e ".[playwright]"` — required for the browser path.
+- `GOOGLE_USE_PLAYWRIGHT=false` — skip Google and rely on DuckDuckGo alone.
+- `GOOGLE_PLAYWRIGHT_HEADLESS=true` — for servers; run it under Xvfb.
+- `GOOGLE_BROWSER_CHANNEL=chrome` — use the installed Chrome; leave empty for Playwright's Chromium.
+
 ### API Endpoints
 
 | Endpoint | Method | Description |
@@ -146,6 +155,15 @@ web-scraper serve
 # Veya Docker kullan
 docker compose up --build
 ```
+
+### Google araması bir tarayıcı ister
+
+Google artık düz HTTP isteklerine sonuç döndürmüyor: normal bir istek ya çerez onay sayfası ya da içinde sonuç olmayan bir JavaScript kabuğu dönüyor. Arayıcı bu yüzden uygulamanın kendisinin başlattığı gerçek Chrome'a düşüyor ve onu CDP üzerinden sürüyor. Headless Chrome anında yakalanıyor ("unusual traffic"), bu yüzden varsayılan görünür bir pencere.
+
+- `pip install -e ".[playwright]"` — tarayıcı yolu için gerekli.
+- `GOOGLE_USE_PLAYWRIGHT=false` — Google'ı atla, sadece DuckDuckGo kullan.
+- `GOOGLE_PLAYWRIGHT_HEADLESS=true` — sunucular için; Xvfb altında çalıştır.
+- `GOOGLE_BROWSER_CHANNEL=chrome` — kurulu Chrome'u kullan; boş bırakırsan Playwright'ın Chromium'u.
 
 ### API Uç Noktaları
 

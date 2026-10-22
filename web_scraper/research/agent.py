@@ -23,7 +23,7 @@ from web_scraper.async_scrapers import WebScraperAsync
 from web_scraper.config import config
 from web_scraper.content_safety import sanitize_scraped_text
 from web_scraper.duckduckgo_search import get_best_sources_ddg
-from web_scraper.google_search import get_best_sources
+from web_scraper.google_search import GoogleSearchBlocked, get_best_sources
 from web_scraper.research.citation_verifier import citation_audit_summary
 from web_scraper.research.constants import SOURCE_TEMPLATES, STATUS_MESSAGES
 from web_scraper.research.llm_client import LLMClient
@@ -502,12 +502,18 @@ class ResearchAgent(LLMClient):
         )
 
         async def _search_variant(search_query: str) -> tuple[str, list[dict]]:
-            results = await async_retry(
-                lambda: get_best_sources(search_query, max_sources=per_query_budget),
-                max_attempts=2,
-                base_delay=2.0,
-                label=f"Google:{search_query[:40]}",
-            )
+            try:
+                results = await async_retry(
+                    lambda: get_best_sources(search_query, max_sources=per_query_budget),
+                    max_attempts=2,
+                    base_delay=2.0,
+                    label=f"Google:{search_query[:40]}",
+                )
+            except GoogleSearchBlocked as exc:
+                # A bot check does not clear in two seconds: retrying only
+                # doubles the wait, so this variant gives up at once.
+                logger.info("Google refused this machine: %s", exc)
+                return search_query, []
             return search_query, results
 
         variant_outcomes = await asyncio.gather(

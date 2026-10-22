@@ -601,8 +601,8 @@ headless browser met as well.
   content: links inside `nav`, `header`, `footer`, and `aside` elements and their
   ARIA landmarks (`navigation`, `banner`, `contentinfo`, `complementary`,
   `search`) are left out. `links_truncated` is `true` when the page has links
-  the list leaves out, menus included; `web_map` lists them all, and `web_map`
-  and crawls still follow menu links (pagination often sits in a `nav`).
+  the list leaves out, menus included. `web_map` lists them all, and crawls
+  still follow menu links (pagination often sits in a `nav`).
 - The Markdown also drops the ARIA landmark versions of that chrome, as it
   already dropped `nav`, `header`, `footer`, and `aside` elements.
 - Measured on ouka.fi: the front page's links went from 102 entries (12.9 KB)

@@ -5,8 +5,14 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from web_scraper.api_runtime import InMemoryTTLCache
+from web_scraper.web_tools.browser import BrowserPage, BrowserRenderError
 from web_scraper.web_tools.content import detect_interstitial
-from web_scraper.web_tools.fetcher import FetchError, SafeFetcher
+from web_scraper.web_tools.errors import WebToolError
+from web_scraper.web_tools.fetcher import FetchError, FetchResult, SafeFetcher
+from web_scraper.web_tools.metrics import LatencyTracker
+from web_scraper.web_tools.service import WebToolsService
+from web_scraper.web_tools.settings import WebToolsSettings
 
 URL = "https://example.com/page"
 ARTICLE = "<p>" + ("Oulu is a city on the coast of the Gulf of Bothnia. " * 8) + "</p>"
@@ -223,3 +229,62 @@ async def test_fetcher_classifies_short_403_as_access_blocked() -> None:
 
     assert exc.value.code == "blocked"
     assert exc.value.detail == "access_blocked"
+
+
+class _BlockedFetcher:
+    async def fetch(self, url: str) -> FetchResult:
+        raise FetchError(
+            "blocked",
+            "Target returned a access_blocked interstitial",
+            url=url,
+            status_code=403,
+            detail="access_blocked",
+        )
+
+
+class _Browser:
+    def __init__(self, outcome: BrowserPage | Exception) -> None:
+        self.outcome = outcome
+        self.calls = 0
+
+    async def render(self, url: str, *, post_load_wait_ms: int | None = None) -> BrowserPage:
+        self.calls += 1
+        if isinstance(self.outcome, Exception):
+            raise self.outcome
+        return self.outcome
+
+
+def _blocked_service(browser: _Browser) -> WebToolsService:
+    return WebToolsService(
+        settings=WebToolsSettings(),
+        fetcher=_BlockedFetcher(),
+        browser=browser,  # type: ignore[arg-type]
+        cache=InMemoryTTLCache(ttl_seconds=60, max_entries=10),
+        latency=LatencyTracker(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_failed_browser_fallback_reports_the_http_refusal() -> None:
+    browser = _Browser(BrowserRenderError("navigation_failed", "Browser navigation failed"))
+
+    with pytest.raises(WebToolError) as exc:
+        await _blocked_service(browser).scrape(URL)
+
+    assert browser.calls == 1
+    assert (exc.value.code, exc.value.detail, exc.value.status_code) == (
+        "blocked",
+        "access_blocked",
+        403,
+    )
+
+
+@pytest.mark.asyncio
+async def test_challenge_seen_by_the_browser_keeps_its_status() -> None:
+    page = _small_page('<iframe src="https://geo.captcha-delivery.com/captcha/?x=1"></iframe>')
+    browser = _Browser(BrowserPage(page, URL, 401, "chrome"))
+
+    with pytest.raises(WebToolError) as exc:
+        await _blocked_service(browser).scrape(URL)
+
+    assert (exc.value.code, exc.value.detail, exc.value.status_code) == ("blocked", "captcha", 401)

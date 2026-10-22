@@ -485,7 +485,11 @@ Behavior changes from live testing of the tools.
   visible characters, so an article about "access denied" errors is content.
 - Invisible reCAPTCHA (the v3 badge, `data-size="invisible"`) is not a challenge.
 - A 401/403 HTML page of 20 KB or less is `access_blocked`, which may fall back
-  to one headless render; a JSON 401/403 stays an `http_error`.
+  to one headless render; a JSON 401/403 stays an `http_error`. When that render
+  fails, the error is the HTTP refusal with its status (not the browser's
+  `navigation_failed`); a challenge the browser meets carries the browser's
+  status. DataDome sites (Reuters, NYT, WSJ) take this path: their 401/403 page
+  names the captcha only in a script, and the rendered page shows its iframe.
 - A login wall needs a login title plus a login path or a password field; the
   word "password" in scripts no longer counts.
 

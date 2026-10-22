@@ -771,7 +771,17 @@ class WebToolsService:
                 and exc.detail == "access_blocked"
                 and self.browser is not None
             ):
-                return await self._render_document(url, max_chars, warnings=["http_access_blocked"])
+                try:
+                    return await self._render_document(
+                        url,
+                        max_chars,
+                        warnings=["http_access_blocked"],
+                    )
+                except WebToolError as render_error:
+                    if render_error.code == "blocked":
+                        raise
+                    # The browser got nowhere either: report what the HTTP fetch saw.
+                    raise self._translate_fetch_error(exc) from render_error
             raise self._translate_fetch_error(exc) from exc
 
         self.metrics.observe("http_fetch", fetched.total_ms, mode="http")
@@ -923,6 +933,7 @@ class WebToolsService:
                 "blocked",
                 f"Target returned a {interstitial} interstitial",
                 url=url,
+                status_code=rendered.status_code or None,
                 detail=interstitial,
             )
 
@@ -972,6 +983,7 @@ class WebToolsService:
                 "blocked",
                 f"Target returned a {interstitial} interstitial",
                 url=document.final_url,
+                status_code=rendered.status_code or None,
                 detail=interstitial,
             )
 

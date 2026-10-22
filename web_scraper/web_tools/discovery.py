@@ -280,6 +280,10 @@ _AUTHORITY = {
     "community": 0.04,
     "other": 0.0,
 }
+# The score of a result matching about a third of the query from a single
+# angle's middle ranks; below it, a result is listed only when nothing
+# relevant scores higher.
+MIN_RESULT_SCORE = 0.25
 
 
 @dataclass(frozen=True)
@@ -491,6 +495,19 @@ def annotate_candidate(
     }
 
 
+def has_relevant_result(query: str, items: Iterable[dict[str, Any]]) -> bool:
+    """Whether any annotated result shares a word of the query.
+
+    Bare numbers do not count when the query has words too: a year or a code
+    such as ``9237`` also appears on pages about something else entirely.
+    """
+    wanted = query_tokens(query)
+    words = {token for token in wanted if not token.isdigit()} or wanted
+    return any(
+        words & query_tokens(f"{item['title']} {item['snippet']} {item['url']}") for item in items
+    )
+
+
 def rank_candidates(
     query: str,
     candidates: Iterable[DiscoveryCandidate],
@@ -498,15 +515,21 @@ def rank_candidates(
     *,
     year_now: Optional[int] = None,
 ) -> list[dict[str, Any]]:
-    """Rank candidates by relevance, agreement, authority, and recency, then diversify."""
+    """Rank candidates by relevance, agreement, authority, and recency, then diversify.
+
+    Results that share nothing with the query are dropped, and when nothing
+    relevant is left the list is empty: an empty answer is honest, a page of
+    unrelated links is not. Relevant results scoring under
+    ``MIN_RESULT_SCORE`` are dropped beside better ones and kept only when no
+    relevant result reaches it.
+    """
     annotated = [
         annotate_candidate(query, candidate, year_now=year_now) for candidate in candidates
     ]
-    eligible = [item for item in annotated if item["relevance"] > 0]
-    if not eligible:
-        # A provider can return useful results whose wording differs from the
-        # query. Keep them rather than turning a non-empty search into an empty one.
-        eligible = annotated
+    if not has_relevant_result(query, annotated):
+        return []
+    relevant = [item for item in annotated if item["relevance"] > 0]
+    eligible = [item for item in relevant if item["score"] >= MIN_RESULT_SCORE] or relevant
 
     eligible.sort(
         key=lambda item: (

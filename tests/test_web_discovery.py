@@ -288,7 +288,7 @@ def test_ranking_drops_results_without_any_query_overlap() -> None:
     assert [item["url"] for item in results] == [relevant.result.url]
 
 
-def test_ranking_falls_back_when_no_result_matches_lexically() -> None:
+def test_ranking_returns_nothing_when_no_result_matches_lexically() -> None:
     unrelated = _candidate(
         "https://food.example.com/pasta",
         "Cooking pasta",
@@ -297,7 +297,7 @@ def test_ranking_falls_back_when_no_result_matches_lexically() -> None:
 
     results = rank_candidates("python asyncio", [unrelated], 5, year_now=2026)
 
-    assert [item["url"] for item in results] == [unrelated.result.url]
+    assert results == []
 
 
 def test_facets_summarise_source_type_recency_domains_and_angles() -> None:

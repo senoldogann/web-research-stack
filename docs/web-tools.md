@@ -537,3 +537,18 @@ Behavior changes from live testing of the tools.
 - The Google fallback is the headless `GoogleSearchAdapter` (Camoufox): its
   first call starts the browser (6–36 s measured), which holds memory until it
   has been idle for three minutes.
+
+### Honest empty searches
+
+- A result that shares no word with the query is dropped at every depth. When
+  nothing relevant is left, `results` is empty and `warnings` holds
+  `no_relevant_results`; the old fallback returned five unrelated results
+  (relevance 0.0) for `qzxvbnmp flurbulator 9237`. A bare number (a year, a
+  code like `9237`) does not count as a shared word when the query has words.
+- A provider that answers with no results at all gives the same empty answer
+  instead of a `search_failed` error. `facets.total_candidates` still counts
+  what the provider returned.
+- In `discover` and `deep`, a relevant result scoring under 0.25 is dropped
+  beside better ones. When no relevant result reaches 0.25, the relevant ones
+  are returned with the warning `low_relevance_results`. `fast` keeps the
+  provider's order.

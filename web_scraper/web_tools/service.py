@@ -26,10 +26,12 @@ from web_scraper.web_tools.content import (
 from web_scraper.web_tools.crawl import CrawlManager, CrawlOptions, canonical_target
 from web_scraper.web_tools.discovery import (
     DEPTHS,
+    MIN_RESULT_SCORE,
     DiscoveryCandidate,
     annotate_candidate,
     build_facets,
     build_search_angles,
+    has_relevant_result,
     rank_candidates,
 )
 from web_scraper.web_tools.errors import WebToolError
@@ -282,10 +284,8 @@ class WebToolsService:
                             source=item.source or existing.result.source,
                         )
 
-        if not candidates:
-            if first_error is not None:
-                raise first_error
-            raise WebToolError("search_failed", "Search provider returned no usable results")
+        if not candidates and first_error is not None:
+            raise first_error
 
         if any(
             report["angle"] == "base" and report["error"] is not None for report in query_reports
@@ -297,11 +297,19 @@ class WebToolsService:
         search_ms = (time.perf_counter() - started) * 1000
         ranking_started = time.perf_counter()
         if resolved_depth == "fast":
-            results = [annotate_candidate(cleaned, candidate) for candidate in candidates.values()][
-                :resolved_limit
+            # Provider order, minus results that share nothing with the query.
+            annotated = [
+                annotate_candidate(cleaned, candidate) for candidate in candidates.values()
             ]
+            relevant = [item for item in annotated if item["relevance"] > 0]
+            results = relevant[:resolved_limit] if has_relevant_result(cleaned, relevant) else []
         else:
             results = rank_candidates(cleaned, candidates.values(), resolved_limit)
+        if not results:
+            # The provider answered, but nothing it returned is about the query.
+            warnings.append("no_relevant_results")
+        elif all(item["score"] < MIN_RESULT_SCORE for item in results):
+            warnings.append("low_relevance_results")
         ranking_ms = (time.perf_counter() - ranking_started) * 1000
         facets = build_facets(
             results,

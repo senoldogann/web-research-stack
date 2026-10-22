@@ -1,0 +1,15 @@
+#!/bin/sh
+# Resolve this project from any working directory, then start the stdio MCP server.
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+
+if [ -x "$ROOT/.venv/bin/python" ]; then
+    PYTHON="$ROOT/.venv/bin/python"
+else
+    PYTHON=python3
+fi
+
+cd "$ROOT"
+exec "$PYTHON" -m web_scraper.mcp_server

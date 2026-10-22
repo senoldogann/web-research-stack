@@ -119,8 +119,13 @@ class GoogleSearcher:
         "Hyväksy kaikki",
     )
 
-    def __init__(self, headless: Optional[bool] = None) -> None:
+    def __init__(
+        self,
+        headless: Optional[bool] = None,
+        allow_visible_browser: Optional[bool] = None,
+    ) -> None:
         self.headless = config.google_playwright_headless if headless is None else headless
+        self.allow_visible_browser = allow_visible_browser
 
     # ------------------------------------------------------------------
     # Public API
@@ -148,7 +153,12 @@ class GoogleSearcher:
 
         # With a window forbidden, only windowless backends are tried: a
         # refused search must end in an error, never in a visible Chrome.
-        if config.google_allow_visible_browser:
+        allow_visible = (
+            config.google_allow_visible_browser
+            if self.allow_visible_browser is None
+            else self.allow_visible_browser
+        )
+        if allow_visible:
             paths = ((self._search_chrome, "chrome", "visible"),)
             paths += ((self._search_camoufox, "camoufox", "none"),)
         else:
@@ -187,11 +197,12 @@ class GoogleSearcher:
         """
         if not config.google_use_playwright:
             return
-        page = (
-            await self._chrome_page()
-            if config.google_allow_visible_browser
-            else await self._camoufox_page()
+        allow_visible = (
+            config.google_allow_visible_browser
+            if self.allow_visible_browser is None
+            else self.allow_visible_browser
         )
+        page = await self._chrome_page() if allow_visible else await self._camoufox_page()
         if page is None:
             return
         async with _browser_lock():

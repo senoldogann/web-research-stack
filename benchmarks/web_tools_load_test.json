@@ -1,0 +1,186 @@
+{
+  "generated_at": "2026-10-22T12:47:47.423037+00:00",
+  "fixture": {
+    "hosts": "fixture .test hostnames routed to 127.0.0.1",
+    "server_delay_ms": 400.0,
+    "validator_override": "load-harness only",
+    "browser": "disabled"
+  },
+  "settings": {
+    "global_concurrency": 8,
+    "host_concurrency": 2,
+    "host_min_interval_ms": 200,
+    "crawl_concurrency": 4
+  },
+  "rss_mb_start": 55.1,
+  "peak_rss_mb_start": 55.1,
+  "warmup": {
+    "status": 200,
+    "fetched_with": "http",
+    "markdown_chars": 1500
+  },
+  "scrape_single_host": {
+    "requests": 60,
+    "ok": 60,
+    "failed": 0,
+    "errors": {},
+    "wall_p50_ms": 6480.33,
+    "wall_p95_ms": 12137.79,
+    "http_p50_ms": 6478.59,
+    "http_p95_ms": 12134.37,
+    "extract_p50_ms": 2.6,
+    "extract_p95_ms": 9.72,
+    "markdown_chars_min": 1500,
+    "server": {
+      "active": 0,
+      "max_active": 2,
+      "total": 61
+    },
+    "gate": {
+      "max_active_by_host": {
+        "load.test": 2
+      },
+      "min_start_gap_ms": 200.13,
+      "hosts_seen": 1
+    }
+  },
+  "scrape_multi_host": {
+    "requests": 160,
+    "ok": 160,
+    "failed": 0,
+    "errors": {},
+    "wall_p50_ms": 4729.48,
+    "wall_p95_ms": 8518.7,
+    "http_p50_ms": 4721.88,
+    "http_p95_ms": 8516.74,
+    "extract_p50_ms": 2.48,
+    "extract_p95_ms": 8.35,
+    "markdown_chars_min": 1500,
+    "server": {
+      "active": 0,
+      "max_active": 8,
+      "total": 221
+    },
+    "gate": {
+      "max_active_by_host": {
+        "load1.test": 2,
+        "load2.test": 2,
+        "load3.test": 2,
+        "load4.test": 2,
+        "load5.test": 2,
+        "load6.test": 2,
+        "load7.test": 2,
+        "load8.test": 2
+      },
+      "min_start_gap_ms": 200.41,
+      "hosts_seen": 8
+    }
+  },
+  "crawl": {
+    "jobs": 6,
+    "pages_per_job": 12,
+    "wall_ms": 4930.38,
+    "statuses": {
+      "completed": 6
+    },
+    "fetched_per_job": [
+      12,
+      12,
+      12,
+      12,
+      12,
+      12
+    ],
+    "failed_per_job": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "skipped_per_job": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "duplicates_per_job": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "server": {
+      "active": 0,
+      "max_active": 8,
+      "total": 293
+    },
+    "gate": {
+      "max_active_by_host": {
+        "crawl0.test": 2,
+        "crawl1.test": 2,
+        "crawl2.test": 2,
+        "crawl3.test": 2,
+        "crawl4.test": 2,
+        "crawl5.test": 2
+      },
+      "min_start_gap_ms": 200.19,
+      "hosts_seen": 6
+    }
+  },
+  "cancellation": {
+    "jobs": 4,
+    "cancelled_jobs": 2,
+    "cancel_to_terminal_ms": 51.39,
+    "statuses": [
+      "cancelled",
+      "cancelled"
+    ],
+    "all_statuses": [
+      "cancelled",
+      "cancelled",
+      "cancelled",
+      "cancelled"
+    ],
+    "server_drain_ms": 290.84,
+    "server_active_after_cancel": 0,
+    "gate": {
+      "max_active_by_host": {
+        "cancel0.test": 2,
+        "cancel1.test": 2,
+        "cancel2.test": 2,
+        "cancel3.test": 2
+      },
+      "min_start_gap_ms": 200.32,
+      "hosts_seen": 4
+    }
+  },
+  "search_stub": {
+    "requests": 32,
+    "concurrency": 32,
+    "wall_ms": 257.08,
+    "all_ok": true,
+    "adapter_delay_ms": 250
+  },
+  "rss_mb_end": 53.4,
+  "peak_rss_mb_end": 59.5,
+  "rss_mb_growth": -1.7,
+  "fixture_server_total_requests": 309,
+  "checks": {
+    "single_host_max_2": true,
+    "multi_host_max_8": true,
+    "crawl_max_8": true,
+    "single_host_no_errors": true,
+    "multi_host_no_errors": true,
+    "crawl_no_failures": true,
+    "crawl_fetched_all_pages": true,
+    "cancelled_terminal": true,
+    "cancelled_server_drained": true,
+    "search_stub_all_ok": true
+  }
+}

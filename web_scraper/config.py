@@ -74,6 +74,7 @@ class Config:
     api_rate_limit_per_minute: int = 60
     api_scrape_rate_limit_per_minute: int = 60
     api_research_rate_limit_per_minute: int = 15
+    api_web_rate_limit_per_minute: int = 60
     api_max_concurrent_requests: int = 10
     api_max_request_bytes: int = 65536
     research_max_concurrent_sources: int = 5
@@ -146,6 +147,11 @@ class Config:
         )
         self.api_research_rate_limit_per_minute = _clamp_int(
             self.api_research_rate_limit_per_minute,
+            1,
+            1000000,
+        )
+        self.api_web_rate_limit_per_minute = _clamp_int(
+            self.api_web_rate_limit_per_minute,
             1,
             1000000,
         )
@@ -320,6 +326,7 @@ class Config:
             api_research_rate_limit_per_minute=_safe_int(
                 os.getenv("API_RESEARCH_RATE_LIMIT_PER_MINUTE"), 15
             ),
+            api_web_rate_limit_per_minute=_safe_int(os.getenv("API_WEB_RATE_LIMIT_PER_MINUTE"), 60),
             api_max_concurrent_requests=_safe_int(os.getenv("API_MAX_CONCURRENT_REQUESTS"), 10),
             api_max_request_bytes=_safe_int(os.getenv("API_MAX_REQUEST_BYTES"), 65536),
             research_max_concurrent_sources=_safe_int(

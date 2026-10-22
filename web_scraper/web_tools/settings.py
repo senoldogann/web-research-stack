@@ -76,6 +76,7 @@ class WebToolsSettings:
 
     markdown_max_chars: int = 50_000
     max_links: int = 500
+    scrape_max_links: int = 50
     default_map_limit: int = 500
     max_map_limit: int = 5_000
     max_sitemaps: int = 25
@@ -138,6 +139,7 @@ class WebToolsSettings:
 
         self.markdown_max_chars = max(self.markdown_max_chars, 500)
         self.max_links = max(self.max_links, 1)
+        self.scrape_max_links = min(max(self.scrape_max_links, 0), self.max_links)
         self.default_map_limit = max(self.default_map_limit, 1)
         self.max_map_limit = max(self.max_map_limit, self.default_map_limit)
         self.max_sitemaps = max(self.max_sitemaps, 1)
@@ -206,6 +208,7 @@ class WebToolsSettings:
             browser_render_min_chars=_int("WEB_TOOLS_BROWSER_RENDER_MIN_CHARS", 200),
             markdown_max_chars=_int("WEB_TOOLS_MARKDOWN_MAX_CHARS", 50_000),
             max_links=_int("WEB_TOOLS_MAX_LINKS", 500),
+            scrape_max_links=_int("WEB_TOOLS_SCRAPE_MAX_LINKS", 50),
             default_map_limit=_int("WEB_TOOLS_DEFAULT_MAP_LIMIT", 500),
             max_map_limit=_int("WEB_TOOLS_MAX_MAP_LIMIT", 5_000),
             max_sitemaps=_int("WEB_TOOLS_MAX_SITEMAPS", 25),

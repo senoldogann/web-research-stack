@@ -33,6 +33,10 @@ _STRIP_TAGS = (
     "select",
     "textarea",
 )
+# Page chrome, as elements or as ARIA landmarks: menus, banners, footers, and
+# sidebars repeat on every page of a site and are not the page's content.
+_CHROME_TAGS = ("nav", "header", "footer", "aside")
+_CHROME_ROLES = ("navigation", "banner", "contentinfo", "complementary", "search")
 _BLOCK_TAGS = {
     "address",
     "article",
@@ -94,6 +98,8 @@ class PageLink:
     url: str
     text: str
     kind: str
+    # Inside navigation, a header, a footer, or a sidebar rather than the content.
+    chrome: bool = False
 
 
 @dataclass
@@ -265,6 +271,8 @@ def html_to_markdown(html: str, base_url: str, max_chars: int = 50_000) -> str:
     soup = _soup(html)
     for tag in soup(_STRIP_TAGS):
         tag.decompose()
+    for tag in soup.find_all(attrs={"role": list(_CHROME_ROLES)}):
+        tag.decompose()
 
     root = (
         soup.find("main")
@@ -350,6 +358,8 @@ def _extract_metadata(soup: BeautifulSoup, base_url: str) -> dict[str, Any]:
 def _extract_links(soup: BeautifulSoup, base_url: str, max_links: int) -> list[PageLink]:
     links: list[PageLink] = []
     seen: set[str] = set()
+    chrome = soup.find_all(_CHROME_TAGS) + soup.find_all(attrs={"role": list(_CHROME_ROLES)})
+    chrome_ids = {id(node) for node in chrome}
     for anchor in soup.find_all("a", href=True):
         target = _resolve(base_url, anchor["href"])
         if not target or target in seen:
@@ -362,6 +372,7 @@ def _extract_links(soup: BeautifulSoup, base_url: str, max_links: int) -> list[P
                 kind="internal"
                 if url_in_scope(target, base_url, include_subdomains=False)
                 else "external",
+                chrome=any(id(parent) in chrome_ids for parent in anchor.parents),
             )
         )
         if len(links) >= max_links:

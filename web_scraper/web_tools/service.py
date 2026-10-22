@@ -1002,6 +1002,10 @@ class WebToolsService:
         )
 
     def _page_payload(self, document: LoadedDocument, requested: str) -> dict[str, Any]:
+        # The page's own links, without menus, banners, footers, and sidebars,
+        # capped; map and crawl still see every link.
+        content_links = [link for link in document.page.links if not link.chrome]
+        shown = content_links[: self.settings.scrape_max_links]
         payload: dict[str, Any] = {
             "url": document.final_url,
             "requested_url": requested,
@@ -1011,10 +1015,8 @@ class WebToolsService:
             "markdown": document.page.markdown,
             "status_code": document.status_code,
             "content_type": document.content_type,
-            "links": [
-                {"url": link.url, "text": link.text, "kind": link.kind}
-                for link in document.page.links
-            ],
+            "links": [{"url": link.url, "text": link.text, "kind": link.kind} for link in shown],
+            "links_truncated": len(shown) < len(document.page.links),
             "metadata": document.page.metadata,
             "content_hash": content_hash(document.page.markdown),
             "fetched_with": document.fetched_with,

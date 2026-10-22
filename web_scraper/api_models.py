@@ -313,6 +313,10 @@ class WebScrapeResponse(BaseModel):
     status_code: int
     content_type: str
     links: List[WebLink]
+    links_truncated: bool = Field(
+        default=False,
+        description="True when the page has links that links leaves out (page chrome or cap)",
+    )
     metadata: Dict[str, Any]
     content_hash: str
     fetched_with: str

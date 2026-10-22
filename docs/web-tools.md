@@ -584,3 +584,19 @@ Behavior changes from live testing of the tools.
   the change 28 of 30 were `http://`.
 - A host that refuses https (a network error on a rewritten URL) is crawled
   over http for the rest of the job.
+
+### Scrape output hygiene
+
+- `web_scrape` lists at most 50 links (`SCRAPE_MAX_LINKS`), taken from the page
+  content: links inside `nav`, `header`, `footer`, and `aside` elements and their
+  ARIA landmarks (`navigation`, `banner`, `contentinfo`, `complementary`,
+  `search`) are left out. `links_truncated` is `true` when the page has links
+  the list leaves out, menus included; `web_map` lists them all, and `web_map`
+  and crawls still follow menu links (pagination often sits in a `nav`).
+- The Markdown also drops the ARIA landmark versions of that chrome, as it
+  already dropped `nav`, `header`, `footer`, and `aside` elements.
+- Measured on ouka.fi: the front page's links went from 102 entries (12.9 KB)
+  to 45 (7.5 KB) and its response from 24.8 KB to 19.4 KB;
+  `/tietoja-ja-tilastoja` went from 15.8 KB to 9.9 KB, and to 6.2 KB with
+  `max_chars=1500`. What is left is page content: those 45 front-page links are
+  its news, topic, and service links, and the rest is its Markdown.

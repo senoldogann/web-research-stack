@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Optional, Protocol
 
 from web_scraper.duckduckgo_search import DuckDuckGoBlocked, DuckDuckGoSearcher
 from web_scraper.google_search import GoogleSearchBlocked, GoogleSearcher
@@ -29,7 +29,13 @@ class SearchResult:
 class SearchAdapter(Protocol):
     name: str
 
-    async def search(self, query: str, limit: int) -> list[SearchResult]: ...
+    async def search(
+        self,
+        query: str,
+        limit: int,
+        *,
+        date_filter: Optional[str] = None,
+    ) -> list[SearchResult]: ...
 
 
 class DuckDuckGoSearchAdapter:
@@ -37,12 +43,31 @@ class DuckDuckGoSearchAdapter:
 
     name = "duckduckgo"
 
-    def __init__(self, searcher: DuckDuckGoSearcher | None = None) -> None:
-        self._searcher = searcher or DuckDuckGoSearcher()
+    def __init__(
+        self,
+        searcher: DuckDuckGoSearcher | None = None,
+        *,
+        region: str = "wt-wt",
+        language: str = "en-US,en;q=0.9",
+    ) -> None:
+        self._searcher = searcher or DuckDuckGoSearcher(
+            region=region,
+            language=language,
+        )
 
-    async def search(self, query: str, limit: int) -> list[SearchResult]:
+    async def search(
+        self,
+        query: str,
+        limit: int,
+        *,
+        date_filter: Optional[str] = None,
+    ) -> list[SearchResult]:
         try:
-            raw = await self._searcher.search(query, num_results=limit)
+            raw = await self._searcher.search(
+                query,
+                num_results=limit,
+                date_filter=date_filter,
+            )
         except DuckDuckGoBlocked as exc:
             raise WebToolError(
                 "search_failed",
@@ -69,7 +94,14 @@ class GoogleSearchAdapter:
             allow_visible_browser=False,
         )
 
-    async def search(self, query: str, limit: int) -> list[SearchResult]:
+    async def search(
+        self,
+        query: str,
+        limit: int,
+        *,
+        date_filter: Optional[str] = None,
+    ) -> list[SearchResult]:
+        # The legacy Google searcher has no date-filter parameter.
         try:
             raw = await self._searcher.search(query, num_results=limit)
         except GoogleSearchBlocked as exc:

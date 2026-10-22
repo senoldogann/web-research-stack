@@ -56,6 +56,7 @@ def check_test_count(min_passing: int) -> bool:
         output = result.stdout + result.stderr
         # Pytest summary line: "N passed" or "N passed, M warnings"
         import re
+
         match = re.search(r"(\d+) passed", output)
         if match:
             count = int(match.group(1))
@@ -69,7 +70,9 @@ def check_test_count(min_passing: int) -> bool:
                 return False
         else:
             # No passing tests found in output ⇒ tests may have all failed
-            print_fail(f"Test count gate FAILED: could not determine passing count from:\n{output[:500]}")
+            print_fail(
+                f"Test count gate FAILED: could not determine passing count from:\n{output[:500]}"
+            )
             return False
     except Exception as e:
         print_fail(f"Test count gate error: {e}")

@@ -45,7 +45,13 @@ class OverlapRefusingSearch:
         self.calls = 0
         self.refused = 0
 
-    async def search(self, query: str, limit: int) -> list[SearchResult]:
+    async def search(
+        self,
+        query: str,
+        limit: int,
+        *,
+        date_filter: Optional[str] = None,
+    ) -> list[SearchResult]:
         self.calls += 1
         if self.in_flight:
             self.refused += 1
@@ -73,7 +79,13 @@ class ScriptedSearch:
         self.stall = stall
         self.calls: list[str] = []
 
-    async def search(self, query: str, limit: int) -> list[SearchResult]:
+    async def search(
+        self,
+        query: str,
+        limit: int,
+        *,
+        date_filter: Optional[str] = None,
+    ) -> list[SearchResult]:
         self.calls.append(query)
         if self.stall:
             await asyncio.sleep(self.stall)
@@ -200,7 +212,13 @@ class TestGoogleFallback:
     @pytest.mark.asyncio
     async def test_empty_answer_from_google_still_names_google(self) -> None:
         class EmptyGoogle(ScriptedSearch):
-            async def search(self, query: str, limit: int) -> list[SearchResult]:
+            async def search(
+                self,
+                query: str,
+                limit: int,
+                *,
+                date_filter: Optional[str] = None,
+            ) -> list[SearchResult]:
                 self.calls.append(query)
                 return []
 
@@ -259,7 +277,13 @@ class TestGoogleFallback:
     @pytest.mark.asyncio
     async def test_failed_fallback_is_reported_on_the_angle(self) -> None:
         class BaseOnlyRefused(ScriptedSearch):
-            async def search(self, query: str, limit: int) -> list[SearchResult]:
+            async def search(
+                self,
+                query: str,
+                limit: int,
+                *,
+                date_filter: Optional[str] = None,
+            ) -> list[SearchResult]:
                 self.calls.append(query)
                 if query == "asyncio":
                     raise _bot_detected()
@@ -325,7 +349,13 @@ class TestProviderCooldown:
     @pytest.mark.asyncio
     async def test_queued_calls_behind_a_failure_go_to_the_fallback(self) -> None:
         class RefuseFirst(ScriptedSearch):
-            async def search(self, query: str, limit: int) -> list[SearchResult]:
+            async def search(
+                self,
+                query: str,
+                limit: int,
+                *,
+                date_filter: Optional[str] = None,
+            ) -> list[SearchResult]:
                 self.calls.append(query)
                 await asyncio.sleep(0.01)
                 if len(self.calls) == 1:

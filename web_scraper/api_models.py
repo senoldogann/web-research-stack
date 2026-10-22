@@ -248,12 +248,14 @@ class WebSearchResult(BaseModel):
     recency: str = "unknown"
     angles: List[str] = Field(default_factory=list)
     relevance: float = 0.0
+    bm25: float = 0.0
     score: float = 0.0
 
 
 class WebSearchQuery(BaseModel):
     angle: str
     query: str
+    date_filter: Optional[str] = None
     provider: Optional[str] = None
     results: int = 0
     new: int = 0
@@ -282,6 +284,7 @@ class WebSearchResponse(BaseModel):
     facets: WebSearchFacets = Field(default_factory=WebSearchFacets)
     queries: List[WebSearchQuery] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
+    cache_hit: bool = False
     timings: Dict[str, float]
 
 

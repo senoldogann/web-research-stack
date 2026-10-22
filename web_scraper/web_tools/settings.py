@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 
 import dotenv
@@ -44,6 +45,9 @@ class WebToolsSettings:
     search_timeout_seconds: float = 30.0
     search_default_depth: str = "discover"
     search_angle_delay_ms: int = 150
+    search_region: str = "wt-wt"
+    search_language: str = "en-US,en;q=0.9"
+    search_cache_ttl_seconds: int = 300
     search_provider_concurrency: int = 1
     search_jitter_min_ms: int = 250
     search_jitter_max_ms: int = 500
@@ -102,6 +106,13 @@ class WebToolsSettings:
         depth = (self.search_default_depth or "discover").strip().lower()
         self.search_default_depth = depth if depth in {"fast", "discover", "deep"} else "discover"
         self.search_angle_delay_ms = min(max(self.search_angle_delay_ms, 0), 5_000)
+        region = (self.search_region or "wt-wt").strip().lower()
+        self.search_region = region if re.fullmatch(r"[a-z]{2}-[a-z]{2}|wt-wt", region) else "wt-wt"
+        language = (self.search_language or "").strip()
+        self.search_language = (
+            language if re.fullmatch(r"[A-Za-z0-9,;=._*\- ]{1,128}", language) else "en-US,en;q=0.9"
+        )
+        self.search_cache_ttl_seconds = max(self.search_cache_ttl_seconds, 1)
         self.search_provider_concurrency = max(self.search_provider_concurrency, 1)
         self.search_jitter_min_ms = min(max(self.search_jitter_min_ms, 0), 10_000)
         self.search_jitter_max_ms = min(
@@ -171,6 +182,12 @@ class WebToolsSettings:
             search_timeout_seconds=_float("WEB_TOOLS_SEARCH_TIMEOUT_SECONDS", 30.0),
             search_default_depth=os.getenv("WEB_TOOLS_SEARCH_DEPTH", "discover"),
             search_angle_delay_ms=_int("WEB_TOOLS_SEARCH_ANGLE_DELAY_MS", 150),
+            search_region=os.getenv("WEB_TOOLS_SEARCH_REGION", "wt-wt"),
+            search_language=os.getenv(
+                "WEB_TOOLS_SEARCH_LANGUAGE",
+                "en-US,en;q=0.9",
+            ),
+            search_cache_ttl_seconds=_int("WEB_TOOLS_SEARCH_CACHE_TTL_SECONDS", 300),
             search_provider_concurrency=_int("WEB_TOOLS_SEARCH_PROVIDER_CONCURRENCY", 1),
             search_jitter_min_ms=_int("WEB_TOOLS_SEARCH_JITTER_MIN_MS", 250),
             search_jitter_max_ms=_int("WEB_TOOLS_SEARCH_JITTER_MAX_MS", 500),

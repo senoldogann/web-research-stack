@@ -421,9 +421,12 @@ def _tool_manifest(settings: Config) -> ToolsManifest:
                 name="web_search",
                 description=(
                     "Discover result URLs through a replaceable search adapter. depth=discover "
-                    "adds current-year and historical angles and ranks by source type, "
-                    "recency, authority, and domain diversity; fast sends one query; deep "
-                    "adds an official or primary-source angle."
+                    "runs base, current-year, and historical angles; deep adds an official or "
+                    "primary-source angle; fast sends one query. Ranking uses field-weighted "
+                    "BM25, weighted cross-angle consensus, source authority, inferred recency, "
+                    "and near-duplicate/domain diversity. Explicit freshness queries get "
+                    "provider date filters; responses are cached per query and a blocking "
+                    "provider is cooled down."
                 ),
                 method="POST",
                 path="/api/v1/web/search",

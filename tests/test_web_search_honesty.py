@@ -35,7 +35,13 @@ class StaticSearch:
         self.results = results
         self.only = only
 
-    async def search(self, query: str, limit: int) -> list[SearchResult]:
+    async def search(
+        self,
+        query: str,
+        limit: int,
+        *,
+        date_filter: str | None = None,
+    ) -> list[SearchResult]:
         if self.only and query != self.only:
             return []
         return list(self.results)

@@ -28,7 +28,7 @@ from web_scraper.web_tools.discovery import (
     DEPTHS,
     MIN_RESULT_SCORE,
     DiscoveryCandidate,
-    annotate_candidate,
+    annotate_candidates,
     build_facets,
     build_search_angles,
     has_relevant_result,
@@ -148,7 +148,10 @@ class WebToolsService:
             else None
         )
         adapters: dict[str, SearchAdapter] = {
-            "duckduckgo": DuckDuckGoSearchAdapter(),
+            "duckduckgo": DuckDuckGoSearchAdapter(
+                region=settings.search_region,
+                language=settings.search_language,
+            ),
             "google": GoogleSearchAdapter(),
         }
         return cls(
@@ -208,6 +211,22 @@ class WebToolsService:
             else min(max(resolved_limit * 2, 8), self.settings.max_search_limit)
         )
 
+        cache_key = (
+            f"search:{provider_name}:{resolved_depth}:{resolved_limit}:"
+            f"{self.settings.search_region}:{self.settings.search_language}:"
+            f"{cleaned.casefold()}"
+        )
+        cache_started = time.perf_counter()
+        cached = await self.cache.get(cache_key)
+        if cached is not None:
+            cache_ms = (time.perf_counter() - cache_started) * 1000
+            self.metrics.count("cache_hits_total", operation="search")
+            payload = dict(cached)
+            payload["timings"] = dict(cached["timings"])
+            payload["timings"]["cache_lookup_ms"] = round(cache_ms, 2)
+            payload["cache_hit"] = True
+            return payload
+
         started = time.perf_counter()
         angles = build_search_angles(
             cleaned,
@@ -227,7 +246,12 @@ class WebToolsService:
             if index and self.settings.search_angle_delay_ms > 0:
                 await asyncio.sleep(self.settings.search_angle_delay_ms / 1000)
             angle_started = time.perf_counter()
-            outcome = await self._search_angle(provider_name, angle.query, angle_limit)
+            outcome = await self._search_angle(
+                provider_name,
+                angle.query,
+                angle_limit,
+                angle.date_filter,
+            )
             angle_ms = (time.perf_counter() - angle_started) * 1000
             angle_timings[angle.name] = round(angle_ms, 2)
             self.metrics.observe(
@@ -239,6 +263,7 @@ class WebToolsService:
             report: dict[str, Any] = {
                 "angle": angle.name,
                 "query": angle.query,
+                "date_filter": angle.date_filter,
                 "provider": outcome.provider,
                 "results": len(outcome.results),
                 "new": 0,
@@ -302,9 +327,9 @@ class WebToolsService:
         ranking_started = time.perf_counter()
         if resolved_depth == "fast":
             # Provider order, minus results that share nothing with the query.
-            annotated = [
-                annotate_candidate(cleaned, candidate) for candidate in candidates.values()
-            ]
+            # Score the whole pool so BM25 and the low-relevance warning see the
+            # same corpus as discover/deep; annotate_candidates preserves order.
+            annotated = annotate_candidates(cleaned, candidates.values())
             relevant = [item for item in annotated if item["relevance"] > 0]
             results = relevant[:resolved_limit] if has_relevant_result(cleaned, relevant) else []
         else:
@@ -342,7 +367,7 @@ class WebToolsService:
         }
         for name, value in angle_timings.items():
             timings[f"angle_{name}_ms"] = value
-        return {
+        payload = {
             "query": cleaned,
             # Who answered: the fallback's name when it stood in for the
             # requested provider, both joined with "+" when they shared angles.
@@ -354,9 +379,22 @@ class WebToolsService:
             "queries": query_reports,
             "warnings": warnings,
             "timings": timings,
+            "cache_hit": False,
         }
+        await self.cache.set(
+            cache_key,
+            payload,
+            ttl_seconds=self.settings.search_cache_ttl_seconds,
+        )
+        return payload
 
-    async def _search_angle(self, primary: str, query: str, limit: int) -> _AngleOutcome:
+    async def _search_angle(
+        self,
+        primary: str,
+        query: str,
+        limit: int,
+        date_filter: Optional[str] = None,
+    ) -> _AngleOutcome:
         """Ask the primary provider; on any failure, ask the fallback once.
 
         A primary that is cooling down after a recent failure is skipped in
@@ -366,13 +404,27 @@ class WebToolsService:
         fallback = self._fallback_for(primary)
         if fallback is None:
             try:
-                return _AngleOutcome(primary, await self._call_provider(primary, query, limit))
+                return _AngleOutcome(
+                    primary,
+                    await self._call_provider(
+                        primary,
+                        query,
+                        limit,
+                        date_filter=date_filter,
+                    ),
+                )
             except WebToolError as exc:
                 return _AngleOutcome(primary, error=exc)
 
         primary_error: Optional[WebToolError] = None
         try:
-            results = await self._call_provider(primary, query, limit, yield_to=fallback)
+            results = await self._call_provider(
+                primary,
+                query,
+                limit,
+                date_filter=date_filter,
+                yield_to=fallback,
+            )
         except _ProviderCoolingDown:
             reason = "provider_cooldown"
         except WebToolError as exc:
@@ -390,6 +442,7 @@ class WebToolsService:
                 fallback,
                 query,
                 limit,
+                date_filter=date_filter,
                 timeout=self.settings.search_fallback_timeout_seconds,
             )
         except WebToolError as exc:
@@ -397,7 +450,12 @@ class WebToolsService:
             if primary_error is not None:
                 return _AngleOutcome(primary, error=primary_error, fallback=record)
             try:
-                results = await self._call_provider(primary, query, limit)
+                results = await self._call_provider(
+                    primary,
+                    query,
+                    limit,
+                    date_filter=date_filter,
+                )
             except WebToolError as last:
                 return _AngleOutcome(primary, error=last, fallback=record)
             return _AngleOutcome(primary, results, fallback=record)
@@ -409,6 +467,7 @@ class WebToolsService:
         query: str,
         limit: int,
         *,
+        date_filter: Optional[str] = None,
         yield_to: Optional[str] = None,
         timeout: Optional[float] = None,
     ) -> list[SearchResult]:
@@ -437,8 +496,13 @@ class WebToolsService:
                 raise _ProviderCoolingDown(name)
             await gate.pace()
             try:
+                call = (
+                    adapter.search(query, limit, date_filter=date_filter)
+                    if date_filter is not None
+                    else adapter.search(query, limit)
+                )
                 results = await asyncio.wait_for(
-                    adapter.search(query, limit),
+                    call,
                     timeout=timeout or self.settings.search_timeout_seconds,
                 )
             except asyncio.TimeoutError:

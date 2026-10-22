@@ -22,6 +22,17 @@ from web_scraper.web_tools.search import SearchResult
 
 DEPTHS = ("fast", "discover", "deep")
 ANGLE_ORDER = {"base": 0, "current": 1, "background": 2, "primary": 3}
+ANGLE_WEIGHTS = {"base": 1.0, "current": 0.9, "background": 0.75, "primary": 0.8}
+
+_RRF_K = 10.0
+_BM25_K1 = 1.2
+_BM25_FIELDS = (
+    ("title", 3.0, 0.5),
+    ("snippet", 1.2, 0.75),
+    ("url", 0.5, 0.2),
+)
+_NEAR_DUPLICATE_THRESHOLD = 0.55
+_MMR_PENALTY = 0.35
 
 
 def _normalise_token(token: str) -> str:
@@ -88,6 +99,28 @@ _STOPWORDS = frozenset(
 _TOKEN_RE = re.compile(r"[^\W_][\w.+-]+", re.UNICODE)
 _YEAR_RE = re.compile(r"\b(?:19[89]\d|20[0-4]\d)\b")
 _STOPWORD_KEYS = frozenset(_normalise_token(word) for word in _STOPWORDS)
+
+_FRESHNESS_CUES = (
+    ("day", ("breaking news", "today", "tonight", "son dakika", "bugün")),
+    ("week", ("this week", "past week", "bu hafta", "geçen hafta")),
+    ("month", ("this month", "past month", "bu ay", "geçen ay")),
+    (
+        "year",
+        (
+            "current",
+            "güncel",
+            "latest",
+            "most recent",
+            "recent",
+            "recently",
+            "son gelişme",
+            "son haber",
+            "this year",
+            "bu yıl",
+            "yeni sürüm",
+        ),
+    ),
+)
 
 _TECH_HINTS = frozenset(
     {
@@ -197,13 +230,16 @@ _OFFICIAL_HOSTS = frozenset(
         "mongodb.com",
         "nextjs.org",
         "nodejs.org",
+        "opensearch.org",
         "pkg.go.dev",
         "platform.openai.com",
         "postgresql.org",
+        "python-httpx.org",
         "pytorch.org",
         "python.org",
         "react.dev",
         "redis.io",
+        "sqlite.org",
         "tensorflow.org",
         "typescriptlang.org",
         "vuejs.org",
@@ -323,6 +359,7 @@ class SearchAngle:
 
     name: str
     query: str
+    date_filter: Optional[str] = None
 
 
 @dataclass
@@ -355,15 +392,16 @@ def build_search_angles(
     if not base:
         raise ValueError("Query must not be empty")
 
-    angles = [SearchAngle("base", base[:max_length].rstrip())]
+    current_year = year or datetime.now().year
+    intent_filter = detect_date_filter(base, year=current_year)
+    angles = [SearchAngle("base", base[:max_length].rstrip(), intent_filter)]
     if normalized_depth == "fast":
         return angles
 
-    current_year = year or datetime.now().year
     if str(current_year) not in base:
         current = _fit_suffix(base, str(current_year), max_length)
         if current and current.casefold() != base.casefold():
-            angles.append(SearchAngle("current", current))
+            angles.append(SearchAngle("current", current, intent_filter or "year"))
 
     background = _fit_suffix(base, "history background", max_length)
     if background:
@@ -376,6 +414,25 @@ def build_search_angles(
             angles.append(SearchAngle("primary", primary))
 
     return angles
+
+
+def detect_date_filter(query: str, *, year: Optional[int] = None) -> Optional[str]:
+    """Map an explicit freshness cue to a provider date filter.
+
+    General queries stay unfiltered: a hard date cut-off would discard useful
+    historical material. Only queries that ask for freshness (or name the
+    current year) get one.
+    """
+    normalized = " ".join((query or "").casefold().split())
+    if not normalized:
+        return None
+    for name, cues in _FRESHNESS_CUES:
+        if any(_contains_phrase(normalized, cue) for cue in cues):
+            return name
+    current_year = year or datetime.now().year
+    if re.search(rf"(?<!\d){current_year}(?!\d)", normalized):
+        return "year"
+    return None
 
 
 def query_tokens(text: str) -> set[str]:
@@ -464,12 +521,120 @@ def classify_source_type(url: str) -> str:
         return "code"
     if _host_matches(host, _COMMUNITY_HOSTS):
         return "community"
+    # A docs-looking path alone does not make a host official: mirrors (mdn.org.cn, runebook.dev) copy another
+    # project's documentation. Give them the weight of a reference, below the canonical project's own domain.
     if any(
         segment in path
         for segment in ("/docs/", "/documentation/", "/api/", "/reference/", "/manual/")
     ):
-        return "official"
+        return "reference"
     return "other"
+
+
+def _field_tokens(text: str) -> list[str]:
+    # Split hostnames, paths, and version strings so a query term can match
+    # inside ``docs.python.org`` rather than only as the whole hostname.
+    return [_normalise_token(token) for token in re.findall(r"[^\W_]+", text or "", re.UNICODE)]
+
+
+def _bm25_query_terms(query: str) -> list[str]:
+    terms = [
+        token
+        for token in _field_tokens(query)
+        if (len(token) > 1 or token.isdigit()) and token not in _STOPWORD_KEYS
+    ]
+    return list(dict.fromkeys(terms))
+
+
+def _document_stats(candidate: DiscoveryCandidate) -> _DocumentStats:
+    result = candidate.result
+    texts = {"title": result.title, "snippet": result.snippet, "url": result.url}
+    counts: dict[str, Counter[str]] = {}
+    lengths: dict[str, int] = {}
+    for field_name, text in texts.items():
+        tokens = _field_tokens(text)
+        counts[field_name] = Counter(tokens)
+        lengths[field_name] = len(tokens)
+    return _DocumentStats(counts=counts, lengths=lengths)
+
+
+def _bm25_raw_scores(
+    terms: list[str],
+    documents: list[_DocumentStats],
+) -> list[float]:
+    if not terms or not documents:
+        return [0.0] * len(documents)
+
+    total = len(documents)
+    document_frequency = {
+        term: sum(
+            1
+            for document in documents
+            if any(document.counts[field][term] for field, _, _ in _BM25_FIELDS)
+        )
+        for term in terms
+    }
+    average_lengths = {
+        field: max(
+            1.0,
+            sum(document.lengths[field] for document in documents) / total,
+        )
+        for field, _, _ in _BM25_FIELDS
+    }
+
+    scores: list[float] = []
+    for document in documents:
+        score = 0.0
+        for term in terms:
+            frequency = document_frequency[term]
+            if frequency == 0:
+                continue
+            idf = math.log(1.0 + (total - frequency + 0.5) / (frequency + 0.5))
+            weighted_tf = 0.0
+            for field_name, weight, length_norm in _BM25_FIELDS:
+                term_frequency = document.counts[field_name][term]
+                if not term_frequency:
+                    continue
+                norm = (
+                    1.0
+                    - length_norm
+                    + length_norm * (document.lengths[field_name] / average_lengths[field_name])
+                )
+                weighted_tf += weight * term_frequency / norm
+            if weighted_tf:
+                score += idf * weighted_tf * (_BM25_K1 + 1.0) / (weighted_tf + _BM25_K1)
+        scores.append(score)
+    return scores
+
+
+@dataclass
+class _DocumentStats:
+    counts: dict[str, Counter[str]]
+    lengths: dict[str, int]
+
+
+def annotate_candidates(
+    query: str,
+    candidates: Iterable[DiscoveryCandidate],
+    *,
+    year_now: Optional[int] = None,
+) -> list[dict[str, Any]]:
+    """Score a candidate pool, including corpus-relative BM25F.
+
+    Field weighting and document frequency only make sense against the other
+    results from the same search, so the whole pool is scored together.
+    """
+    items = list(candidates)
+    terms = _bm25_query_terms(query)
+    raw_scores = _bm25_raw_scores(terms, [_document_stats(item) for item in items])
+    # Squash raw BM25 into (0, 1) instead of scaling to the pool's best match:
+    # a pool of only weak matches must not look as strong as a pool with a
+    # genuine answer, or the relevance warning below could never fire.
+    normalized = [score / (score + 1.0) for score in raw_scores]
+    return [
+        _annotate_candidate(query, item, normalized[index], year_now)
+        for index, item in enumerate(items)
+    ]
 
 
 def annotate_candidate(
@@ -479,6 +644,15 @@ def annotate_candidate(
     year_now: Optional[int] = None,
 ) -> dict[str, Any]:
     """Score one candidate and expose the signals behind the score."""
+    return annotate_candidates(query, [candidate], year_now=year_now)[0]
+
+
+def _annotate_candidate(
+    query: str,
+    candidate: DiscoveryCandidate,
+    bm25: float,
+    year_now: Optional[int],
+) -> dict[str, Any]:
     result = candidate.result
     url = result.url
     source_type = classify_source_type(url)
@@ -495,8 +669,13 @@ def annotate_candidate(
         key=lambda name: (ANGLE_ORDER.get(name, 99), candidate.angle_ranks[name]),
     )
 
-    rrf = sum(1.0 / (10.0 + rank) for rank in candidate.angle_ranks.values())
-    score = 0.55 * relevance + 1.8 * rrf + _AUTHORITY[source_type]
+    rrf = sum(
+        ANGLE_WEIGHTS.get(name, 0.5) / (_RRF_K + rank)
+        for name, rank in candidate.angle_ranks.items()
+    )
+    # BM25 counts through query coverage: one rare term alone must not outrank
+    # a result that matches most of the query.
+    score = 0.45 * bm25 * relevance + 0.10 * relevance + 1.8 * rrf + _AUTHORITY[source_type]
     score += {"current": 0.10, "recent": 0.05}.get(recency, 0.0)
     if recency == "historical":
         score += 0.08 if source_type in {"official", "academic", "reference"} else 0.04
@@ -524,6 +703,7 @@ def annotate_candidate(
         "recency": recency,
         "angles": angles,
         "relevance": round(relevance, 6),
+        "bm25": round(bm25, 6),
         "score": round(score, 6),
     }
 
@@ -556,9 +736,7 @@ def rank_candidates(
     ``MIN_RESULT_SCORE`` are dropped beside better ones and kept only when no
     relevant result reaches it.
     """
-    annotated = [
-        annotate_candidate(query, candidate, year_now=year_now) for candidate in candidates
-    ]
+    annotated = annotate_candidates(query, candidates, year_now=year_now)
     if not has_relevant_result(query, annotated):
         return []
     relevant = [item for item in annotated if item["relevance"] > 0]
@@ -603,18 +781,20 @@ def _select_diverse(
 ) -> list[dict[str, Any]]:
     remaining = list(ranked)
     selected: list[dict[str, Any]] = []
+    selected_tokens: list[set[str]] = []
     per_domain: Counter[str] = Counter()
     per_type: Counter[str] = Counter()
     cap = domain_cap(limit)
 
     while remaining and len(selected) < limit:
-        best_index = _best_index(remaining, per_domain, per_type, cap)
+        best_index = _best_index(remaining, per_domain, per_type, cap, selected_tokens)
         if best_index is None:
-            best_index = _best_index(remaining, per_domain, per_type, None)
+            best_index = _best_index(remaining, per_domain, per_type, None, selected_tokens)
         if best_index is None:
             break
         chosen = remaining.pop(best_index)
         selected.append(chosen)
+        selected_tokens.append(_content_tokens(chosen))
         per_domain[chosen["domain"]] += 1
         per_type[chosen["source_type"]] += 1
     return selected
@@ -625,6 +805,7 @@ def _best_index(
     per_domain: Counter[str],
     per_type: Counter[str],
     cap: Optional[int],
+    selected_tokens: list[set[str]],
 ) -> Optional[int]:
     best_index: Optional[int] = None
     best_effective: Optional[float] = None
@@ -633,10 +814,35 @@ def _best_index(
             continue
         type_count = per_type[item["source_type"]]
         effective = item["score"] + (0.04 if type_count == 0 else -0.02 * type_count)
+        if selected_tokens:
+            similarity = max(_jaccard(_content_tokens(item), chosen) for chosen in selected_tokens)
+            excess = max(0.0, similarity - _NEAR_DUPLICATE_THRESHOLD)
+            effective -= _MMR_PENALTY * excess / (1.0 - _NEAR_DUPLICATE_THRESHOLD)
         if best_effective is None or effective > best_effective:
             best_index = index
             best_effective = effective
     return best_index
+
+
+def _content_tokens(item: dict[str, Any]) -> set[str]:
+    return query_tokens(f"{item.get('title', '')} {item.get('snippet', '')}")
+
+
+def _jaccard(left: set[str], right: set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    return len(left & right) / len(left | right)
+
+
+def _contains_phrase(text: str, phrase: str) -> bool:
+    return (
+        re.search(
+            rf"(?<!\w){re.escape(phrase)}(?!\w)",
+            text,
+            flags=re.UNICODE,
+        )
+        is not None
+    )
 
 
 def _fit_suffix(base: str, suffix: str, max_length: int) -> str:

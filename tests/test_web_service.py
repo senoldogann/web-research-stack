@@ -109,6 +109,8 @@ def _service(
     resolved_settings = settings or WebToolsSettings(
         search_provider="fake",
         search_angle_delay_ms=0,
+        search_jitter_min_ms=0,
+        search_jitter_max_ms=0,
     )
     adapters = {search.name: search} if search is not None else {}
     return WebToolsService(

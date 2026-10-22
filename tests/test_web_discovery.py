@@ -48,6 +48,8 @@ def _service(search: RoutingSearch) -> WebToolsService:
         settings=WebToolsSettings(
             search_provider="fake",
             search_angle_delay_ms=0,
+            search_jitter_min_ms=0,
+            search_jitter_max_ms=0,
         ),
         fetcher=object(),  # type: ignore[arg-type]
         search_adapters={search.name: search},

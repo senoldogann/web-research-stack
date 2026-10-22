@@ -44,6 +44,13 @@ class WebToolsSettings:
     search_timeout_seconds: float = 30.0
     search_default_depth: str = "discover"
     search_angle_delay_ms: int = 150
+    search_provider_concurrency: int = 1
+    search_jitter_min_ms: int = 250
+    search_jitter_max_ms: int = 500
+    search_fallback_provider: str = "google"
+    search_fallback_timeout_seconds: float = 60.0
+    search_provider_cooldown_seconds: int = 5
+    search_provider_max_cooldown_seconds: int = 300
     default_search_limit: int = 5
     max_search_limit: int = 20
     max_query_length: int = 500
@@ -94,6 +101,20 @@ class WebToolsSettings:
         depth = (self.search_default_depth or "discover").strip().lower()
         self.search_default_depth = depth if depth in {"fast", "discover", "deep"} else "discover"
         self.search_angle_delay_ms = min(max(self.search_angle_delay_ms, 0), 5_000)
+        self.search_provider_concurrency = max(self.search_provider_concurrency, 1)
+        self.search_jitter_min_ms = min(max(self.search_jitter_min_ms, 0), 10_000)
+        self.search_jitter_max_ms = min(
+            max(self.search_jitter_max_ms, self.search_jitter_min_ms),
+            10_000,
+        )
+        fallback = (self.search_fallback_provider or "").strip().lower()
+        self.search_fallback_provider = "" if fallback in {"", "none", "off"} else fallback
+        self.search_fallback_timeout_seconds = max(self.search_fallback_timeout_seconds, 1.0)
+        self.search_provider_cooldown_seconds = max(self.search_provider_cooldown_seconds, 0)
+        self.search_provider_max_cooldown_seconds = max(
+            self.search_provider_max_cooldown_seconds,
+            self.search_provider_cooldown_seconds,
+        )
         self.default_search_limit = max(self.default_search_limit, 1)
         self.max_search_limit = max(self.max_search_limit, self.default_search_limit)
         self.max_query_length = max(self.max_query_length, 1)
@@ -148,6 +169,22 @@ class WebToolsSettings:
             search_timeout_seconds=_float("WEB_TOOLS_SEARCH_TIMEOUT_SECONDS", 30.0),
             search_default_depth=os.getenv("WEB_TOOLS_SEARCH_DEPTH", "discover"),
             search_angle_delay_ms=_int("WEB_TOOLS_SEARCH_ANGLE_DELAY_MS", 150),
+            search_provider_concurrency=_int("WEB_TOOLS_SEARCH_PROVIDER_CONCURRENCY", 1),
+            search_jitter_min_ms=_int("WEB_TOOLS_SEARCH_JITTER_MIN_MS", 250),
+            search_jitter_max_ms=_int("WEB_TOOLS_SEARCH_JITTER_MAX_MS", 500),
+            search_fallback_provider=os.getenv("WEB_TOOLS_SEARCH_FALLBACK_PROVIDER", "google"),
+            search_fallback_timeout_seconds=_float(
+                "WEB_TOOLS_SEARCH_FALLBACK_TIMEOUT_SECONDS",
+                60.0,
+            ),
+            search_provider_cooldown_seconds=_int(
+                "WEB_TOOLS_SEARCH_PROVIDER_COOLDOWN_SECONDS",
+                5,
+            ),
+            search_provider_max_cooldown_seconds=_int(
+                "WEB_TOOLS_SEARCH_PROVIDER_MAX_COOLDOWN_SECONDS",
+                300,
+            ),
             default_search_limit=_int("WEB_TOOLS_DEFAULT_SEARCH_LIMIT", 5),
             max_search_limit=_int("WEB_TOOLS_MAX_SEARCH_LIMIT", 20),
             max_query_length=_int("WEB_TOOLS_MAX_QUERY_LENGTH", 500),

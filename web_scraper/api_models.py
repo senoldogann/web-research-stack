@@ -254,9 +254,14 @@ class WebSearchResult(BaseModel):
 class WebSearchQuery(BaseModel):
     angle: str
     query: str
+    provider: Optional[str] = None
     results: int = 0
     new: int = 0
     error: Optional[Dict[str, Any]] = None
+    fallback: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Set when the fallback provider was asked: from, to, reason, error",
+    )
 
 
 class WebSearchFacets(BaseModel):
@@ -270,7 +275,8 @@ class WebSearchFacets(BaseModel):
 
 class WebSearchResponse(BaseModel):
     query: str
-    provider: str
+    provider: str = Field(..., description="Provider(s) that answered, joined with + when mixed")
+    requested_provider: Optional[str] = None
     depth: str = "discover"
     results: List[WebSearchResult]
     facets: WebSearchFacets = Field(default_factory=WebSearchFacets)

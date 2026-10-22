@@ -506,3 +506,34 @@ Behavior changes from live testing of the tools.
   package, which this environment does not install), `pdf_invalid` for one
   that cannot be parsed, and `timeout` (`pdf_extract_timeout`) when extraction
   takes longer than `FETCH_TIMEOUT_SECONDS`. Both PDF codes map to HTTP 422.
+
+### Search provider pacing, fallback, and cooldown
+
+- Each provider takes one call at a time (`SEARCH_PROVIDER_CONCURRENCY`, default
+  1), shared by every search and angle in the process, with a random 250–500 ms
+  gap between calls (`SEARCH_JITTER_MIN_MS`, `SEARCH_JITTER_MAX_MS`). Each call
+  is bounded by `SEARCH_TIMEOUT_SECONDS` (30), a fallback call by
+  `SEARCH_FALLBACK_TIMEOUT_SECONDS` (60): the headless Google browser's first
+  search took 36 s in testing.
+- A failed call (`bot_detected`, a timeout, or another provider error) is asked
+  once of the fallback provider (`SEARCH_FALLBACK_PROVIDER`, default `google`;
+  `none` turns it off). `provider` names who answered (`google`, or
+  `duckduckgo+google` when the angles were split), `requested_provider` keeps
+  the requested one, the angle's entry in `queries` carries
+  `fallback: {from, to, reason, error}`, and `warnings` gets `provider_fallback`.
+- A failure cools down only the provider that failed: 5 s
+  (`SEARCH_PROVIDER_COOLDOWN_SECONDS`), doubling while failures repeat up to
+  300 s (`SEARCH_PROVIDER_MAX_COOLDOWN_SECONDS`); a success resets it. While it
+  cools down, its calls go to a healthy fallback (`reason: provider_cooldown`).
+  With no fallback, or when the fallback fails too, the provider is still
+  asked: a cooldown steers calls and never fails a search by itself.
+  `GET /api/v1/web/stats` lists each provider's failures and remaining cooldown.
+- Measured on 2026-10-22: six `discover` searches sent in parallel each
+  returned 5 results with no failed query. DuckDuckGo still refused 2 of the 10
+  calls it got at this pace; Google answered those two and the 8 angles sent
+  while DuckDuckGo cooled down. Asked one query at a time with 3 s pauses,
+  DuckDuckGo answered every call, so a wider jitter trades latency for fewer
+  refusals.
+- The Google fallback is the headless `GoogleSearchAdapter` (Camoufox): its
+  first call starts the browser (6–36 s measured), which holds memory until it
+  has been idle for three minutes.

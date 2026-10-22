@@ -220,6 +220,7 @@ class WebToolsService:
         warnings: list[str] = []
         first_error: Optional[WebToolError] = None
         answered_by: list[str] = []
+        responded: list[str] = []
         fallback_answered = False
 
         for index, angle in enumerate(angles):
@@ -254,6 +255,8 @@ class WebToolsService:
                     warnings.append(f"{angle.name}_query_failed")
                 continue
 
+            if outcome.provider not in responded:
+                responded.append(outcome.provider)
             if outcome.results and outcome.provider not in answered_by:
                 answered_by.append(outcome.provider)
             if outcome.provider != provider_name:
@@ -343,7 +346,7 @@ class WebToolsService:
             "query": cleaned,
             # Who answered: the fallback's name when it stood in for the
             # requested provider, both joined with "+" when they shared angles.
-            "provider": "+".join(answered_by) or provider_name,
+            "provider": "+".join(answered_by or responded) or provider_name,
             "requested_provider": provider_name,
             "depth": resolved_depth,
             "results": results,

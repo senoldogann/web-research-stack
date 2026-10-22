@@ -198,6 +198,23 @@ class TestGoogleFallback:
         assert google.calls == ["oulu weather"]
 
     @pytest.mark.asyncio
+    async def test_empty_answer_from_google_still_names_google(self) -> None:
+        class EmptyGoogle(ScriptedSearch):
+            async def search(self, query: str, limit: int) -> list[SearchResult]:
+                self.calls.append(query)
+                return []
+
+        service = _service(
+            ScriptedSearch("duckduckgo", error=_bot_detected()), EmptyGoogle("google")
+        )
+
+        response = await service.search("oulu weather", depth="fast")
+
+        assert response["results"] == []
+        assert response["provider"] == "google"
+        assert response["warnings"] == ["provider_fallback", "no_relevant_results"]
+
+    @pytest.mark.asyncio
     async def test_timed_out_query_is_answered_by_google(self) -> None:
         ddg = ScriptedSearch("duckduckgo", stall=1.0)
         google = ScriptedSearch("google")

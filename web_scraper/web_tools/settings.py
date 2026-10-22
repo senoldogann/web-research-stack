@@ -48,7 +48,12 @@ class WebToolsSettings:
     search_region: str = "wt-wt"
     search_language: str = "en-US,en;q=0.9"
     search_cache_ttl_seconds: int = 300
-    search_provider_cooldown_seconds: int = 30
+    search_provider_concurrency: int = 1
+    search_jitter_min_ms: int = 250
+    search_jitter_max_ms: int = 500
+    search_fallback_provider: str = "google"
+    search_fallback_timeout_seconds: float = 60.0
+    search_provider_cooldown_seconds: int = 5
     search_provider_max_cooldown_seconds: int = 300
     default_search_limit: int = 5
     max_search_limit: int = 20
@@ -75,6 +80,7 @@ class WebToolsSettings:
 
     markdown_max_chars: int = 50_000
     max_links: int = 500
+    scrape_max_links: int = 50
     default_map_limit: int = 500
     max_map_limit: int = 5_000
     max_sitemaps: int = 25
@@ -107,10 +113,16 @@ class WebToolsSettings:
             language if re.fullmatch(r"[A-Za-z0-9,;=._*\- ]{1,128}", language) else "en-US,en;q=0.9"
         )
         self.search_cache_ttl_seconds = max(self.search_cache_ttl_seconds, 1)
-        self.search_provider_cooldown_seconds = max(
-            self.search_provider_cooldown_seconds,
-            0,
+        self.search_provider_concurrency = max(self.search_provider_concurrency, 1)
+        self.search_jitter_min_ms = min(max(self.search_jitter_min_ms, 0), 10_000)
+        self.search_jitter_max_ms = min(
+            max(self.search_jitter_max_ms, self.search_jitter_min_ms),
+            10_000,
         )
+        fallback = (self.search_fallback_provider or "").strip().lower()
+        self.search_fallback_provider = "" if fallback in {"", "none", "off"} else fallback
+        self.search_fallback_timeout_seconds = max(self.search_fallback_timeout_seconds, 1.0)
+        self.search_provider_cooldown_seconds = max(self.search_provider_cooldown_seconds, 0)
         self.search_provider_max_cooldown_seconds = max(
             self.search_provider_max_cooldown_seconds,
             self.search_provider_cooldown_seconds,
@@ -138,6 +150,7 @@ class WebToolsSettings:
 
         self.markdown_max_chars = max(self.markdown_max_chars, 500)
         self.max_links = max(self.max_links, 1)
+        self.scrape_max_links = min(max(self.scrape_max_links, 0), self.max_links)
         self.default_map_limit = max(self.default_map_limit, 1)
         self.max_map_limit = max(self.max_map_limit, self.default_map_limit)
         self.max_sitemaps = max(self.max_sitemaps, 1)
@@ -175,9 +188,17 @@ class WebToolsSettings:
                 "en-US,en;q=0.9",
             ),
             search_cache_ttl_seconds=_int("WEB_TOOLS_SEARCH_CACHE_TTL_SECONDS", 300),
+            search_provider_concurrency=_int("WEB_TOOLS_SEARCH_PROVIDER_CONCURRENCY", 1),
+            search_jitter_min_ms=_int("WEB_TOOLS_SEARCH_JITTER_MIN_MS", 250),
+            search_jitter_max_ms=_int("WEB_TOOLS_SEARCH_JITTER_MAX_MS", 500),
+            search_fallback_provider=os.getenv("WEB_TOOLS_SEARCH_FALLBACK_PROVIDER", "google"),
+            search_fallback_timeout_seconds=_float(
+                "WEB_TOOLS_SEARCH_FALLBACK_TIMEOUT_SECONDS",
+                60.0,
+            ),
             search_provider_cooldown_seconds=_int(
                 "WEB_TOOLS_SEARCH_PROVIDER_COOLDOWN_SECONDS",
-                30,
+                5,
             ),
             search_provider_max_cooldown_seconds=_int(
                 "WEB_TOOLS_SEARCH_PROVIDER_MAX_COOLDOWN_SECONDS",
@@ -204,6 +225,7 @@ class WebToolsSettings:
             browser_render_min_chars=_int("WEB_TOOLS_BROWSER_RENDER_MIN_CHARS", 200),
             markdown_max_chars=_int("WEB_TOOLS_MARKDOWN_MAX_CHARS", 50_000),
             max_links=_int("WEB_TOOLS_MAX_LINKS", 500),
+            scrape_max_links=_int("WEB_TOOLS_SCRAPE_MAX_LINKS", 50),
             default_map_limit=_int("WEB_TOOLS_DEFAULT_MAP_LIMIT", 500),
             max_map_limit=_int("WEB_TOOLS_MAX_MAP_LIMIT", 5_000),
             max_sitemaps=_int("WEB_TOOLS_MAX_SITEMAPS", 25),

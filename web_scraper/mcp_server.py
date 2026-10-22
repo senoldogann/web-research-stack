@@ -128,9 +128,11 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
                     "an official or primary-source angle; depth=fast sends one query. Ranking "
                     "uses field-weighted BM25, weighted cross-angle consensus, source authority, "
                     "inferred recency, and near-duplicate/domain diversity. Explicit freshness "
-                    "queries get provider date filters; responses are cached per query and a "
-                    "blocking provider is cooled down. Results carry source_type, year, recency, "
-                    "angles, relevance, bm25, score, and cache_hit, with coverage facets. Search "
+                    "queries get provider date filters; successful answers are cached per query, "
+                    "and a blocking provider is paced, cooled down, and covered by a registered "
+                    "fallback. Results carry source_type, year, recency, angles, relevance, bm25, "
+                    "score, and cache_hit, with coverage facets; warnings say no_relevant_results "
+                    "or low_relevance_results instead of padding unrelated links. Search "
                     "discovers URLs only; use web_scrape to read a result."
                 ),
                 "inputSchema": WebSearchRequest.model_json_schema(),
@@ -145,9 +147,13 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
                 "name": "web_scrape",
                 "description": (
                     "Fetch one public URL HTTP-first and return clean Markdown, title, "
-                    "description, canonical URL, status, links, metadata, content hash, and "
-                    "stage timings. A shared headless browser is used only for JavaScript "
-                    "shells or access interstitials; CAPTCHA and login walls fail fast."
+                    "description, canonical URL, status, up to 50 links from the page content "
+                    "(menus, headers, footers, and sidebars left out; links_truncated says "
+                    "more exist, web_map lists them all), metadata, content hash, and stage "
+                    "timings. A shared headless browser is used only for JavaScript "
+                    "shells or access interstitials; CAPTCHA and login walls fail fast. A PDF "
+                    "comes back as Markdown text with content_type application/pdf and its "
+                    "page count in pages."
                 ),
                 "inputSchema": WebScrapeRequest.model_json_schema(),
                 "annotations": _annotations(

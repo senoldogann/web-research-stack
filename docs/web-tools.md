@@ -466,7 +466,13 @@ Modified:
 
 ## Reliability fixes (2026-10-22)
 
-Behavior changes from live testing of the tools.
+Behavior changes from live testing of the tools. The unit tests never reach the
+network; `scripts/verify_web_tools_live.py` runs the live checks by hand
+(`--only scrape,pdf,search,empty,crawl,links`, or `--only matrix --urls FILE`
+to scrape a list of URLs and count blocks). On a 29-URL list of news, social,
+Finnish public, and test sites, scrapes that succeeded went from 14 to 18; the
+four captchas left (Reddit, Reuters, NYT, WSJ) are real challenge pages, which a
+headless browser met as well.
 
 ### Challenge detection
 

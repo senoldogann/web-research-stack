@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
@@ -32,7 +32,18 @@ from web_scraper.api_models import (
     ScrapeRequest,
     ToolDescriptor,
     ToolsManifest,
+    WebCrawlJobResponse,
+    WebCrawlRequest,
+    WebCrawlResultsResponse,
+    WebExtractRequest,
+    WebExtractResponse,
+    WebMapRequest,
+    WebMapResponse,
     WebResearchResponse,
+    WebScrapeRequest,
+    WebScrapeResponse,
+    WebSearchRequest,
+    WebSearchResponse,
     _coerce_str,
 )
 from web_scraper.api_runtime import (
@@ -56,6 +67,8 @@ from web_scraper.redis_cache import (
     RedisUnavailable,
 )
 from web_scraper.scrapers import ScrapedData, WebScraper
+from web_scraper.web_tools.errors import WebToolError
+from web_scraper.web_tools.service import WebToolsService
 
 logger = logging.getLogger("web_scraper.api")
 
@@ -169,6 +182,7 @@ def require_access(limit_attr: str) -> Callable[[Request], Awaitable[str]]:
 require_general_access = require_access("api_rate_limit_per_minute")
 require_scrape_access = require_access("api_scrape_rate_limit_per_minute")
 require_research_access = require_access("api_research_rate_limit_per_minute")
+require_web_access = require_access("api_web_rate_limit_per_minute")
 
 
 def _request_duration_ms(request: Request) -> float:
@@ -402,7 +416,140 @@ def _tool_manifest(settings: Config) -> ToolsManifest:
                     "deep_mode": False,
                     "include_source_content": False,
                 },
-            )
+            ),
+            ToolDescriptor(
+                name="web_search",
+                description=(
+                    "Discover result URLs through a replaceable search adapter. depth=discover "
+                    "adds current-year and historical angles and ranks by source type, "
+                    "recency, authority, and domain diversity; fast sends one query; deep "
+                    "adds an official or primary-source angle."
+                ),
+                method="POST",
+                path="/api/v1/web/search",
+                auth=auth_info,
+                input_schema=WebSearchRequest.model_json_schema(),
+                output_schema=WebSearchResponse.model_json_schema(),
+                example={
+                    "query": "python asyncio best practices",
+                    "limit": 5,
+                    "depth": "discover",
+                },
+            ),
+            ToolDescriptor(
+                name="web_scrape",
+                description=(
+                    "Fetch one public URL HTTP-first and return Markdown, metadata, links, "
+                    "and per-stage timings. A shared headless browser is used only when "
+                    "JavaScript is required or the HTTP response is an access interstitial."
+                ),
+                method="POST",
+                path="/api/v1/web/scrape",
+                auth=auth_info,
+                input_schema=WebScrapeRequest.model_json_schema(),
+                output_schema=WebScrapeResponse.model_json_schema(),
+                example={"url": "https://example.com/article", "max_chars": 12000},
+            ),
+            ToolDescriptor(
+                name="web_map",
+                description=(
+                    "List URLs from robots.txt sitemaps, nested sitemap indexes, and page "
+                    "links with domain scope, search, include/exclude filters, and a limit."
+                ),
+                method="POST",
+                path="/api/v1/web/map",
+                auth=auth_info,
+                input_schema=WebMapRequest.model_json_schema(),
+                output_schema=WebMapResponse.model_json_schema(),
+                example={
+                    "url": "https://example.com/",
+                    "search": "docs",
+                    "include_subdomains": False,
+                    "limit": 100,
+                },
+            ),
+            ToolDescriptor(
+                name="web_extract",
+                description=(
+                    "Extract structured fields from one page with CSS selectors and return "
+                    "per-field evidence, selector provenance, and missing-field errors."
+                ),
+                method="POST",
+                path="/api/v1/web/extract",
+                auth=auth_info,
+                input_schema=WebExtractRequest.model_json_schema(by_alias=True),
+                output_schema=WebExtractResponse.model_json_schema(),
+                example={
+                    "url": "https://example.com/product",
+                    "schema": {
+                        "name": "h1",
+                        "price": {"selector": ".price", "type": "number"},
+                    },
+                },
+            ),
+            ToolDescriptor(
+                name="web_crawl_start",
+                description=(
+                    "Queue a background crawl and return its job id immediately. The crawl "
+                    "deduplicates canonical URLs and content hashes, respects robots.txt, "
+                    "domain scope, include/exclude filters, and bounded concurrency."
+                ),
+                method="POST",
+                path="/api/v1/web/crawl",
+                auth=auth_info,
+                input_schema=WebCrawlRequest.model_json_schema(),
+                output_schema=WebCrawlJobResponse.model_json_schema(),
+                example={
+                    "url": "https://example.com/",
+                    "options": {"max_pages": 20, "max_depth": 2},
+                },
+            ),
+            ToolDescriptor(
+                name="web_crawl_status",
+                description="Read crawl progress, counters, and collected errors by job id.",
+                method="GET",
+                path="/api/v1/web/crawl/{job_id}",
+                auth=auth_info,
+                input_schema={
+                    "type": "object",
+                    "properties": {"job_id": {"type": "string"}},
+                    "required": ["job_id"],
+                },
+                output_schema=WebCrawlJobResponse.model_json_schema(),
+                example={"job_id": "4fa0c2d9f5d84f86a0f9b7c4e2d1a3b5"},
+            ),
+            ToolDescriptor(
+                name="web_crawl_results",
+                description="Read one page of completed crawl results with offset/limit.",
+                method="GET",
+                path="/api/v1/web/crawl/{job_id}/results",
+                auth=auth_info,
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "job_id": {"type": "string"},
+                        "offset": {"type": "integer", "minimum": 0},
+                        "limit": {"type": "integer", "minimum": 1},
+                    },
+                    "required": ["job_id"],
+                },
+                output_schema=WebCrawlResultsResponse.model_json_schema(),
+                example={"job_id": "4fa0c2d9f5d84f86a0f9b7c4e2d1a3b5", "offset": 0, "limit": 20},
+            ),
+            ToolDescriptor(
+                name="web_crawl_cancel",
+                description="Cancel a queued or in-flight crawl job and its pending page tasks.",
+                method="POST",
+                path="/api/v1/web/crawl/{job_id}/cancel",
+                auth=auth_info,
+                input_schema={
+                    "type": "object",
+                    "properties": {"job_id": {"type": "string"}},
+                    "required": ["job_id"],
+                },
+                output_schema=WebCrawlJobResponse.model_json_schema(),
+                example={"job_id": "4fa0c2d9f5d84f86a0f9b7c4e2d1a3b5"},
+            ),
         ]
     )
 
@@ -821,6 +968,9 @@ def create_app(settings: Optional[Config] = None) -> FastAPI:
         # Cleanup
         if warmup is not None and not warmup.done():
             warmup.cancel()
+        close_web_tools = getattr(getattr(app.state, "web_tools", None), "close", None)
+        if close_web_tools is not None:
+            await close_web_tools()
         if _redis_cache is not None:
             await _redis_cache.close()
         if _redis_limiter is not None:
@@ -846,6 +996,7 @@ def create_app(settings: Optional[Config] = None) -> FastAPI:
     app.state.metrics = MetricsRegistry()
     app.state.history_store = ResearchHistoryStore(app_settings.history_db_path)
     app.state.concurrency_gate = ConcurrencyGate(app_settings.api_max_concurrent_requests)
+    app.state.web_tools = WebToolsService.from_env(metrics_registry=app.state.metrics)
 
     app.add_middleware(
         CORSMiddleware,
@@ -1021,6 +1172,19 @@ def create_app(settings: Optional[Config] = None) -> FastAPI:
         response.headers["Retry-After"] = str(exc.retry_after)
         return response
 
+    @app.exception_handler(WebToolError)
+    async def web_tool_exception_handler(request: Request, exc: WebToolError):
+        response = JSONResponse(
+            status_code=exc.http_status,
+            content={
+                "error": exc.to_dict(),
+                "trace_id": getattr(request.state, "trace_id", None),
+            },
+        )
+        if exc.code == "crawl_capacity":
+            response.headers["Retry-After"] = "5"
+        return response
+
     @app.get("/", tags=["Root"])
     async def root() -> dict[str, Any]:
         return {
@@ -1032,6 +1196,11 @@ def create_app(settings: Optional[Config] = None) -> FastAPI:
                 "metrics": "/api/v1/metrics",
                 "tools": "/api/v1/tools",
                 "scrape": "/api/v1/scrape",
+                "web_search": "/api/v1/web/search",
+                "web_scrape": "/api/v1/web/scrape",
+                "web_map": "/api/v1/web/map",
+                "web_extract": "/api/v1/web/extract",
+                "web_crawl": "/api/v1/web/crawl",
                 "research_tool": "/api/v1/tools/web-research",
             },
         }
@@ -1072,6 +1241,137 @@ def create_app(settings: Optional[Config] = None) -> FastAPI:
     @app.get("/api/v1/tools", tags=["Tools"])
     async def tools_manifest(_: str = Depends(require_general_access)) -> dict[str, Any]:
         return _tool_manifest(app_settings).model_dump(mode="json")
+
+    @app.post("/api/v1/web/search", tags=["Web Tools"], response_model=WebSearchResponse)
+    async def web_search(
+        payload: WebSearchRequest,
+        request: Request,
+        _: str = Depends(require_web_access),
+    ) -> WebSearchResponse:
+        web_tools: WebToolsService = request.app.state.web_tools
+        async with app.state.concurrency_gate.acquire():
+            result = await web_tools.search(
+                payload.query,
+                limit=payload.limit,
+                provider=payload.provider,
+                depth=payload.depth,
+            )
+        return WebSearchResponse(**result)
+
+    @app.post("/api/v1/web/scrape", tags=["Web Tools"], response_model=WebScrapeResponse)
+    async def web_scrape(
+        payload: WebScrapeRequest,
+        request: Request,
+        _: str = Depends(require_web_access),
+    ) -> WebScrapeResponse:
+        web_tools: WebToolsService = request.app.state.web_tools
+        async with app.state.concurrency_gate.acquire():
+            result = await web_tools.scrape(payload.url, max_chars=payload.max_chars)
+        return WebScrapeResponse(**result)
+
+    @app.post("/api/v1/web/map", tags=["Web Tools"], response_model=WebMapResponse)
+    async def web_map(
+        payload: WebMapRequest,
+        request: Request,
+        _: str = Depends(require_web_access),
+    ) -> WebMapResponse:
+        web_tools: WebToolsService = request.app.state.web_tools
+        async with app.state.concurrency_gate.acquire():
+            result = await web_tools.map(
+                payload.url,
+                include_subdomains=payload.include_subdomains,
+                search=payload.search,
+                include_patterns=payload.include_patterns,
+                exclude_patterns=payload.exclude_patterns,
+                limit=payload.limit,
+            )
+        return WebMapResponse(**result)
+
+    @app.post("/api/v1/web/extract", tags=["Web Tools"], response_model=WebExtractResponse)
+    async def web_extract(
+        payload: WebExtractRequest,
+        request: Request,
+        _: str = Depends(require_web_access),
+    ) -> WebExtractResponse:
+        web_tools: WebToolsService = request.app.state.web_tools
+        async with app.state.concurrency_gate.acquire():
+            result = await web_tools.extract(payload.url, payload.extraction_schema)
+        return WebExtractResponse(**result)
+
+    @app.post(
+        "/api/v1/web/crawl",
+        tags=["Web Tools"],
+        status_code=202,
+        response_model=WebCrawlJobResponse,
+    )
+    async def web_crawl_start(
+        payload: WebCrawlRequest,
+        request: Request,
+        _: str = Depends(require_web_access),
+    ) -> WebCrawlJobResponse:
+        web_tools: WebToolsService = request.app.state.web_tools
+        options = payload.options.model_dump(exclude_none=True) if payload.options else None
+        result = await web_tools.start_crawl(payload.url, options)
+        return WebCrawlJobResponse(**result)
+
+    @app.get(
+        "/api/v1/web/crawl/{job_id}",
+        tags=["Web Tools"],
+        response_model=WebCrawlJobResponse,
+    )
+    async def web_crawl_status(
+        job_id: str,
+        request: Request,
+        _: str = Depends(require_web_access),
+    ) -> WebCrawlJobResponse:
+        web_tools: WebToolsService = request.app.state.web_tools
+        return WebCrawlJobResponse(**await web_tools.get_crawl(job_id))
+
+    @app.get(
+        "/api/v1/web/crawl/{job_id}/results",
+        tags=["Web Tools"],
+        response_model=WebCrawlResultsResponse,
+    )
+    async def web_crawl_results(
+        job_id: str,
+        request: Request,
+        offset: int = Query(default=0, ge=0),
+        limit: int = Query(default=20, ge=1, le=1000),
+        _: str = Depends(require_web_access),
+    ) -> WebCrawlResultsResponse:
+        web_tools: WebToolsService = request.app.state.web_tools
+        result = await web_tools.crawl_results(job_id, offset=offset, limit=limit)
+        return WebCrawlResultsResponse(**result)
+
+    @app.post(
+        "/api/v1/web/crawl/{job_id}/cancel",
+        tags=["Web Tools"],
+        response_model=WebCrawlJobResponse,
+    )
+    async def web_crawl_cancel(
+        job_id: str,
+        request: Request,
+        _: str = Depends(require_web_access),
+    ) -> WebCrawlJobResponse:
+        web_tools: WebToolsService = request.app.state.web_tools
+        return WebCrawlJobResponse(**await web_tools.cancel_crawl(job_id))
+
+    @app.get("/api/v1/web/crawls", tags=["Web Tools"])
+    async def web_crawl_list(
+        request: Request,
+        _: str = Depends(require_web_access),
+    ) -> dict[str, Any]:
+        web_tools: WebToolsService = request.app.state.web_tools
+        jobs = await web_tools.list_crawls()
+        return {"jobs": jobs, "count": len(jobs)}
+
+    @app.get("/api/v1/web/stats", tags=["Web Tools"])
+    async def web_tool_stats(
+        request: Request,
+        _: str = Depends(require_web_access),
+    ) -> dict[str, Any]:
+        web_tools: WebToolsService = request.app.state.web_tools
+        return await web_tools.metrics_snapshot()
 
     @app.post("/api/v1/scrape", tags=["Scraping"])
     async def scrape_url(

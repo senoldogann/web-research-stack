@@ -1,6 +1,10 @@
 """Tests for DuckDuckGo search pagination helpers."""
 
-from web_scraper.duckduckgo_search import DuckDuckGoSearcher
+import pytest
+
+from web_scraper.duckduckgo_search import DuckDuckGoBlocked, DuckDuckGoSearcher
+from web_scraper.web_tools.errors import WebToolError
+from web_scraper.web_tools.search import DuckDuckGoSearchAdapter
 
 
 def test_parse_results_extracts_next_page_payload() -> None:
@@ -43,3 +47,32 @@ def test_parse_results_extracts_next_page_payload() -> None:
         "api": "d.js",
         "vqd": "token-123",
     }
+
+
+def test_parse_results_preserves_spacing_around_inline_tags() -> None:
+    searcher = DuckDuckGoSearcher()
+    html = """
+    <div class="result">
+        <a class="result__a" href="https://example.com/free-threading">Docs</a>
+        <a class="result__snippet">Python <b>3.14</b> introduces free-threaded mode in <b>3.14t</b>.</a>
+    </div>
+    """
+
+    results, _ = searcher._parse_results(html)
+
+    assert results[0]["snippet"] == "Python 3.14 introduces free-threaded mode in 3.14t."
+
+
+@pytest.mark.asyncio
+async def test_adapter_reports_bot_detection_as_search_failure() -> None:
+    class _BlockedSearcher:
+        async def search(self, query: str, num_results: int = 10) -> list[dict]:
+            raise DuckDuckGoBlocked("bot check")
+
+    adapter = DuckDuckGoSearchAdapter(_BlockedSearcher())
+
+    with pytest.raises(WebToolError) as exc:
+        await adapter.search("query", 5)
+
+    assert exc.value.code == "search_failed"
+    assert exc.value.detail == "bot_detected"

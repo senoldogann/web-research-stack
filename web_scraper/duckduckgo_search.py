@@ -12,6 +12,10 @@ from web_scraper.config import config
 from web_scraper.stealth import HeaderFactory
 
 
+class DuckDuckGoBlocked(RuntimeError):
+    """DuckDuckGo answered with its bot-detection response."""
+
+
 class DuckDuckGoSearcher:
     """Search DuckDuckGo and extract top results."""
 
@@ -89,7 +93,7 @@ class DuckDuckGoSearcher:
 
                 # If bot detected, HTML endpoint returns 202 instead of 200
                 if response.status_code == 202:
-                    break
+                    raise DuckDuckGoBlocked("DuckDuckGo returned a bot-detection page")
 
                 response.raise_for_status()
 
@@ -173,7 +177,9 @@ class DuckDuckGoSearcher:
             snippet = ""
             snippet_elem = container.find("a", class_="result__snippet")
             if snippet_elem:
-                snippet = snippet_elem.get_text(strip=True)
+                snippet = re.sub(
+                    r"\s+", " ", snippet_elem.get_text("", strip=False)
+                ).strip()
 
             # Skip if missing critical data
             if not title or not url:

@@ -99,9 +99,15 @@ class InMemoryTTLCache:
             self.hits += 1
             return value
 
-    async def set(self, key: str, value: Any) -> None:
+    async def set(
+        self,
+        key: str,
+        value: Any,
+        ttl_seconds: Optional[int] = None,
+    ) -> None:
         """Store a cache value with an expiry timestamp."""
-        expires_at = time.monotonic() + self.ttl_seconds
+        ttl = self.ttl_seconds if ttl_seconds is None else max(int(ttl_seconds), 1)
+        expires_at = time.monotonic() + ttl
         async with self._lock:
             self._entries.pop(key, None)
             self._entries[key] = (expires_at, value)

@@ -19,7 +19,7 @@
 ### Features
 
 - **Dual Interface**: CLI commands and REST API
-- **Local Web Research Tools**: HTTP-first multi-angle search with source/recency ranking, scrape, map, background crawl, and structured extract, exposed over REST and a Dot-ready stdio MCP server (headless-only browser fallback)
+- **Local Web Research Tools**: HTTP-first multi-angle search with field-weighted BM25, weighted angle consensus, freshness filters, caching and provider cooldown, plus scrape, map, background crawl, and structured extract, exposed over REST and a Dot-ready stdio MCP server (headless-only browser fallback)
 - **LLM Research Tool**: AI-powered web research with citations
 - **Async Architecture**: High-performance concurrent scraping
 - **Production Ready**: Docker, monitoring (Prometheus/Grafana), rate limiting, circuit breaker
@@ -132,7 +132,7 @@ MIT License
 ### Özellikler
 
 - **Çift Arayüz**: CLI komutları ve REST API
-- **Yerel Web Araştırma Araçları**: Kaynak/güncellik sıralamalı, çok açılı HTTP öncelikli arama; kazıma, haritalama, arka plan taraması ve yapılandırılmış çıkarım; REST ve Dot'a hazır stdio MCP sunucusu (yalnızca headless tarayıcı yedeği)
+- **Yerel Web Araştırma Araçları**: Alan ağırlıklı BM25, ağırlıklı açı uzlaşması, güncellik filtreleri, önbellek ve sağlayıcı soğuması içeren çok açılı HTTP öncelikli arama; kazıma, haritalama, arka plan taraması ve yapılandırılmış çıkarım; REST ve Dot'a hazır stdio MCP sunucusu (yalnızca headless tarayıcı yedeği)
 - **LLM Araştırma Aracı**: Alıntılı AI destekli web araştırması
 - **Asenkron Mimari**: Yüksek performanslı eşzamanlı kazıma
 - **Üretim Hazır**: Docker, izleme (Prometheus/Grafana), hız sınırlama, circuit breaker

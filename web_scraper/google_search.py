@@ -24,7 +24,6 @@ import time
 from typing import Dict, List, Optional
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
-import httpx
 from bs4 import BeautifulSoup
 
 from web_scraper.config import config
@@ -93,6 +92,12 @@ _CHROME_STATE: Dict[str, object] = {
 }
 _CHROME_IDLE_S = 180.0
 
+# Headless Chrome is refused by Google on this machine; the attempt is retried
+# at most once an hour rather than on every search.
+_HEADLESS_STATE: Dict[str, float] = {"blocked_until": 0.0}
+_HEADLESS_COOLDOWN_S = 3600.0
+_BACKEND_LOGGED = False
+
 
 class GoogleSearcher:
     """Search Google and extract top results."""
@@ -139,16 +144,30 @@ class GoogleSearcher:
         except Exception as exc:  # network error, curl_cffi missing, bot check
             logger.debug("Google HTTP search failed for %r: %s", query, exc)
 
+        global _BACKEND_LOGGED
+
+        # With a window forbidden, only windowless backends are tried: a
+        # refused search must end in an error, never in a visible Chrome.
+        if config.google_allow_visible_browser:
+            paths = ((self._search_chrome, "chrome", "visible"),)
+            paths += ((self._search_camoufox, "camoufox", "none"),)
+        else:
+            paths = ((self._search_camoufox, "camoufox", "none"),)
+            paths += ((self._search_headless_chrome, "chrome-headless", "none"),)
+
         blocked: List[str] = []
-        paths = (self._search_chrome, self._search_camoufox)
-        for path in paths:
+        for path, backend, window in paths:
             if results or not config.google_use_playwright:
                 break
             try:
                 results = await path(query, num_results)
             except GoogleSearchBlocked as exc:
-                # A refused Chrome must not end the search: Camoufox may pass.
-                blocked.append(str(exc))
+                # A refused backend must not end the search: the next may pass.
+                blocked.append(f"{backend}: {exc}")
+                continue
+            if results and not _BACKEND_LOGGED:
+                logger.info("google search backend=%s window=%s", backend, window)
+                _BACKEND_LOGGED = True
 
         if not results:
             detail = f" ({'; '.join(blocked)})" if blocked else ""
@@ -158,6 +177,32 @@ class GoogleSearcher:
             )
 
         return results[:num_results]
+
+    async def warm_up(self) -> None:
+        """Start the browser and open Google once, before the first query.
+
+        A cold Camoufox spends ~13 s on Google's first page (cookies, DNS,
+        first paint); the same page costs ~1 s once warmed.  The API calls
+        this at start-up so the cost is not paid inside a request.
+        """
+        if not config.google_use_playwright:
+            return
+        page = (
+            await self._chrome_page()
+            if config.google_allow_visible_browser
+            else await self._camoufox_page()
+        )
+        if page is None:
+            return
+        async with _browser_lock():
+            try:
+                await page.goto("https://www.google.com/ncr", wait_until="commit", timeout=20000)
+                try:
+                    await page.wait_for_selector("form, div#rso, #search", timeout=15000)
+                except Exception:
+                    pass
+            except Exception as exc:
+                logger.debug("google warm-up failed: %s", exc)
 
     # ------------------------------------------------------------------
     # HTTP path
@@ -333,6 +378,66 @@ class GoogleSearcher:
                 raise GoogleSearchBlocked("Google served a bot check to Chrome")
         return results
 
+    async def _search_headless_chrome(self, query: str, num_results: int) -> List[Dict]:
+        """One-shot headless Chrome: invisible, and usually refused by Google.
+
+        Tried because the refusal is not certain on every network; a refusal is
+        remembered for an hour, so it costs one attempt rather than one per
+        search.  This is the only Chrome path used when a window is not
+        allowed.
+        """
+        now = time.monotonic()
+        if now < _HEADLESS_STATE["blocked_until"]:
+            return []
+
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            return []
+
+        url = self._build_url(query, num_results)
+        timeout_ms = int(config.google_playwright_timeout_seconds * 1000)
+        port = self._free_port()
+        profile = tempfile.mkdtemp(prefix="google-headless-profile-")
+        process = self._start_chrome(port, profile, headless=True)
+        if process is None:
+            shutil.rmtree(profile, ignore_errors=True)
+            return []
+
+        raw: List[Dict] = []
+        html = ""
+        try:
+            await self._wait_for_cdp(port)
+            async with async_playwright() as pw:
+                browser = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
+                context = browser.contexts[0] if browser.contexts else await browser.new_context()
+                page = await context.new_page()
+                try:
+                    await page.goto(url, wait_until="commit", timeout=timeout_ms)
+                    try:
+                        await page.wait_for_function(
+                            "() => document.querySelectorAll('div#rso a h3, div#search a h3').length >= 5",
+                            timeout=4000,
+                        )
+                    except Exception:
+                        pass
+                    raw = await page.evaluate(_EXTRACT_JS)
+                    if not raw:
+                        html = await page.content()
+                finally:
+                    await page.close()
+        finally:
+            self._stop_chrome(process, profile)
+
+        results = await self._results_from_raw(raw)
+        if not results:
+            lowered = html.lower()
+            if "unusual traffic" in lowered or "captcha" in lowered or "enablejs" in lowered:
+                _HEADLESS_STATE["blocked_until"] = time.monotonic() + _HEADLESS_COOLDOWN_S
+                logger.info("headless Chrome was refused; trying it again in an hour")
+            return []
+        return results
+
     async def _chrome_page(self):
         """The shared Chrome tab, started once and minimised at once."""
         state = _CHROME_STATE
@@ -485,7 +590,9 @@ class GoogleSearcher:
                     return matches[-1]
         return None
 
-    def _start_chrome(self, port: int, profile_dir: str) -> Optional[subprocess.Popen]:
+    def _start_chrome(
+        self, port: int, profile_dir: str, headless: Optional[bool] = None
+    ) -> Optional[subprocess.Popen]:
         binary = self._chrome_binary()
         if binary is None:
             return None
@@ -497,9 +604,11 @@ class GoogleSearcher:
             "--no-default-browser-check",
             "--disable-background-networking",
             "--disable-sync",
-            "--window-size=400,300" if not config.google_allow_visible_browser else "--window-size=1366,900",
+            "--window-size=400,300"
+            if not config.google_allow_visible_browser
+            else "--window-size=1366,900",
         ]
-        if self.headless:
+        if self.headless if headless is None else headless:
             args.append("--headless=new")
         if os.environ.get("GOOGLE_CHROME_NO_SANDBOX", "").lower() in ("1", "true", "yes"):
             # Chromium's sandbox needs privileges a container usually lacks.
@@ -526,22 +635,30 @@ class GoogleSearcher:
 
     @staticmethod
     async def _wait_for_cdp(port: int, timeout_s: float = 15.0) -> None:
+        """Wait until Chrome listens for DevTools connections."""
         deadline = time.monotonic() + timeout_s
-        url = f"http://127.0.0.1:{port}/json/version"
         while time.monotonic() < deadline:
             try:
-                async with httpx.AsyncClient(timeout=1.0) as client:
-                    response = await client.get(url)
-                if response.status_code == 200:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.5):
                     return
-            except Exception:
+            except OSError:
                 pass
-            await asyncio.sleep(0.25)
+            await asyncio.sleep(0.1)
         raise GoogleSearchBlocked("Chrome did not start in time")
 
     async def _resolve_links(self, links: List[str]) -> List[str]:
-        """Follow Google's ``/goto?url=`` wrapper to the real address."""
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
+        """Follow Google's ``/goto?url=`` wrapper to the real address.
+
+        curl_cffi is used when it is installed: it keeps the console quiet
+        (httpx logs every request at INFO) and carries the same Chrome
+        fingerprint as the rest of the searcher.
+        """
+        if cffi_requests is None:
+            return list(links)
+
+        async with cffi_requests.AsyncSession(
+            timeout=10.0, impersonate="chrome120", allow_redirects=False
+        ) as client:
 
             async def resolve(link: str) -> str:
                 if "google.com/goto" not in link and "/url?" not in link:

@@ -33,6 +33,10 @@ _STRIP_TAGS = (
     "select",
     "textarea",
 )
+# Page chrome, as elements or as ARIA landmarks: menus, banners, footers, and
+# sidebars repeat on every page of a site and are not the page's content.
+_CHROME_TAGS = ("nav", "header", "footer", "aside")
+_CHROME_ROLES = ("navigation", "banner", "contentinfo", "complementary", "search")
 _BLOCK_TAGS = {
     "address",
     "article",
@@ -46,7 +50,47 @@ _BLOCK_TAGS = {
     "main",
     "section",
 }
-_MIN_WALL_CONFIDENCE = 2
+# Interstitial detection. A challenge page is small and says little; a real page
+# often names "captcha" in its scripts (a login modal, a JSON config), so raw
+# substrings are not evidence. Only widgets in the DOM and phrases in the
+# visible text count, and only on pages too thin to be content.
+_CHALLENGE_PAGE_MAX_BYTES = 100_000
+_CHALLENGE_TEXT_MAX_CHARS = 3_000
+_REFUSAL_BODY_MAX_BYTES = 20_000
+_INVISIBLE_TAGS = ("script", "style", "template")
+_CAPTCHA_WIDGETS = (
+    "g-recaptcha",
+    "recaptcha",
+    "h-captcha",
+    "hcaptcha",
+    "cf-turnstile",
+    "px-captcha",
+)
+_CAPTCHA_FRAMES = (
+    "google.com/recaptcha",
+    "recaptcha.net",
+    "hcaptcha.com",
+    "challenges.cloudflare.com",
+    "captcha-delivery.com",
+)
+_CAPTCHA_PHRASES = ("unusual traffic", "verify you are human", "are you a robot")
+_BLOCK_PHRASES = (
+    "access denied",
+    "just a moment",
+    "checking your browser",
+    "you have been blocked",
+    "attention required",
+    "request blocked",
+)
+_BLOCK_IDS = ("cf-error-details",)
+_WALL_PHRASES = (
+    "sign in to continue",
+    "log in to continue",
+    "sign in to view",
+    "log in to view",
+    "subscribe to continue",
+    "create an account to continue",
+)
 
 
 @dataclass
@@ -54,6 +98,8 @@ class PageLink:
     url: str
     text: str
     kind: str
+    # Inside navigation, a header, a footer, or a sidebar rather than the content.
+    chrome: bool = False
 
 
 @dataclass
@@ -225,6 +271,8 @@ def html_to_markdown(html: str, base_url: str, max_chars: int = 50_000) -> str:
     soup = _soup(html)
     for tag in soup(_STRIP_TAGS):
         tag.decompose()
+    for tag in soup.find_all(attrs={"role": list(_CHROME_ROLES)}):
+        tag.decompose()
 
     root = (
         soup.find("main")
@@ -310,6 +358,8 @@ def _extract_metadata(soup: BeautifulSoup, base_url: str) -> dict[str, Any]:
 def _extract_links(soup: BeautifulSoup, base_url: str, max_links: int) -> list[PageLink]:
     links: list[PageLink] = []
     seen: set[str] = set()
+    chrome = soup.find_all(_CHROME_TAGS) + soup.find_all(attrs={"role": list(_CHROME_ROLES)})
+    chrome_ids = {id(node) for node in chrome}
     for anchor in soup.find_all("a", href=True):
         target = _resolve(base_url, anchor["href"])
         if not target or target in seen:
@@ -322,6 +372,7 @@ def _extract_links(soup: BeautifulSoup, base_url: str, max_links: int) -> list[P
                 kind="internal"
                 if url_in_scope(target, base_url, include_subdomains=False)
                 else "external",
+                chrome=any(id(parent) in chrome_ids for parent in anchor.parents),
             )
         )
         if len(links) >= max_links:
@@ -363,52 +414,93 @@ def needs_browser_render(html: str, markdown: str, min_chars: int = 200) -> bool
     return text_length < max(20, min_chars // 4)
 
 
-def detect_interstitial(html: str, final_url: str) -> Optional[str]:
-    """Classify bot challenges, blocks, and login/pay walls from fetched HTML."""
-    lowered = (html or "").lower()
-    captcha_markers = (
-        "g-recaptcha",
-        "hcaptcha",
-        "cf-turnstile",
-        "recaptcha",
-        "unusual traffic",
-        "verify you are human",
-        "are you a robot",
-        "captcha",
-    )
-    block_markers = (
-        "access denied",
-        "just a moment",
-        "checking your browser",
-        "you have been blocked",
-        "attention required",
-        "cf-error-details",
-        "request blocked",
-    )
-    wall_markers = (
-        "sign in to continue",
-        "log in to continue",
-        "sign in to view",
-        "log in to view",
-        "subscribe to continue",
-        "create an account to continue",
+def _body_bytes(text: str) -> int:
+    # UTF-8 never has fewer bytes than characters, so a long string skips encoding.
+    if len(text) > _CHALLENGE_PAGE_MAX_BYTES:
+        return len(text)
+    return len(text.encode("utf-8", errors="ignore"))
+
+
+def _is_invisible_captcha(node: Tag) -> bool:
+    # reCAPTCHA v3 and invisible widgets score a visitor in the background of a
+    # normal page; they never stand between the visitor and the content.
+    if str(node.get("data-size") or "").lower() == "invisible":
+        return True
+    if "grecaptcha-badge" in " ".join(node.get("class") or []).lower():
+        return True
+    return "size=invisible" in str(node.get("src") or "").lower()
+
+
+def _has_captcha_form(soup: BeautifulSoup) -> bool:
+    # A form that posts to a captcha endpoint exists to pass a challenge.
+    return any(
+        "captcha" in f"{form.get('action') or ''} {form.get('id') or ''}".lower()
+        for form in soup.find_all("form")
     )
 
-    if any(marker in lowered for marker in captcha_markers):
-        return "captcha"
-    if any(marker in lowered for marker in block_markers):
-        return "access_blocked"
-    if any(marker in lowered for marker in wall_markers):
-        return "access_wall"
 
-    soup = _soup(html)
+def _has_captcha_widget(soup: BeautifulSoup) -> bool:
+    for node in soup.find_all(["div", "form", "iframe"]):
+        if _is_invisible_captcha(node):
+            continue
+        marks = f"{' '.join(node.get('class') or [])} {node.get('id') or ''}".lower()
+        if any(widget in marks for widget in _CAPTCHA_WIDGETS):
+            return True
+        if node.name == "iframe":
+            source = str(node.get("src") or "").lower()
+            if any(frame in source for frame in _CAPTCHA_FRAMES):
+                return True
+    return _has_captcha_form(soup)
+
+
+def _visible_text(soup: BeautifulSoup) -> str:
+    return _clean_text(soup.get_text(" ")).lower()
+
+
+def detect_interstitial(html: str, final_url: str, status_code: int = 200) -> Optional[str]:
+    """Classify bot challenges, blocks, and login/pay walls from fetched HTML.
+
+    A captcha needs evidence a visitor would meet: a widget in the DOM or a
+    challenge phrase in the visible text, never a word inside a script. A
+    successful response over ``_CHALLENGE_PAGE_MAX_BYTES``, or one with more
+    visible text than ``_CHALLENGE_TEXT_MAX_CHARS``, is content, not a
+    challenge, with one exception: a page that says little and carries a form
+    posting to a captcha endpoint (Reddit inlines ~160 KB of assets around
+    one). A short 401/403 page is an edge refusal (``access_blocked``).
+    """
+    raw = html or ""
+    size = _body_bytes(raw)
+    succeeded = 200 <= status_code < 300
+    soup = _soup(raw)
+    for tag in soup(_INVISIBLE_TAGS):
+        tag.decompose()
+
+    if succeeded and size > _CHALLENGE_PAGE_MAX_BYTES:
+        if _has_captcha_form(soup) and len(_visible_text(soup)) <= _CHALLENGE_TEXT_MAX_CHARS:
+            return "captcha"
+    else:
+        text = _visible_text(soup)
+        if not succeeded or len(text) <= _CHALLENGE_TEXT_MAX_CHARS:
+            if _has_captcha_widget(soup) or any(phrase in text for phrase in _CAPTCHA_PHRASES):
+                return "captcha"
+            if soup.find(id=list(_BLOCK_IDS)) or any(phrase in text for phrase in _BLOCK_PHRASES):
+                return "access_blocked"
+            if any(phrase in text for phrase in _WALL_PHRASES):
+                return "access_wall"
+        if (
+            status_code in (401, 403)
+            and size <= _REFUSAL_BODY_MAX_BYTES
+            and not raw.lstrip().startswith(("{", "["))
+        ):
+            return "access_blocked"
+
     title = _clean_text(soup.title.get_text()).lower() if soup.title else ""
     path = urlsplit(final_url).path.lower()
     login_path = bool(re.search(r"/(login|signin|sign-in|log-in|auth)(/|$)", path))
     login_title = any(value in title for value in ("sign in", "log in", "login"))
     if login_path and login_title:
         return "access_wall"
-    if login_title and lowered.count("password") >= _MIN_WALL_CONFIDENCE:
+    if login_title and soup.find("input", attrs={"type": "password"}):
         return "access_wall"
     return None
 

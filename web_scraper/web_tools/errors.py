@@ -11,6 +11,8 @@ _STATUS_CODES = {
     "timeout": 504,
     "too_large": 413,
     "unsupported_content_type": 415,
+    "pdf_encrypted": 422,
+    "pdf_invalid": 422,
     "http_error": 502,
     "network_error": 502,
     "browser_unavailable": 503,

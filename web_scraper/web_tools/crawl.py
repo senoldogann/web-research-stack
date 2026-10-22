@@ -9,6 +9,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Mapping, Optional
+from urllib.parse import urlsplit
 
 from web_scraper.web_tools.errors import WebToolError
 from web_scraper.web_tools.settings import WebToolsSettings
@@ -17,6 +18,7 @@ from web_scraper.web_tools.urls import (
     canonicalize_url,
     content_hash,
     matches_url_filters,
+    upgrade_to_https,
     url_in_scope,
 )
 
@@ -105,6 +107,9 @@ class CrawlJob:
     results: list[dict[str, Any]] = field(default_factory=list)
     errors: list[dict[str, Any]] = field(default_factory=list)
     duplicate_entries: list[dict[str, str]] = field(default_factory=list)
+    # https URLs this job made from http links, and hosts that refused https.
+    upgraded: set[str] = field(default_factory=set)
+    http_hosts: set[str] = field(default_factory=set)
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     tasks: set[asyncio.Task[Any]] = field(default_factory=set)
     run_task: Optional[asyncio.Task[Any]] = None
@@ -158,7 +163,14 @@ class CrawlManager:
         self._robots = robots
         self._jobs: dict[str, CrawlJob] = {}
 
-    async def create(self, url: str, options: CrawlOptions) -> dict[str, Any]:
+    async def create(
+        self,
+        url: str,
+        options: CrawlOptions,
+        *,
+        upgraded: bool = False,
+    ) -> dict[str, Any]:
+        """Queue a crawl of ``url``; ``upgraded`` marks a seed rewritten from http."""
         self._prune()
         if len(self._jobs) >= self._settings.max_crawl_jobs:
             raise WebToolError(
@@ -166,6 +178,8 @@ class CrawlManager:
                 "Too many crawl jobs are retained; wait for one to expire",
             )
         job = CrawlJob(job_id=uuid.uuid4().hex, url=url, options=options)
+        if upgraded:
+            job.upgraded.add(url)
         self._jobs[job.job_id] = job
         job.run_task = asyncio.create_task(self._run(job))
         return job.snapshot()
@@ -241,7 +255,8 @@ class CrawlManager:
         job.started_at = _iso(time.time())
         job.updated_ts = time.time()
         queue: deque[tuple[str, int]] = deque([(job.url, 0)])
-        seen_urls = {job.url}
+        # One entry per host and path: http and https are the same page.
+        seen_urls = {_identity(job.url)}
         seen_hashes: dict[str, str] = {}
 
         try:
@@ -294,12 +309,13 @@ class CrawlManager:
                     for link, depth in outcome:
                         if depth > job.options.max_depth:
                             continue
-                        if link in seen_urls:
+                        key = _identity(link)
+                        if key in seen_urls:
                             continue
                         if not self._in_scope(link, job.url, job.options):
                             continue
-                        seen_urls.add(link)
-                        queue.append((link, depth))
+                        seen_urls.add(key)
+                        queue.append((self._target(job, link), depth))
                         job.discovered += 1
 
                 job.queue_size = len(queue)
@@ -329,7 +345,7 @@ class CrawlManager:
         if job.cancel_event.is_set():
             return None
         try:
-            payload = await self._loader(url)
+            payload = await self._load(job, url)
         except asyncio.CancelledError:
             raise
         except WebToolError as exc:
@@ -369,6 +385,24 @@ class CrawlManager:
         if depth >= job.options.max_depth:
             return []
         return [(link, depth + 1) for link in payload.get("links", [])]
+
+    async def _load(self, job: CrawlJob, url: str) -> dict[str, Any]:
+        try:
+            return await self._loader(url)
+        except WebToolError as exc:
+            if exc.code != "network_error" or url not in job.upgraded:
+                raise
+        # The host does not answer https: crawl it over http, as its links said.
+        job.http_hosts.add((urlsplit(url).hostname or "").lower())
+        return await self._loader("http://" + url.split("://", 1)[1])
+
+    def _target(self, job: CrawlJob, url: str) -> str:
+        """The URL to fetch for a link: https unless its host refused https."""
+        target = upgrade_to_https(url)
+        if target == url or (urlsplit(url).hostname or "").lower() in job.http_hosts:
+            return url
+        job.upgraded.add(target)
+        return target
 
     def _in_scope(self, url: str, base: str, options: CrawlOptions) -> bool:
         if not url_in_scope(url, base, options.include_subdomains):
@@ -430,8 +464,13 @@ def _string_list(value: Any) -> list[str]:
 
 
 def canonical_target(url: str) -> str:
-    """Canonicalise a crawl target and classify failures as user errors."""
+    """Canonicalise a crawl target on https and classify failures as user errors."""
     try:
-        return canonicalize_url(url)
+        return upgrade_to_https(canonicalize_url(url))
     except UnsafeUrlError as exc:
         raise WebToolError("unsafe_target", str(exc), url=url) from exc
+
+
+def _identity(url: str) -> str:
+    # Canonical URLs differ only by scheme when they name the same page.
+    return url.split("://", 1)[-1]

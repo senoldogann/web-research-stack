@@ -109,6 +109,8 @@ def _service(
     resolved_settings = settings or WebToolsSettings(
         search_provider="fake",
         search_angle_delay_ms=0,
+        search_jitter_min_ms=0,
+        search_jitter_max_ms=0,
     )
     adapters = {search.name: search} if search is not None else {}
     return WebToolsService(
@@ -202,10 +204,10 @@ async def test_browser_failure_keeps_partial_http_content_with_warning() -> None
 async def test_search_canonicalises_deduplicates_and_drops_unsafe_results() -> None:
     search = FakeSearch(
         [
-            SearchResult("One", "https://EXAMPLE.com/a/", "first", "example"),
-            SearchResult("Duplicate", "https://example.com/a", "dup", "example"),
-            SearchResult("Unsafe", "http://127.0.0.1/admin", "bad", "local"),
-            SearchResult("Two", "https://example.com/b", "second", "example"),
+            SearchResult("One", "https://EXAMPLE.com/a/", "first query", "example"),
+            SearchResult("Duplicate", "https://example.com/a", "dup query", "example"),
+            SearchResult("Unsafe", "http://127.0.0.1/admin", "bad query", "local"),
+            SearchResult("Two", "https://example.com/b", "second query", "example"),
         ]
     )
     service = _service(FakeFetcher({}), search=search)

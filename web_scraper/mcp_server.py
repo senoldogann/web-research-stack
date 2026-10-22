@@ -143,9 +143,13 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
                 "name": "web_scrape",
                 "description": (
                     "Fetch one public URL HTTP-first and return clean Markdown, title, "
-                    "description, canonical URL, status, links, metadata, content hash, and "
-                    "stage timings. A shared headless browser is used only for JavaScript "
-                    "shells or access interstitials; CAPTCHA and login walls fail fast."
+                    "description, canonical URL, status, up to 50 links from the page content "
+                    "(menus, headers, footers, and sidebars left out; links_truncated says "
+                    "more exist, web_map lists them all), metadata, content hash, and stage "
+                    "timings. A shared headless browser is used only for JavaScript "
+                    "shells or access interstitials; CAPTCHA and login walls fail fast. A PDF "
+                    "comes back as Markdown text with content_type application/pdf and its "
+                    "page count in pages."
                 ),
                 "inputSchema": WebScrapeRequest.model_json_schema(),
                 "annotations": _annotations(

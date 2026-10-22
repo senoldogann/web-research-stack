@@ -33,8 +33,9 @@ from web_scraper.web_tools.discovery import (
     rank_candidates,
 )
 from web_scraper.web_tools.errors import WebToolError
-from web_scraper.web_tools.fetcher import FetchError, HostGate, SafeFetcher
+from web_scraper.web_tools.fetcher import FetchError, FetchResult, HostGate, SafeFetcher
 from web_scraper.web_tools.metrics import LatencyTracker, WebToolsMetrics
+from web_scraper.web_tools.pdf import PDF_CONTENT_TYPE, PdfError, extract_pdf
 from web_scraper.web_tools.robots import RobotsPolicy
 from web_scraper.web_tools.search import (
     DuckDuckGoSearchAdapter,
@@ -64,6 +65,7 @@ class LoadedDocument:
     fetched_with: str
     warnings: list[str] = field(default_factory=list)
     timings: dict[str, float] = field(default_factory=dict)
+    pages: Optional[int] = None
 
 
 class WebToolsService:
@@ -599,6 +601,8 @@ class WebToolsService:
 
         self.metrics.observe("http_fetch", fetched.total_ms, mode="http")
         self.metrics.observe("http_network", fetched.network_ms, mode="http")
+        if fetched.content_type == PDF_CONTENT_TYPE:
+            return await self._pdf_document(fetched, max_chars, started)
 
         extraction_started = time.perf_counter()
         page = extract_page(
@@ -651,6 +655,70 @@ class WebToolsService:
 
         document.timings["total_ms"] = round((time.perf_counter() - started) * 1000, 2)
         return document
+
+    async def _pdf_document(
+        self,
+        fetched: FetchResult,
+        max_chars: int,
+        started: float,
+    ) -> LoadedDocument:
+        extraction_started = time.perf_counter()
+        try:
+            # pypdf is pure Python: keep it off the event loop that serves other calls.
+            pdf = await asyncio.wait_for(
+                asyncio.to_thread(extract_pdf, fetched.content, max_chars=max_chars),
+                timeout=self.settings.fetch_timeout_seconds,
+            )
+        except asyncio.TimeoutError as exc:
+            raise WebToolError(
+                "timeout",
+                "PDF text extraction timed out",
+                url=fetched.final_url,
+                status_code=fetched.status_code,
+                detail="pdf_extract_timeout",
+            ) from exc
+        except PdfError as exc:
+            raise WebToolError(
+                exc.code,
+                str(exc),
+                url=fetched.final_url,
+                status_code=fetched.status_code,
+                detail=exc.detail,
+            ) from exc
+        extract_ms = (time.perf_counter() - extraction_started) * 1000
+        self.metrics.observe("extraction", extract_ms, mode="pdf")
+
+        try:
+            canonical = canonicalize_url(fetched.final_url)
+        except UnsafeUrlError:
+            canonical = fetched.final_url
+        page = ParsedPage(
+            title=pdf.title,
+            description=pdf.description,
+            canonical_url=canonical,
+            markdown=pdf.markdown,
+            metadata={"canonical_url": canonical, "pdf": pdf.metadata},
+        )
+        warnings = list(pdf.warnings)
+        if not pdf.markdown.strip():
+            warnings.append("empty_content")
+        return LoadedDocument(
+            final_url=fetched.final_url,
+            status_code=fetched.status_code,
+            content_type=PDF_CONTENT_TYPE,
+            html="",
+            page=page,
+            fetched_with="http",
+            warnings=warnings,
+            timings={
+                "network_ms": round(fetched.network_ms, 2),
+                "http_ms": round(fetched.total_ms, 2),
+                "extract_ms": round(extract_ms, 2),
+                "browser_ms": 0.0,
+                "total_ms": round((time.perf_counter() - started) * 1000, 2),
+            },
+            pages=pdf.pages,
+        )
 
     async def _render_document(
         self,
@@ -759,7 +827,7 @@ class WebToolsService:
         )
 
     def _page_payload(self, document: LoadedDocument, requested: str) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "url": document.final_url,
             "requested_url": requested,
             "title": document.page.title,
@@ -779,6 +847,9 @@ class WebToolsService:
             "warnings": list(document.warnings),
             "timings": dict(document.timings),
         }
+        if document.pages is not None:
+            payload["pages"] = document.pages
+        return payload
 
     def _markdown_limit(self, value: Optional[int]) -> int:
         if value is None:

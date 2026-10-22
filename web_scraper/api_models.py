@@ -313,6 +313,7 @@ class WebScrapeResponse(BaseModel):
     cache_hit: bool = False
     warnings: List[str] = Field(default_factory=list)
     timings: Dict[str, float]
+    pages: Optional[int] = Field(default=None, description="Page count of a PDF document")
 
 
 class WebMapRequest(BaseModel):

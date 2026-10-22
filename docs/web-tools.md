@@ -488,3 +488,21 @@ Behavior changes from live testing of the tools.
   to one headless render; a JSON 401/403 stays an `http_error`.
 - A login wall needs a login title plus a login path or a password field; the
   word "password" in scripts no longer counts.
+
+### PDF documents
+
+- `web_scrape` reads PDFs instead of refusing them as `unsupported_content_type`.
+  A response is a PDF when it says `application/pdf` (or `application/x-pdf`) or
+  its body starts with `%PDF-`. The download stays inside `MAX_RESPONSE_BYTES`.
+- pypdf extracts the text off the event loop, page by page, into Markdown with a
+  `## Page N` section per page, until `max_chars` is reached (at most 500 pages
+  are read). The response carries `content_type: "application/pdf"`, `pages`
+  (the document's full page count), the PDF's title when its metadata has a
+  real one, and its author, dates, and producer under `metadata.pdf`.
+- Warnings: `pdf_truncated` when pages were left unread, `pdf_no_text` for a
+  scanned PDF without a text layer.
+- Errors: `pdf_encrypted` for a PDF that needs a user password (one with only an
+  owner password opens normally; AES needs the optional `cryptography`
+  package, which this environment does not install), `pdf_invalid` for one
+  that cannot be parsed, and `timeout` (`pdf_extract_timeout`) when extraction
+  takes longer than `FETCH_TIMEOUT_SECONDS`. Both PDF codes map to HTTP 422.

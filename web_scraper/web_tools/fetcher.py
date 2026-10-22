@@ -13,6 +13,7 @@ import httpx
 
 from web_scraper.network_safety import UnsafeTargetError, validate_outbound_url
 from web_scraper.web_tools.content import detect_interstitial
+from web_scraper.web_tools.pdf import PDF_CONTENT_TYPE, looks_like_pdf
 from web_scraper.web_tools.urls import UnsafeUrlError, normalize_request_url
 
 _RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504}
@@ -81,6 +82,8 @@ class FetchResult:
     network_ms: float = 0.0
     total_ms: float = 0.0
     attempts: int = 1
+    # Raw body of a binary document (a PDF); ``html`` is empty then.
+    content: bytes = b""
 
 
 @dataclass
@@ -286,6 +289,25 @@ class SafeFetcher:
                                 retryable=status in _RETRYABLE_STATUS,
                             )
 
+                        safe_headers = {
+                            key: value
+                            for key, value in response.headers.items()
+                            if key.lower() in _SAFE_RESPONSE_HEADERS
+                        }
+                        if looks_like_pdf(content_type, body):
+                            return FetchResult(
+                                url=original_url,
+                                final_url=normalize_request_url(str(response.url)),
+                                status_code=status,
+                                content_type=PDF_CONTENT_TYPE,
+                                html="",
+                                headers=safe_headers,
+                                network_ms=network_ms,
+                                total_ms=(time.monotonic() - started) * 1000,
+                                attempts=attempts,
+                                content=body,
+                            )
+
                         if not self._is_textual(content_type):
                             raise FetchError(
                                 "unsupported_content_type",
@@ -306,11 +328,6 @@ class SafeFetcher:
                                 detail=interstitial,
                             )
 
-                        safe_headers = {
-                            key: value
-                            for key, value in response.headers.items()
-                            if key.lower() in _SAFE_RESPONSE_HEADERS
-                        }
                         return FetchResult(
                             url=original_url,
                             final_url=normalize_request_url(str(response.url)),

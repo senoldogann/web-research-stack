@@ -101,7 +101,7 @@ async def test_search_raises_when_every_path_is_blocked(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_search_falls_back_to_the_browser(monkeypatch) -> None:
+async def test_search_falls_back_to_the_browser_when_allowed(monkeypatch) -> None:
     searcher = GoogleSearcher()
 
     async def no_results(query: str, num_results: int):
@@ -117,12 +117,64 @@ async def test_search_falls_back_to_the_browser(monkeypatch) -> None:
             }
         ]
 
+    monkeypatch.setattr(config, "google_allow_visible_browser", True)
     monkeypatch.setattr(searcher, "_search_http", no_results)
+    monkeypatch.setattr(searcher, "_search_camoufox", no_results)
     monkeypatch.setattr(searcher, "_search_browser", browser_results)
 
     results = await searcher.search("anything")
 
     assert [result["url"] for result in results] == ["https://example.com/browser"]
+
+
+@pytest.mark.asyncio
+async def test_no_visible_browser_unless_it_is_allowed(monkeypatch) -> None:
+    """A visible Chrome window must never open on its own."""
+    searcher = GoogleSearcher()
+    opened = []
+
+    async def no_results(query: str, num_results: int):
+        return []
+
+    async def browser(*args):
+        opened.append(True)
+        return []
+
+    monkeypatch.setattr(config, "google_allow_visible_browser", False)
+    monkeypatch.setattr(searcher, "_search_http", no_results)
+    monkeypatch.setattr(searcher, "_search_camoufox", no_results)
+    monkeypatch.setattr(searcher, "_search_browser", browser)
+
+    with pytest.raises(GoogleSearchBlocked):
+        await searcher.search("anything")
+
+    assert opened == []
+
+
+@pytest.mark.asyncio
+async def test_headless_camoufox_comes_before_the_visible_browser(monkeypatch) -> None:
+    searcher = GoogleSearcher()
+    opened = []
+
+    async def no_results(query: str, num_results: int):
+        return []
+
+    async def camoufox_results(query: str, num_results: int):
+        return [{"title": "headless", "url": "https://example.com/h", "snippet": "", "source": "x"}]
+
+    async def browser(*args):
+        opened.append(True)
+        return []
+
+    monkeypatch.setattr(config, "google_allow_visible_browser", True)
+    monkeypatch.setattr(searcher, "_search_http", no_results)
+    monkeypatch.setattr(searcher, "_search_camoufox", camoufox_results)
+    monkeypatch.setattr(searcher, "_search_browser", browser)
+
+    results = await searcher.search("anything")
+
+    assert [result["url"] for result in results] == ["https://example.com/h"]
+    assert opened == []
 
 
 @pytest.mark.asyncio

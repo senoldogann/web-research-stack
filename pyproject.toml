@@ -52,6 +52,11 @@ playwright = [
     "playwright-stealth>=1.0.6",
 ]
 
+# The default Google path: a headless Firefox with a coherent fingerprint.
+camoufox = [
+    "camoufox[geoip]>=0.4.0",
+]
+
 redis = [
     "redis[hiredis]>=5.0.0",
 ]

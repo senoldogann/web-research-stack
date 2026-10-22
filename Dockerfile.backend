@@ -3,8 +3,10 @@ FROM python:3.13-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    # Google search runs a visible Chromium on the virtual screen below.
-    GOOGLE_PLAYWRIGHT_HEADLESS=false \
+    # Inside the container there is no screen to disturb: the Chrome fallback
+    # runs on the Xvfb display below, so it is allowed.  With Camoufox
+    # installed (the local default) this flag is never reached.
+    GOOGLE_ALLOW_VISIBLE_BROWSER=true \
     GOOGLE_CHROME_NO_SANDBOX=true \
     # Store Playwright browser binaries inside /app so they are
     # accessible by the non-root appuser after chown below.

@@ -54,6 +54,35 @@ def _browser_lock() -> asyncio.Semaphore:
     return _BROWSER_LOCK
 
 
+# Read the result list out of the rendered page.  Anchors carry a /goto?url=
+# wrapper; the caller resolves them.  Shared by Camoufox and Chrome.
+_EXTRACT_JS = """() => {
+  const seen = new Set();
+  const out = [];
+  document.querySelectorAll('div#rso a h3, div#search a h3').forEach(h => {
+    const a = h.closest('a');
+    if (!a || !a.href || seen.has(a.href)) return;
+    const block = h.closest('div.MjjYud, div.g, div[data-hveid]');
+    const snip = block
+      ? block.querySelector('div.VwiC3b, div.IsZvec, span.aCOpRe, div[data-sncf]')
+      : null;
+    seen.add(a.href);
+    out.push({
+      title: (h.innerText || '').trim(),
+      href: a.href,
+      snippet: snip ? (snip.innerText || '').trim().slice(0, 300) : ''
+    });
+  });
+  return out;
+}"""
+
+# The shared Camoufox: starting it costs ~6 s, a search in it under one.
+# It holds ~2 GB across its processes, so it shuts down after a few idle
+# minutes rather than sitting in a desktop agent's memory all day.
+_CAMOUFOX_STATE: Dict[str, object] = {"browser": None, "manager": None, "last": 0.0}
+_CAMOUFOX_IDLE_S = 180.0
+
+
 class GoogleSearcher:
     """Search Google and extract top results."""
 
@@ -84,9 +113,13 @@ class GoogleSearcher:
     async def search(self, query: str, num_results: int = 10) -> List[Dict]:
         """Search Google and return top results.
 
-        Tries HTTP first, then a rendered browser.  Raises
-        ``GoogleSearchBlocked`` when both paths fail, so callers can tell
-        "Google refused" from "Google found nothing".
+        The browser paths run without a visible window: Camoufox (a patched
+        Firefox with a coherent fingerprint) passes Google while headless
+        Chromium does not.  A window is opened only when the caller asked for
+        it with ``GOOGLE_ALLOW_VISIBLE_BROWSER=true``.
+
+        Raises ``GoogleSearchBlocked`` when every path fails, so callers can
+        tell "Google refused" from "Google found nothing".
         """
         results: List[Dict] = []
 
@@ -96,6 +129,9 @@ class GoogleSearcher:
             logger.debug("Google HTTP search failed for %r: %s", query, exc)
 
         if not results and config.google_use_playwright:
+            results = await self._search_camoufox(query, num_results)
+
+        if not results and config.google_use_playwright and config.google_allow_visible_browser:
             results = await self._search_browser(query, num_results)
 
         if not results:
@@ -124,7 +160,120 @@ class GoogleSearcher:
         return self._parse_results(response.text)
 
     # ------------------------------------------------------------------
-    # Browser path
+    # Camoufox path: headless, no window
+    # ------------------------------------------------------------------
+
+    async def _search_camoufox(self, query: str, num_results: int) -> List[Dict]:
+        """Search through a headless Camoufox, a Firefox built to look ordinary.
+
+        Headless Chromium is caught by Google within a request; Camoufox
+        spoofs the whole fingerprint (WebGL, fonts, screen, navigator), so the
+        same query comes back with real results and no window on screen.
+        """
+        page = await self._camoufox_page()
+        if page is None:
+            return []
+
+        url = self._build_url(query, num_results)
+        timeout_ms = int(config.google_playwright_timeout_seconds * 1000)
+
+        async with _browser_lock():
+            await page.goto(url, wait_until="commit", timeout=timeout_ms)
+            try:
+                await page.wait_for_selector("div#rso, div#search", timeout=timeout_ms // 2)
+            except Exception:
+                pass
+            try:
+                await page.wait_for_function(
+                    "() => document.querySelectorAll('div#rso a h3, div#search a h3').length >= 5",
+                    timeout=3000,
+                )
+            except Exception:
+                pass
+
+            raw = await page.evaluate(_EXTRACT_JS)
+            html = await page.content() if not raw else ""
+
+        results = await self._results_from_raw(raw)
+        if not results:
+            lowered = html.lower()
+            if "unusual traffic" in lowered or "captcha" in lowered:
+                raise GoogleSearchBlocked("Google served a bot check to Camoufox")
+        return results
+
+    async def _camoufox_page(self):
+        """The tab every search reuses: a new page per query costs seconds."""
+        browser = await self._camoufox_browser()
+        if browser is None:
+            return None
+        state = _CAMOUFOX_STATE
+        page = state.get("page")
+        if page is None or page.is_closed():
+            page = await browser.new_page()
+            state["page"] = page
+        return page
+
+    async def _camoufox_browser(self):
+        """One Camoufox for the whole process: starting it costs ~6 seconds."""
+        state = _CAMOUFOX_STATE
+        now = time.monotonic()
+
+        if state["browser"] is not None and now - float(state["last"]) > _CAMOUFOX_IDLE_S:
+            await self.close_camoufox()
+
+        if state["browser"] is None:
+            try:
+                from camoufox.async_api import AsyncCamoufox
+            except ImportError:
+                logger.debug("camoufox is not installed; skipping the headless path")
+                return None
+            try:
+                manager = AsyncCamoufox(headless=True, humanize=True)
+                state["browser"] = await manager.__aenter__()
+                state["manager"] = manager
+            except Exception as exc:
+                logger.warning("Camoufox could not start: %s", exc)
+                state["browser"] = None
+                return None
+
+        state["last"] = now
+        return state["browser"]
+
+    async def close_camoufox(self) -> None:
+        """Shut the shared Camoufox down (idle timeout, or at process end)."""
+        state = _CAMOUFOX_STATE
+        manager = state.get("manager")
+        state["browser"] = None
+        state["manager"] = None
+        state["page"] = None
+        state["last"] = 0.0
+        if manager is not None:
+            try:
+                await manager.__aexit__(None, None, None)
+            except Exception:
+                pass
+
+    async def _results_from_raw(self, raw) -> List[Dict]:
+        results: List[Dict] = []
+        links = [item for item in raw if item.get("title") and item.get("href")]
+        resolved = await self._resolve_links([item["href"] for item in links])
+
+        for item, real_url in zip(links, resolved):
+            url_value = self._clean_url(real_url)
+            if not url_value:
+                continue
+            results.append(
+                {
+                    "title": item["title"],
+                    "url": url_value,
+                    "snippet": item.get("snippet", ""),
+                    "source": self._get_source_name(url_value),
+                }
+            )
+        return results
+
+    # ------------------------------------------------------------------
+    # Chrome path: visible window, only when asked for
     # ------------------------------------------------------------------
 
     async def _search_browser(self, query: str, num_results: int) -> List[Dict]:
@@ -177,49 +326,14 @@ class GoogleSearcher:
                         pass
                     await page.wait_for_timeout(300)
 
-                    raw = await page.evaluate(
-                        """() => {
-                          const seen = new Set();
-                          const out = [];
-                          document.querySelectorAll('div#rso a h3, div#search a h3').forEach(h => {
-                            const a = h.closest('a');
-                            if (!a || !a.href || seen.has(a.href)) return;
-                            const block = h.closest('div.MjjYud, div.g, div[data-hveid]');
-                            const snip = block
-                              ? block.querySelector('div.VwiC3b, div.IsZvec, span.aCOpRe, div[data-sncf]')
-                              : null;
-                            seen.add(a.href);
-                            out.push({
-                              title: (h.innerText || '').trim(),
-                              href: a.href,
-                              snippet: snip ? (snip.innerText || '').trim().slice(0, 300) : ''
-                            });
-                          });
-                          return out;
-                        }"""
-                    )
+                    raw = await page.evaluate(_EXTRACT_JS)
                     html = await page.content()
                 finally:
                     await page.close()
         finally:
             self._stop_chrome(process, profile_dir)
 
-        results: List[Dict] = []
-        links = [item for item in raw if item.get("title") and item.get("href")]
-        resolved = await self._resolve_links([item["href"] for item in links])
-
-        for item, real_url in zip(links, resolved):
-            url_value = self._clean_url(real_url)
-            if not url_value:
-                continue
-            results.append(
-                {
-                    "title": item["title"],
-                    "url": url_value,
-                    "snippet": item.get("snippet", ""),
-                    "source": self._get_source_name(url_value),
-                }
-            )
+        results = await self._results_from_raw(raw)
 
         if not results:
             lowered = html.lower()

@@ -111,8 +111,11 @@ class Config:
     # channel uses Playwright's bundled Chromium.
     google_use_playwright: bool = True
     google_playwright_timeout_seconds: float = 30.0
-    # Google detects headless Chrome ("unusual traffic"), so the default is a
-    # normal window.  On a server run it under Xvfb with headless turned on.
+    # A visible Chrome is the last resort and only when asked for: the default
+    # path is headless Camoufox, which Google answers without a window.
+    google_allow_visible_browser: bool = False
+    # Google detects headless Chrome ("unusual traffic"), so this only matters
+    # for the visible-Chrome fallback.
     google_playwright_headless: bool = False
     google_browser_channel: str = "chrome"
     max_query_length: int = 500
@@ -405,6 +408,9 @@ class Config:
             google_use_playwright=_parse_bool(os.getenv("GOOGLE_USE_PLAYWRIGHT"), True),
             google_playwright_timeout_seconds=_safe_float(
                 os.getenv("GOOGLE_PLAYWRIGHT_TIMEOUT_SECONDS"), 30.0
+            ),
+            google_allow_visible_browser=_parse_bool(
+                os.getenv("GOOGLE_ALLOW_VISIBLE_BROWSER"), False
             ),
             google_playwright_headless=_parse_bool(os.getenv("GOOGLE_PLAYWRIGHT_HEADLESS"), False),
             google_browser_channel=os.getenv("GOOGLE_BROWSER_CHANNEL", "chrome"),

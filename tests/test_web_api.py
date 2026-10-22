@@ -181,9 +181,7 @@ def test_search_route_forwards_query_and_limit(
     ]
 
 
-def test_search_route_forwards_depth(
-    web_client: TestClient, fake_tools: FakeWebTools
-) -> None:
+def test_search_route_forwards_depth(web_client: TestClient, fake_tools: FakeWebTools) -> None:
     response = web_client.post(
         "/api/v1/web/search",
         headers=HEADERS,

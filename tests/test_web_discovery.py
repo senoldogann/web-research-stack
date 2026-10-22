@@ -71,9 +71,7 @@ def _candidate(
 def test_fast_builds_one_angle() -> None:
     angles = build_search_angles("python asyncio", "fast", year=2026)
 
-    assert [(angle.name, angle.query) for angle in angles] == [
-        ("base", "python asyncio")
-    ]
+    assert [(angle.name, angle.query) for angle in angles] == [("base", "python asyncio")]
 
 
 def test_discover_builds_base_current_and_background_angles() -> None:
@@ -454,9 +452,7 @@ async def test_discover_keeps_enrichment_results_when_base_query_fails() -> None
 
     result = await _service(search).search("asyncio", limit=5)
 
-    assert [item["url"] for item in result["results"]] == [
-        "https://news.example.org/asyncio"
-    ]
+    assert [item["url"] for item in result["results"]] == ["https://news.example.org/asyncio"]
     assert result["warnings"] == ["base_query_failed"]
 
 

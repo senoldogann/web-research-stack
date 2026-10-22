@@ -282,18 +282,16 @@ class WebToolsService:
             raise WebToolError("search_failed", "Search provider returned no usable results")
 
         if any(
-            report["angle"] == "base" and report["error"] is not None
-            for report in query_reports
+            report["angle"] == "base" and report["error"] is not None for report in query_reports
         ):
             warnings.append("base_query_failed")
 
         search_ms = (time.perf_counter() - started) * 1000
         ranking_started = time.perf_counter()
         if resolved_depth == "fast":
-            results = [
-                annotate_candidate(cleaned, candidate)
-                for candidate in candidates.values()
-            ][:resolved_limit]
+            results = [annotate_candidate(cleaned, candidate) for candidate in candidates.values()][
+                :resolved_limit
+            ]
         else:
             results = rank_candidates(cleaned, candidates.values(), resolved_limit)
         ranking_ms = (time.perf_counter() - ranking_started) * 1000

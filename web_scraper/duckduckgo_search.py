@@ -177,9 +177,7 @@ class DuckDuckGoSearcher:
             snippet = ""
             snippet_elem = container.find("a", class_="result__snippet")
             if snippet_elem:
-                snippet = re.sub(
-                    r"\s+", " ", snippet_elem.get_text("", strip=False)
-                ).strip()
+                snippet = re.sub(r"\s+", " ", snippet_elem.get_text("", strip=False)).strip()
 
             # Skip if missing critical data
             if not title or not url:

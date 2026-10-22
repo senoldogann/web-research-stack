@@ -335,11 +335,7 @@ def build_search_angles(
         angles.append(SearchAngle("background", background))
 
     if normalized_depth == "deep":
-        suffix = (
-            "official documentation"
-            if _is_technical_query(base)
-            else "primary sources"
-        )
+        suffix = "official documentation" if _is_technical_query(base) else "primary sources"
         primary = _fit_suffix(base, suffix, max_length)
         if primary:
             angles.append(SearchAngle("primary", primary))
@@ -354,14 +350,9 @@ def query_tokens(text: str) -> set[str]:
     with ``İ``/``ı`` matches a result written with ``i`` (and vice versa).
     """
     tokens = {
-        _normalise_token(match.group(0).strip(".-+"))
-        for match in _TOKEN_RE.finditer(text or "")
+        _normalise_token(match.group(0).strip(".-+")) for match in _TOKEN_RE.finditer(text or "")
     }
-    meaningful = {
-        token
-        for token in tokens
-        if len(token) > 1 and token not in _STOPWORD_KEYS
-    }
+    meaningful = {token for token in tokens if len(token) > 1 and token not in _STOPWORD_KEYS}
     return meaningful or {token for token in tokens if len(token) > 1}
 
 
@@ -509,8 +500,7 @@ def rank_candidates(
 ) -> list[dict[str, Any]]:
     """Rank candidates by relevance, agreement, authority, and recency, then diversify."""
     annotated = [
-        annotate_candidate(query, candidate, year_now=year_now)
-        for candidate in candidates
+        annotate_candidate(query, candidate, year_now=year_now) for candidate in candidates
     ]
     eligible = [item for item in annotated if item["relevance"] > 0]
     if not eligible:
@@ -540,9 +530,7 @@ def build_facets(
     limit: int,
 ) -> dict[str, Any]:
     """Summarise source-type, recency, domain, and angle coverage."""
-    angle_counts = Counter(
-        angle for item in results for angle in item.get("angles", [])
-    )
+    angle_counts = Counter(angle for item in results for angle in item.get("angles", []))
     return {
         "source_types": _ordered_counts(item["source_type"] for item in results),
         "recency": _ordered_counts(item["recency"] for item in results),
@@ -603,10 +591,7 @@ def _fit_suffix(base: str, suffix: str, max_length: int) -> str:
 
 
 def _is_technical_query(query: str) -> bool:
-    return any(
-        re.search(rf"\b{re.escape(word)}\b", query.casefold())
-        for word in _TECH_HINTS
-    )
+    return any(re.search(rf"\b{re.escape(word)}\b", query.casefold()) for word in _TECH_HINTS)
 
 
 def _host_matches(host: str, domains: frozenset[str]) -> bool:

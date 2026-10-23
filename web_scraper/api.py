@@ -1269,7 +1269,11 @@ def create_app(settings: Optional[Config] = None) -> FastAPI:
     ) -> WebScrapeResponse:
         web_tools: WebToolsService = request.app.state.web_tools
         async with app.state.concurrency_gate.acquire():
-            result = await web_tools.scrape(payload.url, max_chars=payload.max_chars)
+            result = await web_tools.scrape(
+                payload.url,
+                max_chars=payload.max_chars,
+                archive=payload.archive,
+            )
         return WebScrapeResponse(**result)
 
     @app.post("/api/v1/web/map", tags=["Web Tools"], response_model=WebMapResponse)

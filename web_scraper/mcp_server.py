@@ -54,7 +54,7 @@ async def _search(service: WebToolsService, arguments: dict[str, Any]) -> dict[s
 
 async def _scrape(service: WebToolsService, arguments: dict[str, Any]) -> dict[str, Any]:
     request = WebScrapeRequest.model_validate(arguments)
-    return await service.scrape(request.url, max_chars=request.max_chars)
+    return await service.scrape(request.url, max_chars=request.max_chars, archive=request.archive)
 
 
 async def _map(service: WebToolsService, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -155,7 +155,10 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
                     "(menus, headers, footers, and sidebars left out; links_truncated says "
                     "more exist, web_map lists them all), metadata, content hash, and stage "
                     "timings. A shared headless browser is used only for JavaScript "
-                    "shells or access interstitials; CAPTCHA and login walls fail fast. A PDF "
+                    "shells or access interstitials; CAPTCHA and login walls fail fast, their "
+                    "error's hint saying what to try next: archive: true reads the Internet "
+                    "Archive's latest copy of a page the site walls off or no longer serves, "
+                    "marked fetched_with archive with archived_at and an archived_copy warning. A PDF "
                     "comes back as Markdown text with content_type application/pdf and its "
                     "page count in pages."
                 ),
@@ -295,12 +298,14 @@ def _dispatch_error(exc: Exception) -> dict[str, Any]:
     if isinstance(exc, _ArgumentError):
         return _error_result("invalid_arguments", str(exc))
     if isinstance(exc, WebToolError):
+        extra = {"hint": exc.hint} if exc.hint else {}
         return _error_result(
             exc.code,
             str(exc),
             url=exc.url,
             status_code=exc.status_code,
             detail=exc.detail,
+            **extra,
         )
     logger.warning("mcp_tool_failed error=%s", type(exc).__name__)
     return _error_result("internal_error", "The tool failed unexpectedly")

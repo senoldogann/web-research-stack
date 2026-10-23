@@ -36,22 +36,28 @@ class WebToolError(Exception):
         url: Optional[str] = None,
         status_code: Optional[int] = None,
         detail: Optional[str] = None,
+        hint: Optional[str] = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.url = url
         self.status_code = status_code
         self.detail = detail
+        # What a caller can try next; only in the error when there is something to try.
+        self.hint = hint
 
     @property
     def http_status(self) -> int:
         return _STATUS_CODES.get(self.code, 400)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "code": self.code,
             "message": str(self),
             "url": self.url,
             "status_code": self.status_code,
             "detail": self.detail,
         }
+        if self.hint:
+            payload["hint"] = self.hint
+        return payload

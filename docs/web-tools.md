@@ -806,3 +806,29 @@ headless browser met as well.
 - Measured live on 2026-10-23 with `AI news this week` at `discover`: the
   first run with the kind alone put a CNN article of 28 February first; with
   the date deciding, it fell to sixth, under a page dated that day.
+
+### What to try after a wall
+
+- A page behind a captcha or a refusal (Reuters answers HTTP 401 with a
+  captcha) came back as an error and nothing else. A `blocked`, `http_error`,
+  `timeout` or `network_error` from `web_scrape` now carries a `hint`, the one
+  field the error envelope gains, and only when there is something to try:
+  ask again with `archive: true`, or find the story elsewhere with
+  `web_search`. A `dns_error` or an `unsafe_target` has none.
+- `archive: true` (off by default) reads the Internet Archive's latest copy
+  when the site would not serve the page: its availability API, asked for the
+  copy closest to today (without a date it named one a year old), names the
+  snapshot, and the `id_` form of the snapshot's address serves the page as
+  archived, without the archive's banner. The page's links are read against
+  its own address, not the archive's, and `url` is the page's. The answer says so:
+  `fetched_with: "archive"`, `archived_at` (UTC), `archive_url`, and the
+  warning `archived_copy`; it may be days old. A page that answers is read
+  live as before. With no copy the site's error stands, its hint saying so,
+  and an archive that does not answer is told apart from one with no copy.
+- Measured on 2026-10-23: Reuters' AI section answered `blocked`/`captcha`
+  with the hint, and with `archive: true` its archived copy (2,324 characters,
+  its links on reuters.com). The newest copy the archive holds is of
+  2025-09-25, which `archived_at` says: Reuters seems to wall off the
+  archive's crawler too, so a caller should read that date. archive.org
+  answered HTTP 429 for a while that morning (curl's requests too); that
+  failure is told apart from no copy.

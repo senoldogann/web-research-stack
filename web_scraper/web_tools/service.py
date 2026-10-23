@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Mapping, Optional
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 from web_scraper.api_runtime import InMemoryTTLCache, MetricsRegistry
 from web_scraper.web_tools.browser import (
@@ -595,11 +597,17 @@ class WebToolsService:
     def _provider_health_for(self, name: str) -> ProviderHealth:
         return self._provider_health.setdefault(name, ProviderHealth())
 
-    async def scrape(self, url: str, *, max_chars: Optional[int] = None) -> dict[str, Any]:
+    async def scrape(
+        self,
+        url: str,
+        *,
+        max_chars: Optional[int] = None,
+        archive: bool = False,
+    ) -> dict[str, Any]:
         requested = self._canonical(url)
         fetch_target = self._request_url(url)
         limit = self._markdown_limit(max_chars)
-        cache_key = f"scrape:{requested}:{limit}"
+        cache_key = f"scrape:{requested}:{limit}" + (":archive" if archive else "")
 
         started = time.perf_counter()
         cached = await self.cache.get(cache_key)
@@ -607,14 +615,86 @@ class WebToolsService:
             self.metrics.count("cache_hits_total", operation="scrape")
             return _from_cache(cached, started)
 
-        document = await self._load_page(fetch_target, max_chars=limit)
+        archived: Optional[tuple[str, str]] = None
+        try:
+            document = await self._load_page(fetch_target, max_chars=limit)
+        except WebToolError as exc:
+            if exc.code not in _ARCHIVABLE:
+                raise
+            if not archive:
+                exc.hint = _ARCHIVE_HINT
+                raise
+            document, archived = await self._archived_copy(fetch_target, limit, exc)
         payload = self._page_payload(document, requested)
+        if archived is not None:
+            payload["archived_at"], payload["archive_url"] = archived
         total_ms = (time.perf_counter() - started) * 1000
         payload["timings"]["total_ms"] = round(total_ms, 2)
         self.metrics.observe("total", total_ms, operation="scrape")
         self.metrics.count("scrapes_total", mode=payload["fetched_with"])
         await self.cache.set(cache_key, _for_cache(payload))
         return payload
+
+    async def _archived_copy(
+        self,
+        url: str,
+        limit: int,
+        cause: WebToolError,
+    ) -> tuple[LoadedDocument, tuple[str, str]]:
+        """The Internet Archive's latest copy of a page the site would not serve.
+
+        Its availability API names the closest snapshot; the ``id_`` form of the
+        snapshot's address serves the page as archived, without the archive's
+        own banner. With no copy, or one that cannot be read, the site's error
+        stands, its hint saying so.
+        """
+        # Without a timestamp the API may name a copy a year old; with today's, the newest.
+        today = datetime.now(timezone.utc).strftime("%Y%m%d")
+        lookup = "https://archive.org/wayback/available?" + urlencode(
+            {"url": url, "timestamp": today}
+        )
+        try:
+            answer = await self.fetcher.fetch(lookup)
+            closest = (json.loads(answer.html).get("archived_snapshots") or {}).get("closest") or {}
+        except FetchError as error:
+            status = f" HTTP {error.status_code}" if error.status_code else ""
+            cause.hint = (
+                f"The Internet Archive did not answer ({error.code}{status}); try archive: true "
+                "again later, or find the story elsewhere with web_search."
+            )
+            raise cause from error
+        except (ValueError, AttributeError):
+            closest = {}
+        stamp = str(closest.get("timestamp") or "")
+        if not closest.get("available") or not re.fullmatch(r"\d{14}", stamp):
+            cause.hint = (
+                "The Internet Archive holds no archived copy of this page; "
+                "find the story elsewhere with web_search."
+            )
+            raise cause
+        snapshot = f"https://web.archive.org/web/{stamp}id_/{url}"
+        try:
+            document = await self._load_page(snapshot, max_chars=limit)
+        except WebToolError as error:
+            cause.hint = (
+                f"The Internet Archive's copy could not be read either ({error.code}); "
+                "find the story elsewhere with web_search."
+            )
+            raise cause from error
+        if document.pages is None:
+            # The copy's links and identity are the page's own, not the archive's.
+            document.page = extract_page(
+                document.html,
+                url,
+                max_links=self.settings.max_links,
+                max_chars=limit,
+            )
+        document.final_url = url
+        document.fetched_with = "archive"
+        document.warnings.append("archived_copy")
+        taken = datetime.strptime(stamp, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+        self.metrics.count("archive_copies_total")
+        return document, (taken.isoformat(), snapshot)
 
     async def extract(
         self,
@@ -1267,6 +1347,15 @@ class WebToolsService:
             "status_code": None,
             "detail": None,
         }
+
+
+# Failures an archived copy can answer: the page exists but the site would not
+# serve it now. A host that does not resolve or a refused target cannot.
+_ARCHIVABLE = frozenset({"blocked", "http_error", "timeout", "network_error"})
+_ARCHIVE_HINT = (
+    "Ask web_scrape again with archive: true for the Internet Archive's latest copy "
+    "(it may be days old), or find the same story elsewhere with web_search."
+)
 
 
 def _for_cache(payload: dict[str, Any]) -> dict[str, Any]:

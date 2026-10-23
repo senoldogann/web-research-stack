@@ -329,6 +329,13 @@ class WebScrapeRequest(BaseModel):
             "(WEB_TOOLS_MARKDOWN_MAX_CHARS, 50,000 by default) applies above it"
         ),
     )
+    archive: bool = Field(
+        default=False,
+        description=(
+            "When the site walls the page off (a captcha, a refusal) or no longer serves it, "
+            "read the Internet Archive's latest copy instead, marked as such; it may be days old"
+        ),
+    )
 
     @field_validator("url")
     @classmethod
@@ -363,6 +370,10 @@ class WebScrapeResponse(BaseModel):
     # On a cache hit: the timings of the call that filled the cache, and when.
     cached_timings: Optional[Dict[str, float]] = None
     cached_at: Optional[str] = None
+    archived_at: Optional[str] = Field(
+        default=None, description="When the Internet Archive took the copy read with archive"
+    )
+    archive_url: Optional[str] = None
     warnings: List[str] = Field(default_factory=list)
     timings: Dict[str, float]
     pages: Optional[int] = Field(default=None, description="Page count of a PDF document")

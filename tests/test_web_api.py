@@ -217,7 +217,9 @@ def test_scrape_route_forwards_markdown_limit(
 
     assert response.status_code == 200
     assert response.json()["markdown"] == "# Example"
-    assert fake_tools.calls == [("scrape", {"url": "https://example.com", "max_chars": 1200})]
+    assert fake_tools.calls == [
+        ("scrape", {"url": "https://example.com", "max_chars": 1200, "archive": False})
+    ]
 
 
 @pytest.mark.parametrize("max_chars", [1, 499])

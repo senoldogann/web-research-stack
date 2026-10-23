@@ -149,3 +149,46 @@ def test_an_unknown_name_is_reported_missing_not_invented() -> None:
 )
 def test_dates_are_read_in_the_forms_pages_write_them(text: str, expected: str | None) -> None:
     assert normalize_date(text) == expected
+
+
+def test_a_mark_above_the_article_does_not_hide_its_lead() -> None:
+    # Wikipedia's <html> carries "vector-toc-available", which is no table of contents around the text.
+    page = (
+        '<html class="client-nojs vector-toc-available" lang="en"><body><main id="content">'
+        '<div class="mw-parser-output"><p class="mw-empty-elt"></p>'
+        "<p>The <b>Eiffel Tower</b> (<i>Tour Eiffel</i>) is a wrought-iron lattice tower on the "
+        "Champ de Mars in Paris, France.</p></div></main></body></html>"
+    )
+
+    result = extract_structured(page, URL, {"lead": {}})
+
+    assert result.data["lead"] == (
+        "The Eiffel Tower (Tour Eiffel) is a wrought-iron lattice tower on the Champ de Mars in "
+        "Paris, France."
+    )
+
+
+def test_selected_text_reads_as_written_around_its_marks() -> None:
+    page = (
+        '<html><body><p class="x"><a href="/a">Link</a>, more text (<b>bold</b>).</p></body></html>'
+    )
+
+    result = extract_structured(page, URL, {"text": ".x"})
+
+    assert result.data["text"] == "Link, more text (bold)."
+
+
+def test_a_photo_caption_in_a_carousel_is_not_the_lead() -> None:
+    # As AP News lays out an article: the photos' captions, then the story.
+    page = (
+        "<html><body><main class='Page-main'><div class='CarouselSlide'><div class='CarouselSlide-info'>"
+        "<span class='CarouselSlide-infoDescription'><p>Open AI CEO Sam Altman speaks at the OpenAI "
+        "DevDay conference, Tuesday, in San Francisco. (AP Photo/Jeff Chiu)</p></span></div></div>"
+        "<div class='RichTextStoryBody'><p>WASHINGTON (AP) — The Federal Trade Commission is "
+        "investigating OpenAI and Anthropic over the safety risks of their chatbots.</p></div>"
+        "</main></body></html>"
+    )
+
+    result = extract_structured(page, URL, {"lead": {}})
+
+    assert result.data["lead"].startswith("WASHINGTON (AP) — The Federal Trade Commission")

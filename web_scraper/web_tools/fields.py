@@ -152,7 +152,39 @@ _SPLIT_FIELDS = frozenset({"keywords"})
 # A paragraph long enough to be an article's lead, not a label ("In this article").
 _LEAD_MIN_WORDS = 12
 _NOT_CONTENT = ("nav", "aside", "header", "footer", "figure", "figcaption", "form", "table")
-_NOT_CONTENT_MARKS = ("toc", "caption", "byline", "breadcrumb", "share", "newsletter", "promo")
+_NOT_CONTENT_MARKS = frozenset(
+    {
+        "toc",
+        "caption",
+        "credit",
+        "byline",
+        "breadcrumb",
+        "breadcrumbs",
+        "share",
+        "newsletter",
+        "promo",
+        "carousel",
+        "gallery",
+        "slide",
+        "slideshow",
+        "photo",
+        "related",
+        "recommended",
+        "sponsored",
+        "advertisement",
+    }
+)
+
+
+def element_text(node: Tag) -> str:
+    """An element's text as a reader sees it: a space between its parts, none before a closing mark.
+
+    "Oct 23, 2026" and "8:00 AM" in two spans read "Oct 23, 2026 8:00 AM", and "<a>Link</a>, more
+    (<b>bold</b>)." reads "Link, more (bold).".
+    """
+    text = re.sub(r"\s+", " ", node.get_text(" ")).strip()
+    text = re.sub(r"\s+([,.;:!?%)\]}])", r"\1", text)
+    return re.sub(r"([(\[{])\s+", r"\1", text)
 
 
 def canonical_field(name: str) -> Optional[str]:
@@ -352,7 +384,7 @@ def _from_html(
 def _found_text(node: Optional[Tag], selector: str, limit: int = 0) -> Optional[Found]:
     if node is None:
         return None
-    text = re.sub(r"\s+", " ", node.get_text(" ")).strip()
+    text = element_text(node)
     if not text or (limit and len(text) > limit):
         return None
     return Found([text], "html", selector, text)
@@ -422,23 +454,36 @@ def _html_url(soup: BeautifulSoup) -> Optional[Found]:
     return _found_attribute(soup.select_one("link[rel=canonical]"), "href", "link[rel=canonical]")
 
 
-def _is_content(node: Tag) -> bool:
+def _is_content(node: Tag, root: Tag | BeautifulSoup) -> bool:
+    """Whether nothing between `node` and the content's root is page furniture.
+
+    Only the elements under the root count, and a mark only as a whole part of a class or
+    an id ("article-toc", not "vector-toc-available" on Wikipedia's <html>).
+    """
     for parent in [node, *node.parents]:
-        if not isinstance(parent, Tag):
-            continue
+        if parent is root or not isinstance(parent, Tag):
+            break
         if parent.name in _NOT_CONTENT:
             return False
-        marks = f"{' '.join(parent.get('class') or [])} {parent.get('id') or ''}".lower()
-        if any(mark in marks for mark in _NOT_CONTENT_MARKS):
+        names = [*(parent.get("class") or []), str(parent.get("id") or "")]
+        # "CarouselSlide-infoDescription" is made of carousel, slide, info and description.
+        parts = {
+            part.lower()
+            for name in names
+            for part in re.split(r"[-_\s]+|(?<=[a-z])(?=[A-Z])", name)
+            if part
+        }
+        if parts & _NOT_CONTENT_MARKS:
             return False
     return True
 
 
 def _html_lead(soup: BeautifulSoup) -> Optional[Found]:
-    for paragraph in _content_root(soup).find_all("p"):
-        if not _is_content(paragraph):
+    root = _content_root(soup)
+    for paragraph in root.find_all("p"):
+        if not _is_content(paragraph, root):
             continue
-        text = re.sub(r"\s+", " ", paragraph.get_text(" ")).strip()
+        text = element_text(paragraph)
         if len(text.split()) >= _LEAD_MIN_WORDS:
             return Found([text], "html", "p", text)
     return None

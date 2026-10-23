@@ -14,6 +14,7 @@ from defusedxml import ElementTree
 from web_scraper.web_tools.fields import (
     DATE_FIELDS,
     canonical_field,
+    element_text,
     find_field,
     normalize_date,
 )
@@ -651,7 +652,7 @@ def extract_structured(
                 else:
                     # A space between the element's parts: "Oct 23, 2026" and "8:00 AM" in
                     # two spans read "Oct 23, 2026 8:00 AM", not "Oct 23, 20268:00 AM".
-                    raw_value = element.get_text(" ")
+                    raw_value = element_text(element)
                 if attribute == "href":
                     raw_value = _resolve(base_url, raw_value) or raw_value
                 coerced = _coerce(raw_value, value_type)
@@ -660,9 +661,7 @@ def extract_structured(
                 total += 1
                 if len(values) < limit:
                     values.append(coerced)
-                    evidence.append(
-                        _clean_text(element.get_text(" ")) or _clean_text(str(raw_value))
-                    )
+                    evidence.append(element_text(element) or _clean_text(str(raw_value)))
 
             if values:
                 data[field_name] = values if wants_all else values[0]

@@ -766,7 +766,8 @@ headless browser met as well.
   published and modified dates (`published_at`, `datePublished`, `date`, ...),
   description, image, site name (publisher), section, keywords (tags),
   language, canonical URL, `lead` (the article's first paragraph of twelve
-  words or more, past labels such as "In this article"), body, word count,
+  words or more, past labels such as "In this article", tables of contents,
+  photo captions and carousels: AP News put a caption first), body, word count,
   name, and price. Provenance says which source answered. A name it does not
   know is read from JSON-LD and meta tags under that name alone, and is
   otherwise reported missing.
@@ -774,5 +775,10 @@ headless browser met as well.
   `Oct 23, 2026 8:00 AM` is `2026-10-23T08:00:00`, `Fri, 23 Oct 2026 08:00:00
   GMT` is `2026-10-23T08:00:00+00:00`; one that cannot be read stays as
   written. A selected element's text keeps a space between its parts, so two
-  spans no longer read `Oct 23, 20268:00 AM`, and a date-typed field prefers
-  the element's `datetime`.
+  spans no longer read `Oct 23, 20268:00 AM` (nor `Link , more` the other
+  way), and a date-typed field prefers the element's `datetime`.
+- Measured live: the Wikipedia article on the Eiffel Tower answers
+  `published_at` `2001-03-01T20:20:29+00:00`, `modified_at`, `publisher`
+  `Wikimedia Foundation, Inc.` and its first paragraph as `lead`; an AP News
+  article answers its headline, author, ISO dates, `AP News` and `Business`
+  from JSON-LD, and its opening paragraph as `lead`.

@@ -11,6 +11,12 @@ from urllib.parse import urljoin, urlsplit
 from bs4 import BeautifulSoup, NavigableString, Tag
 from defusedxml import ElementTree
 
+from web_scraper.web_tools.fields import (
+    DATE_FIELDS,
+    canonical_field,
+    find_field,
+    normalize_date,
+)
 from web_scraper.web_tools.urls import UnsafeUrlError, canonicalize_url, url_in_scope
 
 _STRIP_TAGS = (
@@ -551,58 +557,17 @@ def parse_sitemap_xml(data: bytes) -> tuple[str, list[dict[str, str]]]:
     return kind, entries
 
 
-def _json_ld_values(items: list[dict[str, Any]], field: str) -> Optional[Any]:
-    aliases = {
-        "title": ("headline",),
-        "name": ("name",),
-        "price": ("price", "offers.price"),
-        "description": ("description",),
-        "author": ("author.name", "author"),
-        "image": ("image",),
-        "url": ("url",),
-    }.get(field, (field,))
-    for item in items:
-        index: dict[str, Any] = dict(item)
-        offers = item.get("offers")
-        if isinstance(offers, dict):
-            index.update({f"offers.{key}": value for key, value in offers.items()})
-        elif isinstance(offers, list):
-            for offer in offers:
-                if isinstance(offer, dict):
-                    index.update({f"offers.{key}": value for key, value in offer.items()})
-        author = item.get("author")
-        if isinstance(author, dict):
-            index["author.name"] = author.get("name")
-        for alias in aliases:
-            value = index.get(alias)
-            if value not in (None, "", []):
-                return value
-    return None
-
-
-def _meta_values(soup: BeautifulSoup, field: str) -> Optional[tuple[str, str]]:
-    selectors: dict[str, tuple[tuple[str, str], ...]] = {
-        "title": (("property", "og:title"), ("name", "twitter:title")),
-        "description": (("name", "description"), ("property", "og:description")),
-        "author": (("name", "author"), ("property", "article:author")),
-        "image": (("property", "og:image"), ("name", "twitter:image")),
-        "price": (("property", "product:price:amount"), ("property", "og:price:amount")),
-    }
-    for attribute, value in selectors.get(field, ()):
-        meta = soup.find("meta", attrs={attribute: value})
-        if meta and meta.get("content"):
-            return _clean_text(meta["content"]), f"meta[{attribute}={value}]"
-    if field == "title":
-        title = soup.find("title")
-        if title and _clean_text(title.get_text()):
-            return _clean_text(title.get_text()), "title"
-    return None
+_DATE_TYPES = frozenset({"date", "datetime"})
+_NUMBER_TYPES = frozenset({"number", "float", "integer"})
 
 
 def _coerce(value: Any, value_type: str) -> Any:
     if value is None:
         return None
-    if value_type in {"number", "float", "integer"}:
+    if value_type in _DATE_TYPES:
+        text = _clean_text(str(value))
+        return normalize_date(text) or text
+    if value_type in _NUMBER_TYPES:
         if isinstance(value, (int, float)):
             number = float(value)
         else:
@@ -617,6 +582,16 @@ def _coerce(value: Any, value_type: str) -> Any:
             return value
         return str(value).strip().lower() in {"true", "1", "yes"}
     return _clean_text(str(value))
+
+
+def _moment_of(element: Tag) -> str:
+    """The machine-readable moment an element carries: its own datetime or content, or its time's."""
+    for node in (element, element.find("time", attrs={"datetime": True})):
+        if isinstance(node, Tag):
+            moment = node.get("datetime") or (node.get("content") if node.get("itemprop") else None)
+            if moment:
+                return str(moment)
+    return ""
 
 
 def extract_structured(
@@ -669,7 +644,14 @@ def extract_structured(
             total = 0
             for element in selected:
                 attribute = spec.get("attribute")
-                raw_value = element.get(attribute, "") if attribute else element.get_text()
+                if attribute:
+                    raw_value = element.get(attribute, "")
+                elif value_type in _DATE_TYPES and _moment_of(element):
+                    raw_value = _moment_of(element)
+                else:
+                    # A space between the element's parts: "Oct 23, 2026" and "8:00 AM" in
+                    # two spans read "Oct 23, 2026 8:00 AM", not "Oct 23, 20268:00 AM".
+                    raw_value = element.get_text(" ")
                 if attribute == "href":
                     raw_value = _resolve(base_url, raw_value) or raw_value
                 coerced = _coerce(raw_value, value_type)
@@ -678,7 +660,9 @@ def extract_structured(
                 total += 1
                 if len(values) < limit:
                     values.append(coerced)
-                    evidence.append(_clean_text(element.get_text()) or _clean_text(str(raw_value)))
+                    evidence.append(
+                        _clean_text(element.get_text(" ")) or _clean_text(str(raw_value))
+                    )
 
             if values:
                 data[field_name] = values if wants_all else values[0]
@@ -701,32 +685,39 @@ def extract_structured(
         if found:
             continue
 
-        if not selectors:
-            json_value = _json_ld_values(json_ld, field_name)
-            coerced = _coerce(json_value, value_type) if json_value is not None else None
-            if coerced not in (None, ""):
-                data[field_name] = coerced
+        # By its name: a field with no selector, or a well-known one whose selectors
+        # found nothing, from the page's JSON-LD, meta tags, then HTML conventions.
+        named = find_field(soup, json_ld, field_name, base_url, allow_unknown=not selectors)
+        if named is not None:
+            wants_all = bool(spec.get("all", False))
+            kind = value_type
+            if canonical_field(field_name) in DATE_FIELDS and value_type not in _NUMBER_TYPES:
+                kind = "date"
+            if wants_all:
+                limit = int(spec.get("max_items") or max_items)
+                every = [_coerce(value, kind) for value in named.values]
+                every = [value for value in every if value not in (None, "")]
+                value: Any = every[:limit]
+            elif kind == "string":
+                value = _coerce(", ".join(named.values), kind)
+            else:
+                value = _coerce(named.values[0], kind)
+            if value not in (None, "", []):
+                data[field_name] = value
                 provenance[field_name] = {
-                    "method": "json_ld",
-                    "selector": None,
-                    "evidence": _clean_text(str(json_value))[:500],
+                    "method": named.method,
+                    "selector": named.selector,
+                    "evidence": named.evidence[:500],
                     "source_url": base_url,
                 }
+                if wants_all:
+                    provenance[field_name].update(
+                        total=len(every),
+                        returned=len(value),
+                        truncated=len(every) > len(value),
+                    )
+                    truncated = truncated or len(every) > len(value)
                 continue
-
-            meta_value = _meta_values(soup, field_name)
-            if meta_value is not None:
-                raw_value, selector = meta_value
-                coerced = _coerce(raw_value, value_type)
-                if coerced not in (None, ""):
-                    data[field_name] = coerced
-                    provenance[field_name] = {
-                        "method": "meta",
-                        "selector": selector,
-                        "evidence": raw_value[:500],
-                        "source_url": base_url,
-                    }
-                    continue
 
         data[field_name] = None
         provenance[field_name] = {

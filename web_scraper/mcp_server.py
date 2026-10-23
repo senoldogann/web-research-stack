@@ -183,7 +183,10 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
             {
                 "name": "web_extract",
                 "description": (
-                    "Extract structured fields from one page with CSS selectors. Each field "
+                    "Extract structured fields from one page with CSS selectors, or by name: "
+                    "a field with no selector (headline, author, published_at, description, "
+                    "site_name, keywords, lead, ...) is read from the page's JSON-LD, meta "
+                    "tags and HTML conventions, and dates come back in ISO 8601. Each field "
                     "reports how it was found, its evidence, and its source URL; missing "
                     "required fields are reported, never invented. A field with all: true "
                     "returns up to max_items matches (100 by default; provenance gives total, "

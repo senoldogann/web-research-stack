@@ -751,3 +751,28 @@ headless browser met as well.
 - A challenge error reads `Target returned an access_blocked interstitial`
   (it said "a access_blocked"); `a captcha` and `an access_wall` follow the
   same rule.
+
+### Fields by name, dates in ISO 8601
+
+- A `web_extract` field asked in plain words came back `null`: `headline`,
+  `author` and `published_at` found nothing unless a CSS selector named them,
+  and a page's JSON-LD was read for a few names only (an author list came back
+  as a Python repr). A field with no selector, or a well-known one whose
+  selectors find nothing, is now read by its name (`fields.py`): JSON-LD first
+  (an article's item before the site's, `@id` references followed), then meta
+  tags (`article:published_time`, `og:site_name`, `author`, ...), then the HTML
+  conventions (`<time datetime>`, `rel=author`, `itemprop`, the first `h1`).
+  The names cover the headline and title, author (byline, writer),
+  published and modified dates (`published_at`, `datePublished`, `date`, ...),
+  description, image, site name (publisher), section, keywords (tags),
+  language, canonical URL, `lead` (the article's first paragraph of twelve
+  words or more, past labels such as "In this article"), body, word count,
+  name, and price. Provenance says which source answered. A name it does not
+  know is read from JSON-LD and meta tags under that name alone, and is
+  otherwise reported missing.
+- Dates read by name, and any field of `type: "date"`, come back in ISO 8601:
+  `Oct 23, 2026 8:00 AM` is `2026-10-23T08:00:00`, `Fri, 23 Oct 2026 08:00:00
+  GMT` is `2026-10-23T08:00:00+00:00`; one that cannot be read stays as
+  written. A selected element's text keeps a space between its parts, so two
+  spans no longer read `Oct 23, 20268:00 AM`, and a date-typed field prefers
+  the element's `datetime`.

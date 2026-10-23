@@ -390,7 +390,12 @@ class WebExtractField(BaseModel):
 
     selector: Optional[str] = Field(
         default=None,
-        description="CSS selector; with none, JSON-LD and meta tags are read by the field's name",
+        description=(
+            "CSS selector. With none (or one that finds nothing, for a well-known name), the field "
+            "is read by its name from JSON-LD, meta tags and HTML conventions: headline, title, "
+            "author, published_at, modified_at, description, image, site_name, section, keywords, "
+            "language, url, lead (the first paragraph), body, word_count, name, price"
+        ),
     )
     fallback_selectors: List[str] = Field(
         default_factory=list,
@@ -410,7 +415,10 @@ class WebExtractField(BaseModel):
             "holds total, returned, and truncated"
         ),
     )
-    type: str = Field(default="string", description="string, number, integer, or boolean")
+    type: str = Field(
+        default="string",
+        description="string, number, integer, boolean, or date (ISO 8601; dates by name are)",
+    )
     required: bool = Field(
         default=False,
         description="Report required_field_missing in errors when nothing is found",

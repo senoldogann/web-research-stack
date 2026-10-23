@@ -251,7 +251,24 @@ class WebSearchResult(BaseModel):
     domain: str = ""
     source_type: str = "other"
     year: Optional[int] = None
-    recency: str = "unknown"
+    recency: str = Field(
+        default="unknown",
+        description="By the newest year the result names: current is this year or last",
+    )
+    date: Optional[str] = Field(
+        default=None,
+        description="YYYY-MM-DD or YYYY-MM read from the address, the snippet or the title",
+    )
+    date_source: Optional[str] = Field(default=None, description="url, snippet, or title")
+    age_days: Optional[int] = None
+    freshness: str = Field(
+        default="undated",
+        description="this_week, this_month, this_year, older, or undated, by the date first",
+    )
+    kind: str = Field(
+        default="page",
+        description="article, listing (a section, tag or archive), front (a home page), or page",
+    )
     angles: List[str] = Field(default_factory=list)
     relevance: float = 0.0
     bm25: float = 0.0
@@ -275,6 +292,8 @@ class WebSearchQuery(BaseModel):
 class WebSearchFacets(BaseModel):
     source_types: Dict[str, int] = Field(default_factory=dict)
     recency: Dict[str, int] = Field(default_factory=dict)
+    freshness: Dict[str, int] = Field(default_factory=dict)
+    kinds: Dict[str, int] = Field(default_factory=dict)
     domains: Dict[str, int] = Field(default_factory=dict)
     angles: Dict[str, int] = Field(default_factory=dict)
     total_candidates: int = 0

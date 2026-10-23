@@ -131,7 +131,11 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
                     "queries get provider date filters; responses are cached per query. A "
                     "refused or timed-out provider call is asked once of Google, and provider "
                     "names who answered. With nothing relevant, results is empty and warnings "
-                    "holds no_relevant_results. Results carry source_type, year, recency, "
+                    "holds no_relevant_results. Results carry source_type, year, recency "
+                    "(by year: current is this year or last), date (day or month, from the "
+                    "address, snippet or title, with date_source and age_days), freshness "
+                    "(this_week ... undated, by that date first), kind (article, listing, front, "
+                    "page; a news query ranks articles before listings and front pages), "
                     "angles, relevance, bm25, score, and cache_hit, with coverage facets. Search "
                     "discovers URLs only; use web_scrape to read a result."
                 ),

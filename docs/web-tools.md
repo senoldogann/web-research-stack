@@ -782,3 +782,27 @@ headless browser met as well.
   `Wikimedia Foundation, Inc.` and its first paragraph as `lead`; an AP News
   article answers its headline, author, ISO dates, `AP News` and `Business`
   from JSON-LD, and its opening paragraph as `lead`.
+
+### How old a result is, and what kind of page
+
+- `recency` goes by the newest year a result names, so in October a February
+  article was `current`, and an agent read that as fresh. Each result now also
+  carries `date` (`YYYY-MM-DD`, or `YYYY-MM` for a month), read from its
+  address (`/2026/10/20/`, `-2026-10-20`, `/archives/2026/10`), its snippet (a
+  date in words, or the provider's "3 days ago" and "Yesterday" at its head)
+  or its title, in that order, with `date_source` and `age_days`; `freshness`
+  (`this_week`, `this_month`, `this_year`, `older`, `undated`) reads that date
+  first and the year only without it. A date after tomorrow is none. `recency`
+  is unchanged, and its description now says it goes by the year.
+- `kind` says what the address shows: `article` (a slug of four words or
+  more, filler words left out, a dated path, an id, or `/article/`, `/wiki/`,
+  `/story/`), `listing` (a section, tag, archive, author or search page, or
+  `news.html`), `front` (a home page), or `page` when it cannot tell.
+- A news query (a freshness cue such as "this week", "latest", "today", or
+  the word "news") ranks articles above listings and front pages, and when the
+  query says how fresh and a result's date can answer, the date decides: a
+  result inside the window gains, one outside it loses more, and the
+  year-based bonus is left out for it. Facets count `kinds` and `freshness`.
+- Measured live on 2026-10-23 with `AI news this week` at `discover`: the
+  first run with the kind alone put a CNN article of 28 February first; with
+  the date deciding, it fell to sixth, under a page dated that day.

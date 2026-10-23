@@ -135,7 +135,22 @@ _XML_TYPES = frozenset(
 )
 
 
-def _soup(html: str, *, xml: bool = False) -> BeautifulSoup:
+def _looks_like_xml(markup: str) -> bool:
+    """Whether a document opens with an XML declaration and is not XHTML (no ``<html``)."""
+    head = (markup or "")[:500].lstrip("\ufeff \t\r\n").lower()
+    return head.startswith("<?xml") and "<html" not in head
+
+
+def _soup(html: str, *, xml: Optional[bool] = None) -> BeautifulSoup:
+    """Parse a document: ``xml`` forces a parser, ``None`` lets the document say.
+
+    A sitemap, a feed or any XML document parsed as HTML makes bs4 warn
+    (XMLParsedAsHTMLWarning) on every call, and the warning floods the log of a server
+    that reads many of them; a server may send one as text/html or with no type at all,
+    so what the document opens with decides, not only the type it was sent as.
+    """
+    if xml is None:
+        xml = _looks_like_xml(html)
     return BeautifulSoup(html or "", "xml" if xml else "lxml")
 
 
@@ -499,7 +514,7 @@ def detect_interstitial(
     raw = html or ""
     size = _body_bytes(raw)
     succeeded = 200 <= status_code < 300
-    soup = _soup(raw, xml=content_type in _XML_TYPES)
+    soup = _soup(raw, xml=True if content_type in _XML_TYPES else None)
     for tag in soup(_INVISIBLE_TAGS):
         tag.decompose()
 

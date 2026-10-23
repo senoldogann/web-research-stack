@@ -5,8 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import platform
+import re
+import subprocess
 import sys
-from typing import Any, Callable, Coroutine, Optional
+from pathlib import Path
+from typing import IO, Any, Callable, Coroutine, Mapping, Optional
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -24,8 +28,56 @@ from web_scraper.web_tools.service import WebToolsService
 logger = logging.getLogger("web_scraper.mcp")
 
 _PROTOCOL_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
-_SERVER_INFO = {"name": "web-research", "version": __version__}
+_SERVER_NAME = "web-research"
 _TOOL_CONCURRENCY = 8
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_GIT_TIMEOUT_SECONDS = 1
+
+
+def _git_commit(root: Path, run: Callable[..., Any]) -> Optional[str]:
+    """The short commit of the checkout this package runs from, None when it is not one."""
+    if not (root / ".git").exists():
+        return None
+    try:
+        done = run(
+            ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=_GIT_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    commit = (done.stdout or "").strip()
+    if done.returncode != 0 or not re.fullmatch(r"[0-9a-f]{7,40}", commit):
+        return None
+    return commit
+
+
+def build_server_info(
+    root: Optional[Path] = None, *, run: Callable[..., Any] = subprocess.run
+) -> dict[str, str]:
+    """``serverInfo``: the version, and ``+g<short sha>`` when the package runs from a git checkout.
+
+    Read once, at start, with git given one second: the owner can tell which code is live
+    from the version a client reports and from the line the server writes to its log.
+    """
+    commit = _git_commit(root or _PROJECT_ROOT, run)
+    return {"name": _SERVER_NAME, "version": f"{__version__}+g{commit}" if commit else __version__}
+
+
+def startup_line(info: Mapping[str, str], python: Optional[str] = None) -> str:
+    """The one line written to stderr at start: name, version, commit and Python."""
+    version = info["version"]
+    commit = version.partition("+g")[2] or "unknown"
+    return (
+        f"{info['name']} mcp server started: version={version} commit={commit} "
+        f"python={python or platform.python_version()}"
+    )
+
+
+def announce(info: Mapping[str, str], stream: Optional[IO[str]] = None) -> None:
+    print(startup_line(info), file=stream or sys.stderr, flush=True)
 
 
 class _ArgumentError(ValueError):
@@ -316,8 +368,11 @@ def _dispatch_error(exc: Exception) -> dict[str, Any]:
 class McpServer:
     """Minimal MCP server: initialize, ping, tools/list, tools/call, notifications."""
 
-    def __init__(self, service: WebToolsService) -> None:
+    def __init__(
+        self, service: WebToolsService, server_info: Optional[Mapping[str, str]] = None
+    ) -> None:
         self.service = service
+        self._server_info = dict(server_info or {"name": _SERVER_NAME, "version": __version__})
         self._handlers: dict[str, Handler] = {
             spec["name"]: handler for spec, handler in _tool_specs()
         }
@@ -370,7 +425,7 @@ class McpServer:
         return {
             "protocolVersion": version,
             "capabilities": {"tools": {"listChanged": False}},
-            "serverInfo": _SERVER_INFO,
+            "serverInfo": dict(self._server_info),
             "instructions": (
                 "Local web research tools. Search discovers URLs; scrape, map, and extract "
                 "read pages HTTP-first with a shared headless browser fallback; crawl runs "
@@ -485,8 +540,10 @@ def _request_key(request_id: Any) -> str:
 
 
 async def _serve() -> None:
+    info = await asyncio.to_thread(build_server_info)
+    announce(info)
     service = WebToolsService.from_env()
-    server = McpServer(service)
+    server = McpServer(service, server_info=info)
     try:
         await server.run()
     finally:

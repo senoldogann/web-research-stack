@@ -963,3 +963,22 @@ headless browser met as well.
   clients, which the tool must not try to pass. Add it as a second source only
   where it answers a script a readable page.
 
+### The version, and which code runs
+
+- The version is `1.2.0` (`pyproject.toml`, `web_scraper/__init__.py`).
+- The MCP server's `serverInfo.version` carries the commit when the package
+  runs from a git checkout: `1.2.0+g727ec4f` (a worktree counts). It is read
+  once, at start, with `git rev-parse --short HEAD` given one second; without a
+  checkout, or when git is missing, slow or fails, it is the plain `1.2.0`.
+- At start the server writes one line to stderr, which Dot keeps in
+  `~/Library/Logs/Dot/mcp-web-research.log`, so the owner can see which code is
+  live:
+  `web-research mcp server started: version=1.2.0+g727ec4f commit=727ec4f python=3.13.16`
+  (`commit=unknown` without one).
+- The `XMLParsedAsHTMLWarning` that filled that log came from every path that
+  reads a document with the HTML parser: scraping or extracting from a feed, a
+  sitemap served as `text/html`, a challenge check with no content type. A
+  document that opens with an XML declaration and is not XHTML is now parsed with
+  the XML parser whatever type it was sent as (an XHTML page stays a web page),
+  so no warning is raised; a feed still reads, its `title` and items by selector.
+

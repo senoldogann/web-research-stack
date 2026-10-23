@@ -44,7 +44,7 @@ Returns API information and available endpoint paths.
 ```json
 {
   "name": "Web Scraper API",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "docs": "/docs",
   "endpoints": {
     "health": "/api/v1/health",
@@ -520,7 +520,7 @@ API bilgileri ve mevcut uç noktaları döndürür.
 ```json
 {
   "name": "Web Scraper API",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "docs": "/docs",
   "endpoints": {
     "health": "/api/v1/health",

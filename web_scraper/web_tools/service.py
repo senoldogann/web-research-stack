@@ -8,6 +8,7 @@ import re
 import time
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 from urllib.parse import urlencode, urlsplit
 
@@ -34,6 +35,7 @@ from web_scraper.web_tools.content import (
     parse_sitemap_xml,
 )
 from web_scraper.web_tools.crawl import CrawlManager, CrawlOptions, canonical_target
+from web_scraper.web_tools.crawl_store import CrawlStore
 from web_scraper.web_tools.discovery import (
     DEPTHS,
     MIN_RESULT_RELEVANCE,
@@ -1306,11 +1308,17 @@ class WebToolsService:
                 if self.settings.respect_robots
                 else None
             )
+            store = (
+                CrawlStore(Path(self.settings.data_dir) / "crawl-jobs.sqlite3")
+                if self.settings.data_dir
+                else None
+            )
             self._crawl = CrawlManager(
                 self._crawl_page,
                 self.settings,
                 robots=robots,
                 seeder=self._sitemap_seeds,
+                store=store,
             )
         return self._crawl
 

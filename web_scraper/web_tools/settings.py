@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Iterable, Optional
 
 import dotenv
@@ -88,6 +89,22 @@ def _fallback_chain_from_env() -> list[str]:
     return provider_names(raw.split(","))
 
 
+def _data_dir_from_env() -> str:
+    """The folder the web tools keep their data in (crawl jobs): ``WEB_TOOLS_DATA_DIR``.
+
+    Unset, it is ``web-research`` in the XDG data home (``$XDG_DATA_HOME``, else
+    ``~/.local/share``). An empty value, ``none`` or ``off`` keeps nothing on disk.
+    """
+    raw = os.getenv("WEB_TOOLS_DATA_DIR")
+    if raw is None:
+        base = os.getenv("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+        return str(Path(base).expanduser() / "web-research")
+    raw = raw.strip()
+    if raw.lower() in {"", "none", "off"}:
+        return ""
+    return str(Path(raw).expanduser())
+
+
 def _csv(name: str) -> list[str]:
     raw = os.getenv(name, "")
     return [item.strip() for item in raw.split(",") if item.strip()]
@@ -167,6 +184,10 @@ class WebToolsSettings:
 
     # How long the walk through the Internet Archive's copies of a walled page may take.
     archive_budget_seconds: float = 20.0
+
+    # Where crawl jobs are kept so a restart does not lose them; empty keeps nothing on disk
+    # (what a settings made by hand does: only from_env, the server's own, names a folder).
+    data_dir: str = ""
 
     max_extract_fields: int = 50
     extract_max_items: int = 100
@@ -338,6 +359,7 @@ class WebToolsSettings:
             max_crawl_jobs=_int("WEB_TOOLS_MAX_CRAWL_JOBS", 32),
             max_crawl_errors=_int("WEB_TOOLS_MAX_CRAWL_ERRORS", 100),
             archive_budget_seconds=_float("WEB_TOOLS_ARCHIVE_BUDGET_SECONDS", 20.0),
+            data_dir=_data_dir_from_env(),
             max_extract_fields=_int("WEB_TOOLS_MAX_EXTRACT_FIELDS", 50),
             extract_max_items=_int("WEB_TOOLS_EXTRACT_MAX_ITEMS", 100),
             extract_max_chars=_int("WEB_TOOLS_EXTRACT_MAX_CHARS", 20_000),

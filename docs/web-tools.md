@@ -182,7 +182,8 @@ Copy `.env.example` to `.env` and set what you need. The important web tool knob
 | `MAX_CRAWL_PAGES` | `100` | Hard page cap |
 | `MAX_CRAWL_DEPTH` | `4` | Hard depth cap |
 | `CRAWL_CONCURRENCY` | `4` | Pages fetched in parallel by a crawl job |
-| `MAX_CRAWL_JOBS` | `32` | In-memory job cap |
+| `MAX_CRAWL_JOBS` | `32` | Retained job cap, in memory and on disk |
+| `DATA_DIR` | `~/.local/share/web-research` (`$XDG_DATA_HOME/web-research`) | Folder where crawl jobs are kept (`crawl-jobs.sqlite3`); empty or `off` keeps none |
 
 `API_WEB_RATE_LIMIT_PER_MINUTE` controls authenticated REST access to the web
 routes. Existing general and scrape research limits are unchanged.
@@ -470,8 +471,9 @@ pick up the new schema.
   with a benchmark.
 - `web_extract` does not use the scrape cache (it holds scrape answers) but shares the
   page cache with `web_scrape`: a page fetched in the last 5 minutes is not fetched again.
-- Crawl jobs and the scrape/search caches live in one process and are lost on
-  restart. REST and MCP have separate caches. Provider cooldown state is also
+- The scrape, search and page caches live in one process and are lost on
+  restart (crawl jobs are not: they are kept on disk, see "Crawl jobs outlive a
+  restart"). REST and MCP have separate caches. Provider cooldown state is also
   per process.
 - The default DuckDuckGo path can be rate-limited. A 202 bot-detection response
   is reported as `search_failed` with `detail=bot_detected`; a 200 response with
@@ -1216,4 +1218,35 @@ less.
   within five minutes is the same answer. A cut is the search's own limit: it starts no
   cooldown for the provider and no fallback asks for it. Raise the budget (or set it to 0)
   to wait for every angle, or use `depth: fast` for one query.
+
+### Crawl jobs outlive a restart
+
+- Jobs lived only in the manager's memory, and a restart of Dot's daemon restarts this
+  server, so every job (its pages included) was lost. Each job is now kept in SQLite
+  (the standard library) in a data folder, as it goes: its state, options, progress
+  counters, errors, duplicates and results, the results appended as their batch of
+  pages ends. The folder is `WEB_TOOLS_DATA_DIR`, by default `web-research` in the XDG
+  data home (`$XDG_DATA_HOME`, else `~/.local/share/web-research`); the package has no
+  data folder of its own (its research history takes a file path, relative to where the
+  server runs). An empty value, `none` or `off` keeps nothing on disk. A folder this
+  makes is `0700` and the database `0600`: crawled pages are the user's own.
+- After a restart a job that was `queued` or `running` is **`interrupted`**
+  (`finished_at` is when the server read it again), and so is one the server ended by
+  stopping (a graceful stop of the daemon is not a `cancelled`). Its pages stay readable
+  through `web_crawl_status` and `web_crawl_results`, as far as the last batch got; a
+  job being cancelled becomes `cancelled`, and the finished ones read as they were.
+  `interrupted` is final like `completed`: **resuming an interrupted job is left out**
+  (start the crawl again; the page cache and the scrape cache make the pages already read
+  cheap only while they live, which a restart ends).
+- The bounds hold on disk: `MAX_CRAWL_JOBS` and `CRAWL_JOB_TTL_SECONDS` prune a job's
+  rows and results together, as they prune it in memory, on every access and when the
+  server starts, counted from a job's last update (an interrupted job from the restart
+  that interrupted it). A job that is still going is never dropped to make room.
+- A folder that cannot be made or written, or a database that is damaged, costs the
+  persistence and not the crawl: the server logs one warning ("Crawl jobs are no longer
+  kept on disk") and goes on in memory. The tests keep nothing in the owner's data
+  folder (`WEB_TOOLS_DATA_DIR` is empty under them, and a settings made by hand names
+  no folder). Covered by `tests/test_web_crawl_persistence.py`: a manager closed and
+  made again over the same folder, a running and a queued job, a graceful stop, pruning
+  on disk, the folder and a damaged database.
 

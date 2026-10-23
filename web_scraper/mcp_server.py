@@ -292,7 +292,8 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
                 "description": (
                     "Queue a background crawl and return its job id immediately. Pages are "
                     "deduplicated by canonical URL and content hash; robots.txt, domain scope, "
-                    "depth/page limits, filters, and per-host limits apply."
+                    "depth/page limits, filters, and per-host limits apply. use_sitemap seeds "
+                    "it from the site's sitemaps, pages no link reaches."
                 ),
                 "inputSchema": WebCrawlRequest.model_json_schema(),
                 "annotations": _annotations(

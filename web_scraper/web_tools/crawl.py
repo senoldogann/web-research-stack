@@ -23,6 +23,8 @@ from web_scraper.web_tools.urls import (
 )
 
 PageLoader = Callable[[str], Awaitable[dict[str, Any]]]
+# The URLs a site's sitemaps list (in scope of the crawl's options), and the errors met reading them.
+SeedLoader = Callable[["str", "CrawlOptions"], Awaitable[tuple[list[str], list[dict[str, Any]]]]]
 _TERMINAL = {"completed", "cancelled", "failed"}
 
 
@@ -34,6 +36,8 @@ class CrawlOptions:
     include_patterns: list[str] = field(default_factory=list)
     exclude_patterns: list[str] = field(default_factory=list)
     respect_robots: bool = True
+    # Seed the frontier from the site's sitemaps: pages no link reaches.
+    use_sitemap: bool = False
 
     @classmethod
     def from_dict(
@@ -72,6 +76,7 @@ class CrawlOptions:
                 if respect_robots_value is None
                 else bool(respect_robots_value)
             ),
+            use_sitemap=bool(values.get("use_sitemap") or False),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -82,6 +87,7 @@ class CrawlOptions:
             "include_patterns": list(self.include_patterns),
             "exclude_patterns": list(self.exclude_patterns),
             "respect_robots": self.respect_robots,
+            "use_sitemap": self.use_sitemap,
         }
 
 
@@ -97,6 +103,7 @@ class CrawlJob:
     created_ts: float = field(default_factory=time.time)
     updated_ts: float = field(default_factory=time.time)
     discovered: int = 1
+    seeded: int = 0
     pages_attempted: int = 0
     fetched: int = 0
     failed: int = 0
@@ -134,6 +141,7 @@ class CrawlJob:
             "options": self.options.to_dict(),
             "progress": {
                 "discovered": self.discovered,
+                "seeded": self.seeded,
                 "pages_attempted": self.pages_attempted,
                 "fetched": self.fetched,
                 "failed": self.failed,
@@ -157,10 +165,12 @@ class CrawlManager:
         loader: PageLoader,
         settings: WebToolsSettings,
         robots: Any = None,
+        seeder: Optional[SeedLoader] = None,
     ) -> None:
         self._loader = loader
         self._settings = settings
         self._robots = robots
+        self._seeder = seeder
         self._jobs: dict[str, CrawlJob] = {}
 
     async def create(
@@ -260,6 +270,8 @@ class CrawlManager:
         seen_hashes: dict[str, str] = {}
 
         try:
+            queue.extend(await self._seeds(job, seen_urls))
+            job.queue_size = len(queue)
             while queue and job.pages_attempted < job.options.max_pages:
                 if job.cancel_event.is_set():
                     break
@@ -334,6 +346,53 @@ class CrawlManager:
             job.queue_size = len(queue)
             job.finished_at = _iso(time.time())
             job.updated_ts = time.time()
+
+    async def _seeds(self, job: CrawlJob, seen_urls: set[str]) -> list[tuple[str, int]]:
+        """The sitemaps' pages as the first of the frontier, when the job asked for them.
+
+        They are the start page's equals (depth 0, so their links are followed as ever),
+        in the sitemap's order, kept in scope, through the filters and behind robots.txt,
+        and they count against ``max_pages`` like any page: no more are queued than the
+        crawl could read. A sitemap that cannot be read is an error of the job, not its end.
+        """
+        if not job.options.use_sitemap or self._seeder is None:
+            return []
+        try:
+            urls, errors = await self._seeder(job.url, job.options)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the links still lead the crawl
+            self._record_error(job, job.url, "sitemap_failed", type(exc).__name__)
+            return []
+        for error in errors:
+            if str(error.get("url") or "").endswith("/robots.txt"):
+                continue  # a site without robots.txt is a site without Sitemap lines
+            self._record_error(
+                job,
+                str(error.get("url") or job.url),
+                str(error.get("code") or "sitemap_error"),
+                str(error.get("message") or ""),
+            )
+        seeds: list[tuple[str, int]] = []
+        room = max(job.options.max_pages - 1, 0)
+        for url in urls:
+            if len(seeds) >= room:
+                break
+            key = _identity(url)
+            if key in seen_urls or not self._in_scope(url, job.url, job.options):
+                continue
+            if (
+                job.options.respect_robots
+                and self._robots is not None
+                and not await self._robots.allowed(url)
+            ):
+                job.skipped += 1
+                continue
+            seen_urls.add(key)
+            seeds.append((self._target(job, url), 0))
+        job.seeded = len(seeds)
+        job.discovered += len(seeds)
+        return seeds
 
     async def _process(
         self,

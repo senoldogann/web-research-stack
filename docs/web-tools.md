@@ -1150,3 +1150,26 @@ less.
   100 and 200 (`tests/test_web_extract_paging.py`). Fields read by their name
   (`keywords`, a JSON-LD list) page the same way.
 
+### Crawl seeded from the sitemap
+
+- A crawl found a site's pages by their links, so the pages no link reaches (an
+  archive, an orphaned article) were missed. `use_sitemap: true` in the crawl's
+  options (`web_crawl_start`, `POST /api/v1/web/crawl`; false by default) seeds the
+  frontier from the site's sitemaps, read as `web_map` reads them: the `Sitemap:`
+  lines of robots.txt, `/sitemap.xml`, and the sitemaps an index names (at most
+  `MAX_SITEMAPS`).
+- The seeds come right after the start page, in the sitemap's order, as its
+  equals (depth 0, so a seed's own links are followed to `max_depth` as ever).
+  They are kept in scope (the host, and its subdomains only with
+  `include_subdomains`), through `include_patterns` and `exclude_patterns`, and
+  behind robots.txt (a disallowed seed is counted in `skipped`), and they count
+  against `max_pages`: no more than `max_pages - 1` are queued, so a crawl of 20
+  pages over a 500-page sitemap reads the start page and the first 19 seeds, and
+  link-following has what is left, none here. A page both listed and linked is read
+  once.
+- The job's `progress.seeded` says how many seeds were queued and its `options`
+  show `use_sitemap`. A sitemap that cannot be read is an entry in the job's `errors`,
+  not its end, and a site with no robots.txt is not an error of it.
+- Covered by `tests/test_web_crawl_sitemap.py`: a fake site whose sitemap lists pages
+  no link reaches, scope, filters, robots, `max_pages`, an index, and a missing sitemap.
+

@@ -1112,6 +1112,58 @@ class WebToolsService:
             max(limit or self.settings.default_map_limit, 1),
             self.settings.max_map_limit,
         )
+        entries, sitemaps, errors = await self._read_sitemaps(base, include_subdomains)
+
+        try:
+            page_fetch = await self.fetcher.fetch(self._request_url(url))
+            page = extract_page(
+                page_fetch.html,
+                page_fetch.final_url,
+                max_links=self.settings.max_links,
+                max_chars=self.settings.markdown_max_chars,
+            )
+            for link in page.links:
+                entries.setdefault(
+                    link.url,
+                    {"url": link.url, "lastmod": None, "source": "links"},
+                )
+            # The base is listed once its page was read: a host that does not
+            # resolve, or a page that is not there, is no URL of the site.
+            entries.setdefault(base, {"url": base, "lastmod": None, "source": "base"})
+        except Exception as exc:  # noqa: BLE001 - sitemap results may still be useful
+            errors.append(self._safe_error(base, exc))
+
+        matched = [
+            target
+            for target in entries
+            if url_in_scope(target, base, include_subdomains)
+            and matches_url_filters(target, includes, excludes)
+            and (not search or matches_search_filter(target, search))
+        ]
+        urls = matched[:max_urls]
+
+        self.metrics.count("maps_total")
+        return {
+            "url": base,
+            "urls": urls,
+            "total": len(matched),
+            "returned": len(urls),
+            "truncated": len(matched) > len(urls),
+            "entries": [entries[target] for target in urls],
+            "sitemaps": sitemaps,
+            "errors": errors,
+        }
+
+    async def _read_sitemaps(
+        self, base: str, include_subdomains: bool
+    ) -> tuple[dict[str, dict[str, Any]], list[str], list[dict[str, Any]]]:
+        """The URLs of a site's sitemaps, as ``web_map`` and a seeded crawl read them.
+
+        The ``Sitemap:`` lines of robots.txt and ``/sitemap.xml``, and the sitemaps an index
+        names (at most ``max_sitemaps``, in scope of *base*). Returns the entries by
+        canonical URL (``source: sitemap``), the sitemaps read, and the errors met: one
+        sitemap that cannot be read never fails the rest.
+        """
         origin = _origin(base)
         errors: list[dict[str, Any]] = []
         entries: dict[str, dict[str, Any]] = {}
@@ -1173,45 +1225,14 @@ class WebToolsService:
                         seen_sitemaps.add(child)
                         queue.append(child)
 
-        try:
-            page_fetch = await self.fetcher.fetch(self._request_url(url))
-            page = extract_page(
-                page_fetch.html,
-                page_fetch.final_url,
-                max_links=self.settings.max_links,
-                max_chars=self.settings.markdown_max_chars,
-            )
-            for link in page.links:
-                entries.setdefault(
-                    link.url,
-                    {"url": link.url, "lastmod": None, "source": "links"},
-                )
-            # The base is listed once its page was read: a host that does not
-            # resolve, or a page that is not there, is no URL of the site.
-            entries.setdefault(base, {"url": base, "lastmod": None, "source": "base"})
-        except Exception as exc:  # noqa: BLE001 - sitemap results may still be useful
-            errors.append(self._safe_error(base, exc))
+        return entries, sitemaps, errors
 
-        matched = [
-            target
-            for target in entries
-            if url_in_scope(target, base, include_subdomains)
-            and matches_url_filters(target, includes, excludes)
-            and (not search or matches_search_filter(target, search))
-        ]
-        urls = matched[:max_urls]
-
-        self.metrics.count("maps_total")
-        return {
-            "url": base,
-            "urls": urls,
-            "total": len(matched),
-            "returned": len(urls),
-            "truncated": len(matched) > len(urls),
-            "entries": [entries[target] for target in urls],
-            "sitemaps": sitemaps,
-            "errors": errors,
-        }
+    async def _sitemap_seeds(
+        self, base: str, options: CrawlOptions
+    ) -> tuple[list[str], list[dict[str, Any]]]:
+        """The pages a site's sitemaps list, for a crawl that asked to be seeded from them."""
+        entries, _, errors = await self._read_sitemaps(base, options.include_subdomains)
+        return list(entries), errors
 
     async def start_crawl(
         self,
@@ -1272,6 +1293,7 @@ class WebToolsService:
                 self._crawl_page,
                 self.settings,
                 robots=robots,
+                seeder=self._sitemap_seeds,
             )
         return self._crawl
 

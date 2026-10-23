@@ -742,6 +742,13 @@ class WebCrawlOptions(BaseModel):
     include_patterns: List[str] = Field(default_factory=list, max_length=50)
     exclude_patterns: List[str] = Field(default_factory=list, max_length=50)
     respect_robots: Optional[bool] = None
+    use_sitemap: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Seed the crawl from the site's sitemaps (robots.txt, /sitemap.xml, indexes): pages "
+            "no link reaches. Seeds stay in scope and filters, and count against max_pages"
+        ),
+    )
 
 
 class WebCrawlRequest(BaseModel):

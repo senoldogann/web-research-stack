@@ -1076,6 +1076,9 @@ less.
   query says how fresh: it weighs 0.30, so a fresh page goes before a stale
   outlet's article. Diversity holds: the per-domain cap and the source-type
   adjustment run after, on these scores.
+- `depth: fast` keeps the provider's order, as it always did: the types are
+  labelled on its results all the same, but only `discover` and `deep` rank by
+  them.
 - The ten recorded queries of `benchmarks/web_search_relevance.json` rank as
   they did (none of their results is an outlet, a post or a press release):
   `tests/test_web_search_sources.py` holds their order.
@@ -1249,4 +1252,45 @@ less.
   no folder). Covered by `tests/test_web_crawl_persistence.py`: a manager closed and
   made again over the same folder, a running and a queued job, a graceful stop, pruning
   on disk, the folder and a damaged database.
+
+### What round 3 measured live (2026-10-23, this Mac, one run each)
+
+About 30 calls in all, one search at a time, 8 s or more apart.
+
+- **Search latency, same queries, base code (727ec4f) against this branch**, DuckDuckGo
+  answering every call at that moment:
+
+  | Query | depth | before | after |
+  |---|---|---:|---:|
+  | `python asyncio tutorial` | `fast` | 1.09 s | 0.69 s |
+  | `rust borrow checker explained` | `fast` | 1.08 s | 0.72 s |
+  | `AI regulation news this week` | `fast` | 0.93 s | 0.75 s |
+  | `python asyncio tutorial` | `discover` | 3.90 s | 4.49 s |
+
+  A `fast` search is one request instead of two (no token fetched from
+  `duckduckgo.com`), a third quicker, with the same results. `discover` sends its three
+  angles one at a time through the provider's gate, with its 250-500 ms jitter, as
+  before: the difference is DuckDuckGo's and the jitter's, one run each.
+- **The chain.** With the html endpoint made to refuse in the process (a simulated 202),
+  DuckDuckGo lite answered a `fast` search in 0.81 s (`tried`: html failed
+  `bot_detected`, lite answered); before, that search went to the headless Google. Later
+  in the same session, after about 30 calls in 35 minutes from this address, DuckDuckGo
+  refused *both* endpoints (`bot_detected`, `tried` shows each): the angles went to Google,
+  and the base angle took 25 s while the headless browser started. Lite helps when one
+  endpoint refuses (they judge a request by its form, and each has its own pace); it
+  cannot when the address itself is flagged.
+- **Archive.** Reuters' AI section answered 401/captcha; the CDX lookup answered 200
+  with its copies (the newest of 2025-09-25); the replay of that newest copy answered the
+  fetcher HTTP 429 whatever its headers (the fetcher's, only a user agent, or a user agent
+  and `Accept: */*`), while `curl` got 200 for the same address a few seconds before and
+  after. The 429 is the archive's reply to this client (`httpx`, HTTP/1.1), not a
+  header the fetcher could change, so the walk ends with its hint (`The Internet Archive
+  answered HTTP 429 ... try archive: true again later`) and the skip to a good copy could not be
+  shown live from this Mac (the tests cover it with fake transports and the real
+  interstitial check). Reading replays with `curl_cffi` (already a dependency) would be the
+  way round it; it is left out because the fetcher's guards are not to be touched here.
+- **News search with `read`.** `AI regulation news this week` at `discover` with
+  `read: 2`: Reuters (`news`) first; its content was a `content_error` (`blocked`, captcha,
+  with the archive hint), `news.un.org` came back as 1,500 characters
+  (`content_truncated: true`), `timings.read_ms` 2.1 s, the whole answer 7.4 KB.
 

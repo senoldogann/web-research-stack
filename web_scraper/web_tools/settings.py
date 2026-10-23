@@ -14,6 +14,12 @@ _BROWSER_PREFERENCES = {"auto", "chrome", "chromium", "camoufox"}
 # the service refuses a smaller one, so no layer silently raises a caller's cap.
 MIN_MARKDOWN_CHARS = 500
 
+# web_extract's bounds: the values one ``all`` field may return, and the size of
+# a whole answer in characters (its compact JSON).
+EXTRACT_MAX_ITEMS_CEILING = 1_000
+EXTRACT_MAX_CHARS_FLOOR = 1_000
+EXTRACT_MAX_CHARS_CEILING = 200_000
+
 
 def _bool(name: str, default: bool) -> bool:
     value = os.getenv(name)
@@ -103,6 +109,8 @@ class WebToolsSettings:
     max_crawl_errors: int = 100
 
     max_extract_fields: int = 50
+    extract_max_items: int = 100
+    extract_max_chars: int = 20_000
 
     def __post_init__(self) -> None:
         self.search_provider = (self.search_provider or "duckduckgo").strip().lower()
@@ -176,6 +184,11 @@ class WebToolsSettings:
         self.max_crawl_jobs = max(self.max_crawl_jobs, 1)
         self.max_crawl_errors = max(self.max_crawl_errors, 1)
         self.max_extract_fields = max(self.max_extract_fields, 1)
+        self.extract_max_items = min(max(self.extract_max_items, 1), EXTRACT_MAX_ITEMS_CEILING)
+        self.extract_max_chars = min(
+            max(self.extract_max_chars, EXTRACT_MAX_CHARS_FLOOR),
+            EXTRACT_MAX_CHARS_CEILING,
+        )
 
     @classmethod
     def from_env(cls) -> WebToolsSettings:
@@ -245,4 +258,6 @@ class WebToolsSettings:
             max_crawl_jobs=_int("WEB_TOOLS_MAX_CRAWL_JOBS", 32),
             max_crawl_errors=_int("WEB_TOOLS_MAX_CRAWL_ERRORS", 100),
             max_extract_fields=_int("WEB_TOOLS_MAX_EXTRACT_FIELDS", 50),
+            extract_max_items=_int("WEB_TOOLS_EXTRACT_MAX_ITEMS", 100),
+            extract_max_chars=_int("WEB_TOOLS_EXTRACT_MAX_CHARS", 20_000),
         )

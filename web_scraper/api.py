@@ -1298,7 +1298,11 @@ def create_app(settings: Optional[Config] = None) -> FastAPI:
     ) -> WebExtractResponse:
         web_tools: WebToolsService = request.app.state.web_tools
         async with app.state.concurrency_gate.acquire():
-            result = await web_tools.extract(payload.url, payload.extraction_schema)
+            result = await web_tools.extract(
+                payload.url,
+                payload.field_specs(),
+                max_chars=payload.max_chars,
+            )
         return WebExtractResponse(**result)
 
     @app.post(

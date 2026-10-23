@@ -63,8 +63,8 @@ class FakeWebTools:
             "errors": [],
         }
 
-    async def extract(self, url: str, schema: dict[str, Any]) -> dict[str, Any]:
-        self.calls.append(("extract", {"url": url, "schema": schema}))
+    async def extract(self, url: str, schema: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(("extract", {"url": url, "schema": schema, **kwargs}))
         return {
             "url": url,
             "requested_url": url,
@@ -265,7 +265,7 @@ def test_extract_route_accepts_schema_alias(
     assert response.status_code == 200
     assert response.json()["data"] == {"name": "Example"}
     assert fake_tools.calls == [
-        ("extract", {"url": "https://example.com/", "schema": {"name": "h1"}})
+        ("extract", {"url": "https://example.com/", "schema": {"name": "h1"}, "max_chars": None})
     ]
 
 

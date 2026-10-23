@@ -693,3 +693,17 @@ headless browser met as well.
   on REST, `invalid_arguments` on MCP, `invalid_request` from the service), and
   the server's cap (`WEB_TOOLS_MARKDOWN_MAX_CHARS`, 50,000 by default) still
   applies above it.
+
+### Bounded extraction
+
+- `web_extract` had no bound: `{"links": {"selector": "a", "attribute": "href",
+  "all": true}}` on the Wikipedia article on the Eiffel Tower answered 114,465
+  characters. A field with `all: true` now returns at most `max_items` values
+  (100 by default, up to 1,000, `WEB_TOOLS_EXTRACT_MAX_ITEMS`), and its
+  provenance holds `total` (every match), `returned`, and `truncated`.
+- The whole answer stays under `max_chars` (20,000 characters of compact JSON by
+  default, 1,000 to 200,000, `WEB_TOOLS_EXTRACT_MAX_CHARS`): the largest field is
+  cut first (a list from its end, a text at its tail with `…`), then evidence;
+  the field's provenance says `truncated`, and so does the answer's
+  `truncated`. The request schema now describes a field object (`selector`,
+  `fallback_selectors`, `attribute`, `all`, `max_items`, `type`, `required`).

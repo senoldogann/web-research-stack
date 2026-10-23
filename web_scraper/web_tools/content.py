@@ -117,6 +117,8 @@ class StructuredResult:
     data: dict[str, Any]
     provenance: dict[str, Any]
     errors: list[dict[str, Any]] = field(default_factory=list)
+    # True when an ``all`` field had more values than its max_items.
+    truncated: bool = False
 
 
 def _soup(html: str) -> BeautifulSoup:
@@ -602,13 +604,20 @@ def extract_structured(
     html: str,
     base_url: str,
     schema: dict[str, Any],
+    *,
+    max_items: int = 100,
 ) -> StructuredResult:
-    """Extract schema fields with selector or structured-data provenance."""
+    """Extract schema fields with selector or structured-data provenance.
+
+    An ``all`` field returns at most its own ``max_items`` values (*max_items*
+    when it names none); its provenance counts every match in ``total``.
+    """
     soup = _soup(html)
     json_ld = _iter_json_ld(soup)
     data: dict[str, Any] = {}
     provenance: dict[str, Any] = {}
     errors: list[dict[str, Any]] = []
+    truncated = False
 
     for field_name, raw_spec in schema.items():
         spec = {"selector": raw_spec} if isinstance(raw_spec, str) else dict(raw_spec or {})
@@ -634,9 +643,11 @@ def extract_structured(
                 continue
 
             wants_all = bool(spec.get("all", False))
+            limit = int(spec.get("max_items") or max_items) if wants_all else 1
             selected = elements if wants_all else elements[:1]
             values: list[Any] = []
             evidence: list[str] = []
+            total = 0
             for element in selected:
                 attribute = spec.get("attribute")
                 raw_value = element.get(attribute, "") if attribute else element.get_text()
@@ -645,8 +656,10 @@ def extract_structured(
                 coerced = _coerce(raw_value, value_type)
                 if coerced in (None, ""):
                     continue
-                values.append(coerced)
-                evidence.append(_clean_text(element.get_text()) or _clean_text(str(raw_value)))
+                total += 1
+                if len(values) < limit:
+                    values.append(coerced)
+                    evidence.append(_clean_text(element.get_text()) or _clean_text(str(raw_value)))
 
             if values:
                 data[field_name] = values if wants_all else values[0]
@@ -656,6 +669,13 @@ def extract_structured(
                     "evidence": " | ".join(evidence)[:500],
                     "source_url": base_url,
                 }
+                if wants_all:
+                    provenance[field_name].update(
+                        total=total,
+                        returned=len(values),
+                        truncated=total > len(values),
+                    )
+                    truncated = truncated or total > len(values)
                 found = True
                 break
 
@@ -705,4 +725,9 @@ def extract_structured(
                 }
             )
 
-    return StructuredResult(data=data, provenance=provenance, errors=errors)
+    return StructuredResult(
+        data=data,
+        provenance=provenance,
+        errors=errors,
+        truncated=truncated,
+    )

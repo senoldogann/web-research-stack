@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from web_scraper.config import config
-from web_scraper.web_tools.settings import MIN_MARKDOWN_CHARS
+from web_scraper.web_tools.settings import (
+    EXTRACT_MAX_CHARS_CEILING,
+    EXTRACT_MAX_CHARS_FLOOR,
+    EXTRACT_MAX_ITEMS_CEILING,
+    MIN_MARKDOWN_CHARS,
+)
 
 
 def utc_now_iso() -> str:
@@ -378,18 +383,73 @@ class WebMapResponse(BaseModel):
     errors: List[Dict[str, Any]]
 
 
+class WebExtractField(BaseModel):
+    """How to find one field; with no selector it is read from the page's structured data."""
+
+    model_config = ConfigDict(extra="allow")
+
+    selector: Optional[str] = Field(
+        default=None,
+        description="CSS selector; with none, JSON-LD and meta tags are read by the field's name",
+    )
+    fallback_selectors: List[str] = Field(
+        default_factory=list,
+        description="Selectors tried in order when selector finds nothing",
+    )
+    attribute: Optional[str] = Field(
+        default=None,
+        description="Read this attribute (href, src, content, datetime) instead of the text",
+    )
+    all: bool = Field(default=False, description="Every match as a list, not only the first")
+    max_items: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=EXTRACT_MAX_ITEMS_CEILING,
+        description=(
+            "With all: the most values returned (100 by default); the field's provenance "
+            "holds total, returned, and truncated"
+        ),
+    )
+    type: str = Field(default="string", description="string, number, integer, or boolean")
+    required: bool = Field(
+        default=False,
+        description="Report required_field_missing in errors when nothing is found",
+    )
+
+
 class WebExtractRequest(BaseModel):
     """Structured extraction request using CSS selectors."""
 
     model_config = ConfigDict(populate_by_name=True)
 
     url: str = Field(..., min_length=3, max_length=2048)
-    extraction_schema: Dict[str, Any] = Field(..., alias="schema", min_length=1)
+    extraction_schema: Dict[str, Union[str, WebExtractField]] = Field(
+        ...,
+        alias="schema",
+        min_length=1,
+        description="Field name to a CSS selector string or a field object",
+    )
+    max_chars: Optional[int] = Field(
+        default=None,
+        ge=EXTRACT_MAX_CHARS_FLOOR,
+        le=EXTRACT_MAX_CHARS_CEILING,
+        description=(
+            "Cap on the whole answer in characters (20,000 by default); values and evidence "
+            "are cut to fit, and truncated says so"
+        ),
+    )
 
     @field_validator("url")
     @classmethod
     def validate_url(cls, value: str) -> str:
         return normalize_url(value)
+
+    def field_specs(self) -> Dict[str, Any]:
+        """The schema as the service reads it: a selector string or a plain object per field."""
+        return {
+            name: spec if isinstance(spec, str) else spec.model_dump(exclude_none=True)
+            for name, spec in self.extraction_schema.items()
+        }
 
 
 class WebExtractResponse(BaseModel):
@@ -405,6 +465,10 @@ class WebExtractResponse(BaseModel):
     fetched_with: str
     timings: Dict[str, float]
     warnings: List[str] = Field(default_factory=list)
+    truncated: bool = Field(
+        default=False,
+        description="True when max_items or max_chars left values out or cut a text",
+    )
 
 
 class WebCrawlOptions(BaseModel):

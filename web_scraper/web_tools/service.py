@@ -16,6 +16,7 @@ from web_scraper.web_tools.browser import (
     BrowserUnavailableError,
     HeadlessBrowserManager,
 )
+from web_scraper.web_tools.budget import fit_extract_payload
 from web_scraper.web_tools.content import (
     ParsedPage,
     detect_interstitial,
@@ -47,7 +48,13 @@ from web_scraper.web_tools.search import (
     SearchAdapter,
     SearchResult,
 )
-from web_scraper.web_tools.settings import MIN_MARKDOWN_CHARS, WebToolsSettings
+from web_scraper.web_tools.settings import (
+    EXTRACT_MAX_CHARS_CEILING,
+    EXTRACT_MAX_CHARS_FLOOR,
+    EXTRACT_MAX_ITEMS_CEILING,
+    MIN_MARKDOWN_CHARS,
+    WebToolsSettings,
+)
 from web_scraper.web_tools.urls import (
     UnsafeUrlError,
     canonicalize_url,
@@ -545,17 +552,29 @@ class WebToolsService:
         await self.cache.set(cache_key, _for_cache(payload))
         return payload
 
-    async def extract(self, url: str, schema: Mapping[str, Any]) -> dict[str, Any]:
+    async def extract(
+        self,
+        url: str,
+        schema: Mapping[str, Any],
+        *,
+        max_chars: Optional[int] = None,
+    ) -> dict[str, Any]:
         requested = self._canonical(url)
         fetch_target = self._request_url(url)
         validated = self._validate_schema(schema)
+        budget = self._extract_budget(max_chars)
         document = await self._load_page(
             fetch_target,
             max_chars=self.settings.markdown_max_chars,
         )
 
         started = time.perf_counter()
-        structured = extract_structured(document.html, document.final_url, validated)
+        structured = extract_structured(
+            document.html,
+            document.final_url,
+            validated,
+            max_items=self.settings.extract_max_items,
+        )
         extract_ms = (time.perf_counter() - started) * 1000
         self.metrics.observe("extraction", extract_ms, operation="structured")
         total_ms = document.timings.get("total_ms", 0.0) + extract_ms
@@ -565,7 +584,7 @@ class WebToolsService:
         timings = dict(document.timings)
         timings["extract_ms"] = round(extract_ms, 2)
         timings["total_ms"] = round(total_ms, 2)
-        return {
+        payload = {
             "url": document.final_url,
             "requested_url": requested,
             "title": document.page.title,
@@ -577,8 +596,12 @@ class WebToolsService:
             "errors": structured.errors,
             "fetched_with": document.fetched_with,
             "timings": timings,
-            "warnings": document.warnings,
+            "warnings": list(document.warnings),
+            "truncated": False,
         }
+        cut = fit_extract_payload(payload, budget)
+        payload["truncated"] = structured.truncated or cut
+        return payload
 
     async def map(  # noqa: A003 - public API name
         self,
@@ -1096,6 +1119,17 @@ class WebToolsService:
         except UnsafeUrlError as exc:
             raise WebToolError("unsafe_target", str(exc), url=url) from exc
 
+    def _extract_budget(self, value: Optional[int]) -> int:
+        if value is None:
+            return self.settings.extract_max_chars
+        if int(value) < EXTRACT_MAX_CHARS_FLOOR:
+            raise WebToolError(
+                "invalid_request",
+                f"max_chars must be at least {EXTRACT_MAX_CHARS_FLOOR}",
+                detail=f"got {int(value)}",
+            )
+        return min(int(value), EXTRACT_MAX_CHARS_CEILING)
+
     def _validate_schema(self, schema: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(schema, Mapping) or not schema:
             raise WebToolError("invalid_request", "Schema must be a non-empty object")
@@ -1113,6 +1147,17 @@ class WebToolsService:
                 raise WebToolError(
                     "invalid_request",
                     f"Schema field {field_name!r} must be a selector string or object",
+                )
+            items = spec.get("max_items")
+            if items is not None and (
+                isinstance(items, bool)
+                or not isinstance(items, int)
+                or not 1 <= items <= EXTRACT_MAX_ITEMS_CEILING
+            ):
+                raise WebToolError(
+                    "invalid_request",
+                    f"Schema field {field_name!r}: max_items must be 1 to "
+                    f"{EXTRACT_MAX_ITEMS_CEILING}",
                 )
             validated[str(field_name)] = dict(spec)
         return validated

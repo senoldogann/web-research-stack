@@ -71,7 +71,7 @@ async def _map(service: WebToolsService, arguments: dict[str, Any]) -> dict[str,
 
 async def _extract(service: WebToolsService, arguments: dict[str, Any]) -> dict[str, Any]:
     request = WebExtractRequest.model_validate(arguments)
-    return await service.extract(request.url, request.extraction_schema)
+    return await service.extract(request.url, request.field_specs(), max_chars=request.max_chars)
 
 
 async def _crawl_start(service: WebToolsService, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -185,7 +185,10 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
                 "description": (
                     "Extract structured fields from one page with CSS selectors. Each field "
                     "reports how it was found, its evidence, and its source URL; missing "
-                    "required fields are reported, never invented."
+                    "required fields are reported, never invented. A field with all: true "
+                    "returns up to max_items matches (100 by default; provenance gives total, "
+                    "returned, and truncated), and the whole answer stays under max_chars "
+                    "(20,000 by default), its truncated flag set when anything was cut."
                 ),
                 "inputSchema": WebExtractRequest.model_json_schema(by_alias=True),
                 "annotations": _annotations(

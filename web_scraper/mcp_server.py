@@ -109,11 +109,17 @@ async def _search(service: WebToolsService, arguments: dict[str, Any]) -> dict[s
 
 async def _scrape(service: WebToolsService, arguments: dict[str, Any]) -> dict[str, Any]:
     request = WebScrapeRequest.model_validate(arguments)
+    options = request.model_dump(include={"links", "max_links"}, exclude_defaults=True)
+    if request.urls:
+        return await service.scrape_many(
+            request.urls,
+            max_chars=request.max_chars,
+            archive=request.archive,
+            max_total_chars=request.max_total_chars,
+            **options,
+        )
     return await service.scrape(
-        request.url,
-        max_chars=request.max_chars,
-        archive=request.archive,
-        **request.model_dump(include={"links", "max_links"}, exclude_defaults=True),
+        str(request.url), max_chars=request.max_chars, archive=request.archive, **options
     )
 
 
@@ -218,7 +224,10 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
                     "default, max_links 0 to 200, links: false for none; menus, headers, "
                     "footers, and sidebars left out; links_truncated says more exist, web_map "
                     "lists them all), metadata, content hash, and stage timings. max_chars "
-                    "bounds the Markdown only, max_links the links. A shared headless browser is used only for JavaScript "
+                    "bounds the Markdown only, max_links the links. urls (2 to 10) in place of "
+                    "url reads several pages in one call: pages, in order, each its answer or "
+                    "{url, error}; max_total_chars (60,000) bounds the whole answer, each "
+                    "page's Markdown cut to fit and marked markdown_truncated. A shared headless browser is used only for JavaScript "
                     "shells or access interstitials; CAPTCHA and login walls fail fast, their "
                     "error's hint saying what to try next: archive: true reads the Internet "
                     "Archive's newest copy that is not itself a wall of a page the site walls "

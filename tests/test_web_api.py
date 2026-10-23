@@ -335,3 +335,19 @@ def test_stats_returns_runtime_metrics(web_client: TestClient) -> None:
 
     assert response.status_code == 200
     assert response.json()["cache"]["entries"] == 0
+
+
+def test_a_validator_error_is_a_422_with_json_details_not_a_500(
+    web_client: TestClient, fake_tools: FakeWebTools
+) -> None:
+    # A field validator that raises ValueError leaves the exception in the error's ctx.
+    response = web_client.post(
+        "/api/v1/web/search", headers=HEADERS, json={"query": "hello", "region": "finland"}
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error"] == "Validation failed"
+    assert "region" in str(body["details"][0]["loc"])
+    assert "country-language" in body["details"][0]["ctx"]["error"]
+    assert fake_tools.calls == []

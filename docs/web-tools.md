@@ -157,6 +157,8 @@ Copy `.env.example` to `.env` and set what you need. The important web tool knob
 | `SEARCH_PROVIDER_COOLDOWN_SECONDS` | `5` | First cooldown after a failed provider call |
 | `SEARCH_PROVIDER_MAX_COOLDOWN_SECONDS` | `300` | Cap for the doubling cooldown |
 | `SCRAPE_MAX_LINKS` | `50` | Links `web_scrape` lists by default, from the page content; a request's `max_links` (0 to 200) replaces it |
+| `SCRAPE_BATCH_CONCURRENCY` | `4` | Pages one `web_scrape` call with `urls` reads at a time (and at most 2 from one host) |
+| `SCRAPE_BATCH_MAX_TOTAL_CHARS` | `60000` | Cap on a whole batch answer, in characters; a request's `max_total_chars` (5,000 to 500,000) replaces it |
 | `ARCHIVE_BUDGET_SECONDS` | `20` | Time the walk through the archive's copies may take (`archive: true`) |
 | `FETCH_TIMEOUT_SECONDS` | `20` | Per-request timeout |
 | `FETCH_RETRIES` | `1` | Retries for transient failures only |
@@ -1070,4 +1072,33 @@ less.
 - The ten recorded queries of `benchmarks/web_search_relevance.json` rank as
   they did (none of their results is an outlet, a post or a press release):
   `tests/test_web_search_sources.py` holds their order.
+
+### Several pages in one call
+
+- `web_scrape` takes `urls` (2 to 10 URLs) in place of `url`: exactly one of the
+  two. The answer is `{"pages": [...], "timings": {"total_ms": ...}}`, the pages
+  in the order given. Each is that page's own scrape answer (with
+  `markdown_truncated`, below) or `{"url", "error"}` with the error envelope (code,
+  message, url, status_code, detail and, for a walled page, its `hint`). One
+  page failing never fails the others; `links`, `max_links`, `max_chars` and
+  `archive` apply to every page. The single-URL answer is unchanged.
+- Limits: `SCRAPE_BATCH_CONCURRENCY` pages at a time (4 by default) and at most
+  two at a time from one host, whatever the number of hosts: a page waits for its
+  host's turn before it takes one of the four, so a queue on one host never keeps
+  another host's page waiting. The fetcher's own per-host gate and the page cache
+  still apply, so a page read before is served from the cache.
+- The whole answer stays under `max_total_chars` (60,000 characters of compact JSON
+  by default, 5,000 to 500,000). The pages whose Markdown is over one shared
+  length are cut to it, so a long page loses most and a short one nothing; a cut
+  Markdown ends with `…` and its page says `markdown_truncated: true` (it is
+  `false` on every other page of a batch, and absent from a single answer). Only
+  if that cannot fit do the links, then the metadata, then the rest of the
+  Markdown give way (`links_truncated` and `metadata_truncated` say so). A
+  cut never reaches the cache: a single scrape of the same URL afterwards is whole.
+- REST: `POST /api/v1/web/scrape` answers a batch with the same shape; a request with
+  both `url` and `urls`, or neither, is refused (HTTP 422). The schema keeps `url` a
+  string and `urls` an array (2 to 10) with no top-level `oneOf`.
+- The REST 422 body no longer turns into a 500 when a validator raised
+  `ValueError` (the exception object was left in `ctx.error`): `details[].ctx.error` is
+  now its message.
 

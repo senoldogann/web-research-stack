@@ -18,7 +18,7 @@ from web_scraper.web_tools.browser import (
     BrowserUnavailableError,
     HeadlessBrowserManager,
 )
-from web_scraper.web_tools.budget import fit_extract_payload, trim_metadata
+from web_scraper.web_tools.budget import fit_extract_payload, fit_scrape_batch, trim_metadata
 from web_scraper.web_tools.content import (
     ParsedPage,
     detect_interstitial,
@@ -65,6 +65,11 @@ from web_scraper.web_tools.settings import (
     EXTRACT_MAX_CHARS_FLOOR,
     EXTRACT_MAX_ITEMS_CEILING,
     MIN_MARKDOWN_CHARS,
+    SCRAPE_BATCH_MAX_TOTAL_CHARS,
+    SCRAPE_BATCH_MAX_URLS,
+    SCRAPE_BATCH_MIN_TOTAL_CHARS,
+    SCRAPE_BATCH_MIN_URLS,
+    SCRAPE_BATCH_PER_HOST,
     SCRAPE_MAX_LINKS_CEILING,
     WebToolsSettings,
 )
@@ -779,6 +784,86 @@ class WebToolsService:
         self.metrics.count("scrapes_total", mode=payload["fetched_with"])
         await self.cache.set(cache_key, _for_cache(payload))
         return payload
+
+    async def scrape_many(
+        self,
+        urls: Sequence[str],
+        *,
+        max_chars: Optional[int] = None,
+        archive: bool = False,
+        links: bool = True,
+        max_links: Optional[int] = None,
+        max_total_chars: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Read 2 to 10 pages in one call: ``{"pages": [...], "timings": {...}}``.
+
+        The pages come back in the order given, each its scrape answer, or ``{"url",
+        "error"}`` with the error envelope: one page failing never fails the others. At
+        most ``scrape_batch_concurrency`` are read at a time and two from one host. The
+        whole answer stays under ``max_total_chars``: each page's Markdown is cut to fit
+        (see ``fit_scrape_batch``) and says so with ``markdown_truncated``.
+        """
+        targets = list(urls)
+        if not SCRAPE_BATCH_MIN_URLS <= len(targets) <= SCRAPE_BATCH_MAX_URLS:
+            raise WebToolError(
+                "invalid_request",
+                f"urls takes {SCRAPE_BATCH_MIN_URLS} to {SCRAPE_BATCH_MAX_URLS} URLs",
+                detail=f"got {len(targets)}",
+            )
+        cap = self._batch_total(max_total_chars)
+        started = time.perf_counter()
+        overall = asyncio.Semaphore(self.settings.scrape_batch_concurrency)
+        per_host: dict[str, asyncio.Semaphore] = {}
+
+        async def read(url: str) -> dict[str, Any]:
+            gate = per_host.setdefault(self._host_of(url), asyncio.Semaphore(SCRAPE_BATCH_PER_HOST))
+            # The host's turn comes first: pages queued behind one host never hold a slot
+            # that a page of another host could use.
+            async with gate, overall:
+                try:
+                    page = await self.scrape(
+                        url,
+                        max_chars=max_chars,
+                        archive=archive,
+                        links=links,
+                        max_links=max_links,
+                    )
+                except WebToolError as exc:
+                    return {"url": url, "error": exc.to_dict()}
+                except Exception as exc:  # noqa: BLE001 - one page must not fail the others
+                    failure = WebToolError(
+                        "internal_error",
+                        "The page failed unexpectedly",
+                        url=url,
+                        detail=type(exc).__name__,
+                    )
+                    return {"url": url, "error": failure.to_dict()}
+            return {**page, "markdown_truncated": False}
+
+        pages = list(await asyncio.gather(*(read(url) for url in targets)))
+        total_ms = round((time.perf_counter() - started) * 1000, 2)
+        answer: dict[str, Any] = {"pages": pages, "timings": {"total_ms": total_ms}}
+        fit_scrape_batch(answer, cap)
+        self.metrics.count("scrape_batches_total")
+        return answer
+
+    def _host_of(self, url: str) -> str:
+        try:
+            return (urlsplit(self._request_url(url)).hostname or "").lower()
+        except WebToolError:
+            return ""
+
+    def _batch_total(self, value: Optional[int]) -> int:
+        if value is None:
+            return self.settings.scrape_batch_max_total_chars
+        if not SCRAPE_BATCH_MIN_TOTAL_CHARS <= int(value) <= SCRAPE_BATCH_MAX_TOTAL_CHARS:
+            raise WebToolError(
+                "invalid_request",
+                f"max_total_chars must be {SCRAPE_BATCH_MIN_TOTAL_CHARS} to "
+                f"{SCRAPE_BATCH_MAX_TOTAL_CHARS}",
+                detail=f"got {int(value)}",
+            )
+        return int(value)
 
     async def _archived_copy(
         self,

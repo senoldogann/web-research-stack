@@ -14,6 +14,10 @@ from web_scraper.web_tools.settings import (
     EXTRACT_MAX_CHARS_FLOOR,
     EXTRACT_MAX_ITEMS_CEILING,
     MIN_MARKDOWN_CHARS,
+    SCRAPE_BATCH_MAX_TOTAL_CHARS,
+    SCRAPE_BATCH_MAX_URLS,
+    SCRAPE_BATCH_MIN_TOTAL_CHARS,
+    SCRAPE_BATCH_MIN_URLS,
     SCRAPE_MAX_LINKS_CEILING,
 )
 
@@ -374,10 +378,54 @@ class WebSearchResponse(BaseModel):
     timings: Dict[str, float]
 
 
-class WebScrapeRequest(BaseModel):
-    """Single-page scrape request."""
+def _flatten_scrape_schema(schema: Dict[str, Any]) -> None:
+    """Show ``url`` and ``urls`` as what they are, not as nullable unions.
 
-    url: str = Field(..., min_length=3, max_length=2048)
+    Neither is required alone (one of the two is), so pydantic writes both as a union with
+    null; a model reading the tool's schema wants a string and an array. The schema has no
+    top-level ``oneOf``, which several providers refuse in a tool's input schema.
+    """
+    properties = schema.get("properties", {})
+    for name in ("url", "urls"):
+        union = properties.get(name)
+        if not union or "anyOf" not in union:
+            continue
+        kept = next(option for option in union["anyOf"] if option.get("type") != "null")
+        flat = {key: value for key, value in kept.items() if key != "title"}
+        if "description" in union:
+            flat["description"] = union["description"]
+        properties[name] = flat
+
+
+class WebScrapeRequest(BaseModel):
+    """Single-page scrape request, or several pages in one call with ``urls``."""
+
+    model_config = ConfigDict(json_schema_extra=_flatten_scrape_schema)
+
+    url: Optional[str] = Field(
+        default=None,
+        min_length=3,
+        max_length=2048,
+        description="The page to read; exactly one of url and urls",
+    )
+    urls: Optional[List[str]] = Field(
+        default=None,
+        min_length=SCRAPE_BATCH_MIN_URLS,
+        max_length=SCRAPE_BATCH_MAX_URLS,
+        description=(
+            "2 to 10 pages read in one call, in place of url: the answer is pages, in this "
+            "order, each that page's answer or {url, error}; one failing never fails the rest"
+        ),
+    )
+    max_total_chars: Optional[int] = Field(
+        default=None,
+        ge=SCRAPE_BATCH_MIN_TOTAL_CHARS,
+        le=SCRAPE_BATCH_MAX_TOTAL_CHARS,
+        description=(
+            "With urls: the whole answer stays under this many characters (60,000 by "
+            "default); each page's Markdown is cut to fit and marked markdown_truncated"
+        ),
+    )
     max_chars: Optional[int] = Field(
         default=None,
         ge=MIN_MARKDOWN_CHARS,
@@ -412,8 +460,24 @@ class WebScrapeRequest(BaseModel):
 
     @field_validator("url")
     @classmethod
-    def validate_url(cls, value: str) -> str:
-        return normalize_url(value)
+    def validate_url(cls, value: Optional[str]) -> Optional[str]:
+        return normalize_url(value) if value is not None else None
+
+    @field_validator("urls")
+    @classmethod
+    def validate_urls(cls, values: Optional[List[str]]) -> Optional[List[str]]:
+        if values is None:
+            return None
+        for value in values:
+            if not 3 <= len(value.strip()) <= 2048:
+                raise ValueError("each URL must be 3 to 2048 characters")
+        return [normalize_url(value) for value in values]
+
+    @model_validator(mode="after")
+    def exactly_one_of_url_and_urls(self) -> WebScrapeRequest:
+        if (self.url is None) == (self.urls is None):
+            raise ValueError("give exactly one of url and urls")
+        return self
 
 
 class WebLink(BaseModel):
@@ -466,6 +530,26 @@ class WebScrapeResponse(BaseModel):
     warnings: List[str] = Field(default_factory=list)
     timings: Dict[str, float]
     pages: Optional[int] = Field(default=None, description="Page count of a PDF document")
+
+
+class WebScrapeBatchPage(WebScrapeResponse):
+    """A page of a batch: its answer, and whether the batch's cap cut its Markdown."""
+
+    markdown_truncated: bool = Field(
+        default=False, description="True when max_total_chars cut this page's Markdown"
+    )
+
+
+class WebScrapeBatchError(BaseModel):
+    """A page of a batch that failed: the URL as given and the error envelope."""
+
+    url: str
+    error: Dict[str, Any]
+
+
+class WebScrapeBatchResponse(BaseModel):
+    pages: List[Union[WebScrapeBatchPage, WebScrapeBatchError]]
+    timings: Dict[str, float]
 
 
 class WebMapRequest(BaseModel):

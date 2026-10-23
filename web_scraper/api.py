@@ -11,9 +11,10 @@ import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
@@ -40,6 +41,7 @@ from web_scraper.api_models import (
     WebMapRequest,
     WebMapResponse,
     WebResearchResponse,
+    WebScrapeBatchResponse,
     WebScrapeRequest,
     WebScrapeResponse,
     WebSearchRequest,
@@ -555,6 +557,25 @@ def _tool_manifest(settings: Config) -> ToolsManifest:
             ),
         ]
     )
+
+
+def _validation_details(exc: RequestValidationError) -> list[dict[str, Any]]:
+    """The errors of a failed validation as JSON.
+
+    A validator that raises ``ValueError`` leaves the exception itself in ``ctx.error``,
+    which no JSON encoder takes: it would turn a 422 into a 500.
+    """
+    details: list[dict[str, Any]] = []
+    for error in exc.errors():
+        error = dict(error)
+        context = error.get("ctx")
+        if isinstance(context, dict):
+            error["ctx"] = {
+                key: str(value) if isinstance(value, BaseException) else value
+                for key, value in context.items()
+            }
+        details.append(error)
+    return jsonable_encoder(details)
 
 
 def _build_research_agent(
@@ -1132,7 +1153,7 @@ def create_app(settings: Optional[Config] = None) -> FastAPI:
             status_code=422,
             content={
                 "error": "Validation failed",
-                "details": exc.errors(),
+                "details": _validation_details(exc),
                 "trace_id": getattr(request.state, "trace_id", None),
             },
         )
@@ -1272,19 +1293,33 @@ def create_app(settings: Optional[Config] = None) -> FastAPI:
             )
         return WebSearchResponse(**result)
 
-    @app.post("/api/v1/web/scrape", tags=["Web Tools"], response_model=WebScrapeResponse)
+    @app.post(
+        "/api/v1/web/scrape",
+        tags=["Web Tools"],
+        response_model=Union[WebScrapeResponse, WebScrapeBatchResponse],
+    )
     async def web_scrape(
         payload: WebScrapeRequest,
         request: Request,
         _: str = Depends(require_web_access),
-    ) -> WebScrapeResponse:
+    ) -> Union[WebScrapeResponse, WebScrapeBatchResponse]:
         web_tools: WebToolsService = request.app.state.web_tools
+        options = payload.model_dump(include={"links", "max_links"}, exclude_defaults=True)
         async with app.state.concurrency_gate.acquire():
+            if payload.urls:
+                batch = await web_tools.scrape_many(
+                    payload.urls,
+                    max_chars=payload.max_chars,
+                    archive=payload.archive,
+                    max_total_chars=payload.max_total_chars,
+                    **options,
+                )
+                return WebScrapeBatchResponse(**batch)
             result = await web_tools.scrape(
-                payload.url,
+                str(payload.url),
                 max_chars=payload.max_chars,
                 archive=payload.archive,
-                **payload.model_dump(include={"links", "max_links"}, exclude_defaults=True),
+                **options,
             )
         return WebScrapeResponse(**result)
 

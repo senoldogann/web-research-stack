@@ -58,6 +58,68 @@ def fit_extract_payload(payload: dict[str, Any], max_chars: int) -> bool:
     return cut
 
 
+_MIN_PAGE_MARKDOWN = 200
+
+
+def fit_scrape_batch(answer: dict[str, Any], max_chars: int) -> bool:
+    """Cut a batch answer's pages until the whole fits *max_chars*; whether anything was cut.
+
+    The Markdown goes first, and the pages that are over one shared length are cut to it
+    (a long page loses most, a short one nothing), each ending in an ellipsis and marked
+    ``markdown_truncated``. Only when that is not enough do the links, then the metadata,
+    then the rest of the Markdown give way. A page's entry is replaced by key, never
+    changed inside: the cached answers it came from stay whole.
+    """
+    pages = [page for page in answer["pages"] if "markdown" in page]
+    cut = False
+
+    def over() -> int:
+        return json_size(answer) - max_chars
+
+    for floor in (_MIN_PAGE_MARKDOWN, 0):
+        for _ in range(6):
+            excess = over()
+            if excess <= 0:
+                return cut
+            level = _shared_level(
+                [len(page["markdown"]) for page in pages],
+                excess + len(pages) * len(ELLIPSIS),
+                floor,
+            )
+            if level is None:
+                break
+            for page in pages:
+                if len(page["markdown"]) > level:
+                    page["markdown"] = page["markdown"][:level].rstrip() + ELLIPSIS
+                    page["markdown_truncated"] = True
+                    cut = True
+        if floor == _MIN_PAGE_MARKDOWN and over() > 0:
+            for key, flag in (("links", "links_truncated"), ("metadata", "metadata_truncated")):
+                for page in pages:
+                    if page.get(key) and over() > 0:
+                        page[key] = [] if key == "links" else {}
+                        page[flag] = True
+                        cut = True
+    return cut
+
+
+def _shared_level(lengths: list[int], need: int, floor: int) -> Optional[int]:
+    """The highest length that, taken as the cap of every longer text, removes *need* characters.
+
+    None when even the floor does not remove that many.
+    """
+    if sum(max(0, length - floor) for length in lengths) < need:
+        return None
+    low, high = floor, max(lengths, default=floor)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if sum(max(0, length - middle) for length in lengths) >= need:
+            low = middle
+        else:
+            high = middle - 1
+    return low
+
+
 # A scrape's metadata: the page's meta tags and JSON-LD, which a page can make
 # as large as it likes (an articleBody repeating the text, a catalogue of
 # products), bounded as the Markdown is.

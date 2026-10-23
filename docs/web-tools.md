@@ -109,8 +109,8 @@ deterministically:
 - weighted reciprocal-rank fusion across angles: base 1.0, current 0.9, primary
   0.8, background 0.75. Agreement between angles is still valuable, but a hit
   from the historical angle cannot outweigh the exact query as easily.
-- source-type authority (`official`, `academic`, `news`, `reference`, `code`,
-  `community`, `other`), classified from the host and path;
+- source-type authority (`official`, `academic`, `news`, `press_release`, `social`,
+  `reference`, `code`, `community`, `other`), classified from the host and path;
 - publication year inferred from title, snippet, and URL, with `current`,
   `recent`, `historical`, or `unknown` recency;
 - a current-year bonus, plus a historical bonus for authoritative sources so
@@ -618,7 +618,8 @@ headless browser met as well.
   `gov.<country>` (`gov.tr`, `gov.au`), `.gov`, `.mil`, and `.int` (checked
   before every other class), and a curated list of Finnish public bodies:
   `kela.fi`, `traficom.fi`, `stat.fi`, `vero.fi`, `dvv.fi`, `eduskunta.fi`,
-  `oamk.fi`, `yle.fi`, and `ouka.fi` (the City of Oulu).
+  `oamk.fi`, and `ouka.fi` (the City of Oulu). `yle.fi`, the public
+  broadcaster, was in this list until round 3, which made it a `news` outlet.
 - `academic` now also covers `.edu.<country>` and `.ac.<country>` (`edu.tr`,
   `ac.jp`, `ac.uk`) and the Finnish universities `oulu.fi` (University of Oulu),
   `helsinki.fi`, `aalto.fi`, `utu.fi`, `jyu.fi`, `tuni.fi`, `uwasa.fi`,
@@ -1026,4 +1027,47 @@ and `depth`; with none of them a search is what it was, and the server's
   the list and still count towards `links_truncated`; `web_map` lists every link.
 - The scrape cache key holds the choice, so a scrape without links and one with
   200 are separate entries.
+
+### Reliable sources first
+
+The deployed search was weighed on news queries (2026-10-23, 727ec4f): besides
+WSJ and Democracy Now!, most results were small aggregator sites, a Facebook
+video and unknown blogs, and they scored highest. An aggregator that copies a
+headline wins on BM25 and freshness, and only 17 English-language outlets were
+`news`; everything else, a post included, was `other` with authority 0, never
+less.
+
+- **Outlets by name** (`web_scraper/web_tools/sources.py`, one frozenset per
+  group with a comment): wire services (Reuters, AP, AFP, UPI, dpa, EFE, ANSA,
+  STT, Anadolu), national and public broadcasters (BBC, YLE, NHK, DW,
+  France 24, TRT, NPR, PBS, CBC, ABC Australia, SVT, NRK, DR, ...), the papers of
+  record and major outlets of the US, the UK and Ireland, the EU (Le Monde,
+  Spiegel, El País, Corriere, ...), the Nordics (Helsingin Sanomat,
+  Kauppalehti, Kaleva, Dagens Nyheter, ...), Turkey (Hürriyet, Sabah, Sözcü,
+  Cumhuriyet, Habertürk, ...), Asia, the Americas, the Middle East and Africa,
+  and the business and tech press (Bloomberg, FT, CNBC, TechCrunch, The Verge,
+  Ars Technica, Wired, ...). A host matches itself and its subdomains. It is kept
+  to established outlets: a site is not `news` because its name sounds like it
+  (`newsnow-ai-daily.com` is `other`), and tabloids and state propaganda outlets
+  are left out. `yle.fi` moved here from `official`.
+- **`social`**: Facebook (`fb.watch` too), Instagram, TikTok, X and Twitter,
+  Threads, LinkedIn, Bluesky, Telegram, and YouTube *for a news query only*: a
+  tutorial on YouTube is what was asked for, a video about the news is not the
+  story. **`press_release`**: PR Newswire, GlobeNewswire, Business Wire,
+  ACCESS Newswire, EIN Presswire, PRWeb, Mynewsdesk, STT Info, and the like.
+  Both have authority 0 on every other query, as `other` has.
+- **Blog hosts** (`blogspot.com`, `wordpress.com`, `substack.com`, Tumblr,
+  Ghost, ...) count as `community`.
+- **Ordering on a news query** (a freshness cue, the current year, or the word
+  "news" or its Finnish, Turkish, Swedish, German, French, Spanish and Italian
+  forms): an outlet gets +0.05 on top of its authority, `community` loses 0.06,
+  a `press_release` 0.24 and a `social` post 0.30. A relevant, fresh article of
+  an outlet then goes above a page of an unknown site, a post or a press release
+  of the same freshness, whatever its BM25. The date still decides when the
+  query says how fresh: it weighs 0.30, so a fresh page goes before a stale
+  outlet's article. Diversity holds: the per-domain cap and the source-type
+  adjustment run after, on these scores.
+- The ten recorded queries of `benchmarks/web_search_relevance.json` rank as
+  they did (none of their results is an outlet, a post or a press release):
+  `tests/test_web_search_sources.py` holds their order.
 

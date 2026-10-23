@@ -298,7 +298,13 @@ class WebSearchResult(BaseModel):
     snippet: str = ""
     source: str = ""
     domain: str = ""
-    source_type: str = "other"
+    source_type: str = Field(
+        default="other",
+        description=(
+            "official, academic, news (an established outlet), press_release, social, "
+            "reference, code, community (forums, blog hosts) or other"
+        ),
+    )
     year: Optional[int] = None
     recency: str = Field(
         default="unknown",

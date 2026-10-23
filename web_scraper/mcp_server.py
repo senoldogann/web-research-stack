@@ -194,7 +194,7 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
                     "refused or timed-out provider call goes on to DuckDuckGo lite, then Google, and "
                     "provider names who answered. With nothing relevant, results is empty and warnings "
                     "holds no_relevant_results; low_relevance_results says every result holds "
-                    "under half of the query's words. Results carry source_type, year, recency "
+                    "under half of the query's words. Results carry source_type (official, academic, news, press_release, social, reference, code, community, other; a news query ranks outlets first), year, recency "
                     "(by year: current is this year or last), date (day or month, from the "
                     "address, snippet or title, with date_source and age_days), freshness "
                     "(this_week ... undated, by that date first), kind (article, listing, front, "

@@ -19,6 +19,13 @@ from typing import Any, Iterable, Optional
 from urllib.parse import unquote, urlsplit
 
 from web_scraper.web_tools.search import SearchResult
+from web_scraper.web_tools.sources import (
+    BLOG_HOSTS,
+    NEWS_HOSTS,
+    PRESS_RELEASE_HOSTS,
+    SOCIAL_HOSTS,
+    SOCIAL_ON_NEWS_HOSTS,
+)
 
 DEPTHS = ("fast", "discover", "deep")
 ANGLE_ORDER = {"base": 0, "current": 1, "background": 2, "primary": 3}
@@ -247,8 +254,8 @@ _OFFICIAL_HOSTS = frozenset(
 )
 # Public bodies whose hosts carry no government suffix: every EU institution
 # under europa.eu, the UK government, and Finnish authorities and public
-# services (Yle is the public broadcaster, Oamk a public university of applied
-# sciences, ouka.fi the City of Oulu).
+# services (Oamk a public university of applied sciences, ouka.fi the City of
+# Oulu). Yle, the public broadcaster, is a news outlet: see sources.py.
 _PUBLIC_SECTOR_HOSTS = frozenset(
     {
         "dvv.fi",
@@ -261,7 +268,6 @@ _PUBLIC_SECTOR_HOSTS = frozenset(
         "stat.fi",
         "traficom.fi",
         "vero.fi",
-        "yle.fi",
     }
 )
 _GOVERNMENT_SUFFIX = re.compile(r"(?:^|\.)(?:gov|mil|int)$|(?:^|\.)gov\.[a-z]{2}$")
@@ -292,27 +298,6 @@ _ACADEMIC_HOSTS = frozenset(
     }
 )
 _ACADEMIC_SUFFIX = re.compile(r"\.edu$|\.(?:edu|ac)\.[a-z]{2}$")
-_NEWS_HOSTS = frozenset(
-    {
-        "aljazeera.com",
-        "apnews.com",
-        "axios.com",
-        "bbc.co.uk",
-        "bbc.com",
-        "bloomberg.com",
-        "cnbc.com",
-        "cnn.com",
-        "economist.com",
-        "ft.com",
-        "npr.org",
-        "nytimes.com",
-        "politico.com",
-        "reuters.com",
-        "theguardian.com",
-        "washingtonpost.com",
-        "wsj.com",
-    }
-)
 _REFERENCE_HOSTS = frozenset(
     {
         "britannica.com",
@@ -324,18 +309,21 @@ _REFERENCE_HOSTS = frozenset(
     }
 )
 _CODE_HOSTS = frozenset({"bitbucket.org", "codeberg.org", "github.com", "gitlab.com"})
-_COMMUNITY_HOSTS = frozenset(
-    {
-        "dev.to",
-        "discourse.org",
-        "hashnode.com",
-        "lobste.rs",
-        "medium.com",
-        "news.ycombinator.com",
-        "reddit.com",
-        "stackexchange.com",
-        "stackoverflow.com",
-    }
+_COMMUNITY_HOSTS = (
+    frozenset(
+        {
+            "dev.to",
+            "discourse.org",
+            "hashnode.com",
+            "lobste.rs",
+            "medium.com",
+            "news.ycombinator.com",
+            "reddit.com",
+            "stackexchange.com",
+            "stackoverflow.com",
+        }
+    )
+    | BLOG_HOSTS
 )
 
 _AUTHORITY = {
@@ -346,6 +334,18 @@ _AUTHORITY = {
     "code": 0.06,
     "community": 0.04,
     "other": 0.0,
+    "press_release": 0.0,
+    "social": 0.0,
+}
+# On a news query the kind of source decides more: an outlet's article goes before the page
+# of an unknown site of the same freshness (an aggregator that copies its headline), and a
+# post, a press release or a blog below it. An outlet gets 0.05 more, not a lot: a fresh page
+# still goes before a stale outlet's when the query says how fresh (the date weighs 0.30).
+_NEWS_QUERY_ADJUSTMENT = {
+    "news": 0.05,
+    "community": -0.06,
+    "press_release": -0.24,
+    "social": -0.30,
 }
 # The score of a result matching about a third of the query from a single
 # angle's middle ranks; below it, a result is listed only when nothing
@@ -793,9 +793,28 @@ def classify_page_kind(url: str) -> str:
     return "page"
 
 
+# "News" as the owner's languages and the big ones say it.
+_NEWS_WORDS = frozenset(
+    {
+        "actualites",
+        "haber",
+        "haberler",
+        "headlines",
+        "nachrichten",
+        "news",
+        "noticias",
+        "notizie",
+        "nyheter",
+        "uutiset",
+        "uutisia",
+        "uutinen",
+    }
+)
+
+
 def _wants_news(query: str) -> bool:
     """Whether a query asks for news, so articles go before the pages that list them."""
-    return detect_date_filter(query) is not None or "news" in query_tokens(query)
+    return detect_date_filter(query) is not None or bool(_NEWS_WORDS & query_tokens(query))
 
 
 def _within_window(published: Optional[str], window: Optional[str], today: date) -> Optional[bool]:
@@ -844,8 +863,13 @@ def classify_recency(year: Optional[int], *, year_now: Optional[int] = None) -> 
     return "historical"
 
 
-def classify_source_type(url: str) -> str:
-    """Classify a result URL as official, academic, news, reference, code, or community."""
+def classify_source_type(url: str, *, news: bool = False) -> str:
+    """Classify a result URL: official, academic, news, press_release, social, reference,
+    code, community or other.
+
+    ``news`` says the query asks for news: a video site such as YouTube is ``social``
+    then, and a video of the news is not the story.
+    """
     try:
         parsed = urlsplit(url)
         host = (parsed.hostname or "").lower().rstrip(".")
@@ -865,8 +889,12 @@ def classify_source_type(url: str) -> str:
         return "official"
     if _host_matches(host, _ACADEMIC_HOSTS) or _ACADEMIC_SUFFIX.search(host):
         return "academic"
-    if _host_matches(host, _NEWS_HOSTS):
+    if _host_matches(host, NEWS_HOSTS):
         return "news"
+    if _host_matches(host, PRESS_RELEASE_HOSTS):
+        return "press_release"
+    if _host_matches(host, SOCIAL_HOSTS) or (news and _host_matches(host, SOCIAL_ON_NEWS_HOSTS)):
+        return "social"
     if _host_matches(host, _REFERENCE_HOSTS):
         return "reference"
     if _host_matches(host, _CODE_HOSTS) or host.endswith(".github.io"):
@@ -1013,7 +1041,7 @@ def _annotate_candidate(
 ) -> dict[str, Any]:
     result = candidate.result
     url = result.url
-    source_type = classify_source_type(url)
+    source_type = classify_source_type(url, news=news)
     year = infer_publication_year(
         result.title,
         result.snippet,
@@ -1060,6 +1088,7 @@ def _annotate_candidate(
     # A news query wants the stories, not the front pages and lists that link them.
     if news:
         score += {"article": 0.08, "listing": -0.08, "front": -0.08}.get(kind, 0.0)
+        score += _NEWS_QUERY_ADJUSTMENT.get(source_type, 0.0)
 
     return {
         "title": result.title,

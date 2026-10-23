@@ -1,0 +1,72 @@
+{
+ "python asyncio best practices": [
+  "https://discuss.python.org/t/asyncio-best-practices/12576",
+  "https://docs.python.org/3.15/library/asyncio-dev.html",
+  "https://onehorizon.ai/blog/modern-python-best-practices-the-2026-definitive-guide",
+  "https://medium.com/pythoniq/master-asyncio-in-python-a-comprehensive-step-by-step-guide-4fc2cfa49925",
+  "https://dasroot.net/posts/2026/04/mastering-python-async-await-patterns-concurrent-applications"
+ ],
+ "python httpx async client timeout": [
+  "https://www.navthemes.com/httpx-timeout-python-httpx-timeouts-vs-requests-and-async-http-client-alternatives",
+  "https://www.python-httpx.org/async",
+  "https://universopython.com/en/blog/python-httpx-client",
+  "https://www.python-httpx.org/advanced/timeouts",
+  "https://oneuptime.com/blog/post/2026-02-03-python-httpx-async-requests/view"
+ ],
+ "rust tokio select cancellation": [
+  "https://docs.rs/tokio/latest/tokio/macro.select.html",
+  "https://lavkushry.github.io/The-Rust-Mastery-Handbook/part-05/chapter-34-select-cancellation-and-timeouts.html",
+  "https://its-saeed.github.io/learn-by-building/async/24-cancellation.html",
+  "https://cseweb.ucsd.edu/classes/sp22/cse223B-a/tribbler/tokio/macro.select.html",
+  "https://rustify.rs/glossary/select"
+ ],
+ "postgresql full text search tsvector": [
+  "https://tutorials.technology/tutorials/postgresql-full-text-search-tutorial-2026.html",
+  "https://runebook.dev/en/docs/postgresql/datatype-textsearch/tsvector",
+  "https://stackharbor.com/en/knowledge-base/pg-full-text-search-tsvector",
+  "https://www.postgresql.org/docs/current/datatype-textsearch.html",
+  "https://oneuptime.com/blog/post/2026-01-21-postgresql-full-text-search/view"
+ ],
+ "react useEffect cleanup": [
+  "https://www.sitepoint.com/react-useeffect-cleanup-patterns",
+  "https://stackoverflow.com/questions/63800700/react-useeffect-hook-cleanup",
+  "https://adhdecode.com/articles/react/react-useeffect-pitfalls-production",
+  "https://www.vilvaathiban.com/blog/react-useeffect-cleanup-function-guide",
+  "https://react.dev/reference/react/useEffect"
+ ],
+ "latest python release": [
+  "https://www.python.org/downloads/latest/python3.15",
+  "https://www.python.org/downloads/latest",
+  "https://releasebytes.com/python",
+  "https://blog.python.org/2026/10/python-3151-3149-31317",
+  "http://devguide.python.org/versions"
+ ],
+ "T\u00fcrkiye yapay zeka eylem plan\u0131 2026": [
+  "https://turkiye.ai/turkiye-yapay-zeka-eylem-plani-aciklandi",
+  "https://www.resmigazeteozeti.com/madde/turkiye-yapay-zeka-eylem-plani-2026-2030-ile-ilgili-2026-9-sayili-807",
+  "https://yztd.org.tr/tr/yayinlar/turkiye-yapay-zeka-eylem-plani",
+  "https://tr.wikipedia.org/wiki/T%C3%BCrkiye_Yapay_Zek%C3%A2_Eylem_Plan%C4%B1",
+  "https://www.alomaliye.com/2026/08/18/turkiye-yapay-zeka-eylem-plani-2026-2030"
+ ],
+ "sqlite fts5 bm25": [
+  "https://docs.vishnudigital.com/tutorials/sql/sqlite/advanced/full-text-search",
+  "https://sqlite.org/fts5.html",
+  "https://deepwiki.com/gwicho38/legal-workspace-mcp/3.2.1-sqlite-fts5-and-bm25",
+  "https://github.com/midclique/sqlite-bm25-search",
+  "https://ruizhehou.github.io/2026/05/02/SQLite-FTS5%E5%85%A8%E6%96%87%E6%A3%80%E7%B4%A2"
+ ],
+ "MDN AbortController": [
+  "https://developer.mozilla.org/en-US/docs/Web/API/AbortController",
+  "https://mdn.org.cn/en-US/docs/Web/API/AbortController",
+  "https://developer.mozilla.org/en-US/docs/Web/API/AbortController/abort",
+  "https://developer.mozilla.org/en-US/docs/Web/API/AbortController/AbortController",
+  "https://dev.to/omriluz1/abortcontroller-and-signal-handling-396e"
+ ],
+ "OpenSearch reciprocal rank fusion": [
+  "https://docs.opensearch.org/latest/vector-search/ai-search/hybrid-search/rrf",
+  "https://opensearch.org/blog/introducing-reciprocal-rank-fusion-hybrid-search",
+  "https://blog.serghei.pl/posts/reciprocal-rank-fusion-explained",
+  "https://docs.opensearch.org/latest/search-plugins/search-pipelines/score-ranker-processor",
+  "https://opensearch.org/blog/explore-opensearch-3-7"
+ ]
+}

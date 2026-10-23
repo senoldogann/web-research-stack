@@ -55,6 +55,8 @@ class WebToolsSettings:
     search_timeout_seconds: float = 30.0
     search_default_depth: str = "discover"
     search_angle_delay_ms: int = 150
+    # How long the angles after the base may take once it answered; 0 waits for all.
+    search_angle_budget_ms: int = 5_000
     search_region: str = "wt-wt"
     search_language: str = "en-US,en;q=0.9"
     search_cache_ttl_seconds: int = 300
@@ -118,6 +120,7 @@ class WebToolsSettings:
         depth = (self.search_default_depth or "discover").strip().lower()
         self.search_default_depth = depth if depth in {"fast", "discover", "deep"} else "discover"
         self.search_angle_delay_ms = min(max(self.search_angle_delay_ms, 0), 5_000)
+        self.search_angle_budget_ms = min(max(self.search_angle_budget_ms, 0), 120_000)
         region = (self.search_region or "wt-wt").strip().lower()
         self.search_region = region if re.fullmatch(r"[a-z]{2}-[a-z]{2}|wt-wt", region) else "wt-wt"
         language = (self.search_language or "").strip()
@@ -199,6 +202,7 @@ class WebToolsSettings:
             search_timeout_seconds=_float("WEB_TOOLS_SEARCH_TIMEOUT_SECONDS", 30.0),
             search_default_depth=os.getenv("WEB_TOOLS_SEARCH_DEPTH", "discover"),
             search_angle_delay_ms=_int("WEB_TOOLS_SEARCH_ANGLE_DELAY_MS", 150),
+            search_angle_budget_ms=_int("WEB_TOOLS_SEARCH_ANGLE_BUDGET_MS", 5_000),
             search_region=os.getenv("WEB_TOOLS_SEARCH_REGION", "wt-wt"),
             search_language=os.getenv(
                 "WEB_TOOLS_SEARCH_LANGUAGE",

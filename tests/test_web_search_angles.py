@@ -106,3 +106,54 @@ async def test_results_reports_and_timings_keep_the_angle_order() -> None:
     ]
     assert result["results"] == expected["results"]
     assert result["timings"]["angle_primary_ms"] < result["timings"]["angle_current_ms"]
+
+
+@pytest.mark.asyncio
+async def test_an_angle_past_the_budget_is_cut_without_blaming_the_provider() -> None:
+    # The primary angle stalls as a refused one does while the Google fallback starts.
+    search = TimedSearch({"primary": 5.0})
+    service = _service(search, search_provider_concurrency=3, search_angle_budget_ms=300)
+
+    started = time.perf_counter()
+    result = await service.search(QUERY, depth="deep")
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < DELAY + 0.3 + 0.2, elapsed
+    reports = {query["angle"]: query for query in result["queries"]}
+    assert reports["primary"]["error"]["code"] == "timeout"
+    assert reports["primary"]["error"]["detail"] == "angle_budget"
+    assert reports["current"]["error"] is None and reports["background"]["error"] is None
+    assert "primary_query_failed" in result["warnings"]
+    assert result["results"]
+    # A cut is the search's own limit, not a provider failure: no cooldown follows.
+    assert service._provider_health_for("duckduckgo").consecutive_failures == 0
+
+
+@pytest.mark.asyncio
+async def test_the_base_angle_is_never_cut() -> None:
+    search = TimedSearch({"base": 0.5})
+    service = _service(search, search_provider_concurrency=3, search_angle_budget_ms=300)
+
+    result = await service.search(QUERY, depth="deep")
+
+    assert [query["error"] for query in result["queries"]] == [None] * 4
+
+
+@pytest.mark.asyncio
+async def test_a_zero_budget_waits_for_every_angle() -> None:
+    search = TimedSearch({"primary": 0.6})
+    service = _service(search, search_provider_concurrency=3, search_angle_budget_ms=0)
+
+    result = await service.search(QUERY, depth="deep")
+
+    assert [query["error"] for query in result["queries"]] == [None] * 4
+
+
+def test_the_budget_defaults_to_five_seconds_and_reads_its_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from web_scraper.web_tools.settings import WebToolsSettings
+
+    assert WebToolsSettings().search_angle_budget_ms == 5_000
+    monkeypatch.setenv("WEB_TOOLS_SEARCH_ANGLE_BUDGET_MS", "0")
+    assert WebToolsSettings.from_env().search_angle_budget_ms == 0

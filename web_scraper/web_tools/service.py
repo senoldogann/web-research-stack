@@ -248,15 +248,10 @@ class WebToolsService:
         # The base goes first: a refusal it meets starts the provider's cooldown
         # before the other angles ask. Those then run together, each through the
         # provider's gate (search_provider_concurrency calls at a time, with its
-        # jitter), and are merged in angle order whichever answers first.
-        delay = self.settings.search_angle_delay_ms / 1000
+        # jitter), within the angle budget, and are merged in angle order
+        # whichever answers first.
         answered = [await self._timed_angle(provider_name, angles[0], angle_limit)]
-        answered += await asyncio.gather(
-            *(
-                self._timed_angle(provider_name, angle, angle_limit, stagger=delay * position)
-                for position, angle in enumerate(angles[1:], start=1)
-            )
-        )
+        answered += await self._angles_after_base(provider_name, angles[1:], angle_limit)
 
         for angle, (outcome, angle_ms) in zip(angles, answered):
             angle_timings[angle.name] = round(angle_ms, 2)
@@ -391,6 +386,55 @@ class WebToolsService:
             ttl_seconds=self.settings.search_cache_ttl_seconds,
         )
         return payload
+
+    async def _angles_after_base(
+        self,
+        provider: str,
+        angles: list[SearchAngle],
+        limit: int,
+    ) -> list[tuple[_AngleOutcome, float]]:
+        """The angles after the base, together, each cut once the angle budget ran out.
+
+        A refused angle can wait out the provider's cooldown or start the headless
+        Google fallback (seconds to tens of seconds), so the base's answer is not
+        held for it. A cut angle is reported as a ``timeout`` with the detail
+        ``angle_budget``; being the search's own limit, it marks no provider as
+        failed.
+        """
+        if not angles:
+            return []
+        delay = self.settings.search_angle_delay_ms / 1000
+        tasks = [
+            asyncio.create_task(self._timed_angle(provider, angle, limit, stagger=delay * position))
+            for position, angle in enumerate(angles, start=1)
+        ]
+        budget = self.settings.search_angle_budget_ms / 1000
+        try:
+            _, pending = await asyncio.wait(tasks, timeout=budget or None)
+        finally:
+            for task in tasks:
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+        answered: list[tuple[_AngleOutcome, float]] = []
+        for task in tasks:
+            if task in pending:
+                cut = WebToolError(
+                    "timeout",
+                    "The angle ran past the search's time budget",
+                    detail="angle_budget",
+                )
+                answered.append((_AngleOutcome(provider, error=cut), budget * 1000))
+            elif task.exception() is not None:
+                failed = WebToolError(
+                    "search_failed",
+                    "Search angle failed",
+                    detail=type(task.exception()).__name__,
+                )
+                answered.append((_AngleOutcome(provider, error=failed), 0.0))
+            else:
+                answered.append(task.result())
+        return answered
 
     async def _timed_angle(
         self,

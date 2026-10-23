@@ -725,3 +725,19 @@ headless browser met as well.
   angles after the base overlap. What made searches take 12–45 s was a refusal
   sending angles to the headless Google fallback (43 s for one base angle in
   the same measurement); the next section bounds that.
+
+### A time budget for the angles after the base
+
+- Once the base angle has answered, the angles after it have
+  `SEARCH_ANGLE_BUDGET_MS` (5,000 by default; `0` waits for every angle). One
+  still out then is cut: its entry in `queries` holds the error `timeout` with
+  the detail `angle_budget`, `warnings` gets `<angle>_query_failed`, and the
+  results of the angles that answered are ranked as usual. A cut is the
+  search's own limit, so it starts no cooldown for the provider. The base angle
+  is never cut.
+- A refused angle waits out the cooldown or starts the headless Google
+  fallback (6–43 s measured), and the base's answer waited for it. Measured on
+  2026-10-23 with `AI news October 2026` at `deep`: 5.06 s when DuckDuckGo
+  answered every angle, and 6.81 s when it refused the primary angle, which
+  was cut at 5 s; the same refusal took 22.03 s, and 45.67 s on the base,
+  without the budget.

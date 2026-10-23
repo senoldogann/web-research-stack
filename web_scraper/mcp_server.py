@@ -168,7 +168,9 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
                 "description": (
                     "List URLs from robots.txt sitemaps, nested sitemap indexes, and page "
                     "links with domain scope, substring search, include/exclude glob filters, "
-                    "and a limit."
+                    "and a limit. total counts every matching URL, returned those in urls, "
+                    "and truncated says the limit cut some. A site no request reached lists "
+                    "nothing and says why in errors."
                 ),
                 "inputSchema": WebMapRequest.model_json_schema(),
                 "annotations": _annotations(

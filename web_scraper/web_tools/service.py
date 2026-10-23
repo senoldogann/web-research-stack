@@ -682,28 +682,28 @@ class WebToolsService:
                     link.url,
                     {"url": link.url, "lastmod": None, "source": "links"},
                 )
+            # The base is listed once its page was read: a host that does not
+            # resolve, or a page that is not there, is no URL of the site.
+            entries.setdefault(base, {"url": base, "lastmod": None, "source": "base"})
         except Exception as exc:  # noqa: BLE001 - sitemap results may still be useful
             errors.append(self._safe_error(base, exc))
 
-        entries.setdefault(base, {"url": base, "lastmod": None, "source": "base"})
-
-        urls: list[str] = []
-        for target, _entry in entries.items():
-            if not url_in_scope(target, base, include_subdomains):
-                continue
-            if not matches_url_filters(target, includes, excludes):
-                continue
-            if search and not matches_search_filter(target, search):
-                continue
-            urls.append(target)
-            if len(urls) >= max_urls:
-                break
+        matched = [
+            target
+            for target in entries
+            if url_in_scope(target, base, include_subdomains)
+            and matches_url_filters(target, includes, excludes)
+            and (not search or matches_search_filter(target, search))
+        ]
+        urls = matched[:max_urls]
 
         self.metrics.count("maps_total")
         return {
             "url": base,
             "urls": urls,
-            "total": len(urls),
+            "total": len(matched),
+            "returned": len(urls),
+            "truncated": len(matched) > len(urls),
             "entries": [entries[target] for target in urls],
             "sitemaps": sitemaps,
             "errors": errors,

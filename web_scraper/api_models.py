@@ -354,7 +354,10 @@ class WebMapEntry(BaseModel):
 class WebMapResponse(BaseModel):
     url: str
     urls: List[str]
+    # Every URL that matched, before the limit; ``returned`` counts ``urls``.
     total: int
+    returned: int = 0
+    truncated: bool = False
     entries: List[WebMapEntry]
     sitemaps: List[str]
     errors: List[Dict[str, Any]]

@@ -666,3 +666,13 @@ headless browser met as well.
   `unsafe_target` (400), which told the caller the URL was refused rather than
   unreachable. localhost, private and link-local addresses, and a name that
   resolves to one, stay `unsafe_target`.
+
+### Map of an unreachable site
+
+- `web_map` lists the base URL once its page was read. A site no request
+  reached (`https://this-domain-definitely-does-not-exist-xyz123.com/`) returned
+  that URL with `total: 1`; it now returns `urls: []`, `total: 0`, and the three
+  failed requests (robots.txt, sitemap.xml, the page) in `errors`.
+- `total` counts every URL that matched the scope and filters before `limit`
+  cut the list; `returned` counts `urls`, and `truncated` is `true` when the
+  limit left some out. Before, `total` was the length of the cut list.

@@ -656,3 +656,13 @@ headless browser met as well.
   `/tietoja-ja-tilastoja` went from 15.8 KB to 9.9 KB, and to 6.2 KB with
   `max_chars=1500`. What is left is page content: those 45 front-page links are
   its news, topic, and service links, and the rest is its Markdown.
+
+## Defect fixes (2026-10-23)
+
+### DNS failures
+
+- A host that does not resolve now fails with `dns_error` (HTTP 502), its name
+  in `detail` and the message `Could not resolve host <name>`; before, it was an
+  `unsafe_target` (400), which told the caller the URL was refused rather than
+  unreachable. localhost, private and link-local addresses, and a name that
+  resolves to one, stay `unsafe_target`.

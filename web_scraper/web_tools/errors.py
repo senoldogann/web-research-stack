@@ -7,6 +7,7 @@ from typing import Any, Optional
 _STATUS_CODES = {
     "invalid_request": 422,
     "unsafe_target": 400,
+    "dns_error": 502,
     "blocked": 422,
     "timeout": 504,
     "too_large": 413,

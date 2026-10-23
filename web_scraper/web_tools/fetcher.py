@@ -11,7 +11,11 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
-from web_scraper.network_safety import UnsafeTargetError, validate_outbound_url
+from web_scraper.network_safety import (
+    HostnameResolutionError,
+    UnsafeTargetError,
+    validate_outbound_url,
+)
 from web_scraper.web_tools.content import detect_interstitial
 from web_scraper.web_tools.pdf import PDF_CONTENT_TYPE, looks_like_pdf
 from web_scraper.web_tools.urls import UnsafeUrlError, normalize_request_url
@@ -192,6 +196,8 @@ class SafeFetcher:
         try:
             self.validator(url, allow_private_networks=self.allow_private_networks)
             return normalize_request_url(url)
+        except HostnameResolutionError as exc:
+            raise FetchError("dns_error", str(exc), url=url, detail=exc.hostname) from exc
         except (UnsafeTargetError, UnsafeUrlError, ValueError) as exc:
             raise FetchError("unsafe_target", str(exc), url=url) from exc
 

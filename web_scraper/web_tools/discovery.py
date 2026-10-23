@@ -16,7 +16,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any, Iterable, Optional
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from web_scraper.web_tools.search import SearchResult
 
@@ -351,9 +351,14 @@ _AUTHORITY = {
 # angle's middle ranks; below it, a result is listed only when nothing
 # relevant scores higher.
 MIN_RESULT_SCORE = 0.25
-# A result naming fewer than this share of the query's words is a weak match;
-# when every result is one, the search says so (``low_relevance_results``).
-MIN_RESULT_RELEVANCE = 0.3
+# A result holding fewer than this share of the query's words is a weak match; when every
+# result is one, the search says so (``low_relevance_results``). Half: a query of two words
+# asks for both, a query of three for most of them.
+MIN_RESULT_RELEVANCE = 0.5
+# A token this short that mixes letters and digits ("7g3", "b12", "mp3") names a handle, a
+# clone or a model as readily as what the query is about: it counts towards a match and
+# never makes one.
+_CODE_MAX_LENGTH = 3
 
 
 @dataclass(frozen=True)
@@ -451,13 +456,84 @@ def query_tokens(text: str) -> set[str]:
     return meaningful or {token for token in tokens if len(token) > 1}
 
 
+# The alphanumeric words of a text: what lies between spaces, slashes, hyphens, dots and
+# underscores.
+_WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
+
+
+def _word_parts(text: str) -> list[str]:
+    return [_normalise_token(part) for part in _WORD_RE.findall(text or "")]
+
+
+def _text_words(text: str) -> set[str]:
+    """The whole words of a title or snippet.
+
+    A joined token ("next.js", "meow-7g3") and each word between its separators
+    ("next", "js", "meow", "7g3"), never a piece of a longer word.
+    """
+    joined = {_normalise_token(match.group(0).strip(".-+")) for match in _TOKEN_RE.finditer(text)}
+    return joined | {part for part in _word_parts(text) if len(part) > 1}
+
+
+def _url_words(url: str) -> set[str]:
+    """The words an address spells: its host and its path, not its ids.
+
+    A query string, a numbered segment (``/560087``) and a handle (``/@7g3_na``) are ids
+    the site made up; a word in one says nothing about the page, so only alphabetic
+    words count.
+    """
+    try:
+        parts = urlsplit(url or "")
+    except ValueError:
+        return set()
+    spelled = unquote(f"{parts.hostname or ''}/{parts.path}")
+    return {word for word in _word_parts(spelled) if len(word) > 1 and word.isalpha()}
+
+
+def _holds(term: str, words: set[str]) -> bool:
+    """Whether a query term is one of the whole words, or all the words it joins ("next.js")."""
+    if term in words:
+        return True
+    parts = [part for part in _word_parts(term) if len(part) > 1]
+    return len(parts) > 1 and all(part in words for part in parts)
+
+
+def matched_terms(terms: Iterable[str], title: str, snippet: str, url: str) -> set[str]:
+    """The query terms a result holds as whole words in its title, snippet or address."""
+    words = _text_words(f"{title} {snippet}") | _url_words(url)
+    return {term for term in terms if _holds(term, words)}
+
+
+def _is_number(token: str) -> bool:
+    return not any(character.isalpha() for character in token)
+
+
+def _is_code(token: str) -> bool:
+    return (
+        len(token) <= _CODE_MAX_LENGTH
+        and any(character.isdigit() for character in token)
+        and any(character.isalpha() for character in token)
+    )
+
+
+def distinctive_terms(query: str) -> set[str]:
+    """The query's terms that can make a result relevant by themselves.
+
+    Bare numbers (a year, ``9237``, ``3.12``) and short codes (``7g3``, ``b12``) do not
+    when the query has words too: a page about something else names them as well. A query
+    of nothing else keeps them.
+    """
+    wanted = query_tokens(query)
+    words = {token for token in wanted if not _is_number(token)}
+    return {token for token in words if not _is_code(token)} or words or wanted
+
+
 def relevance_score(query: str, title: str, snippet: str, url: str) -> float:
-    """Share of meaningful query tokens that appear in the result."""
+    """Share of the query's meaningful terms the result holds as whole words."""
     wanted = query_tokens(query)
     if not wanted:
         return 0.0
-    found = query_tokens(f"{title} {snippet} {url}")
-    return len(wanted & found) / len(wanted)
+    return len(matched_terms(wanted, title, snippet, url)) / len(wanted)
 
 
 def infer_publication_year(
@@ -982,17 +1058,21 @@ def _annotate_candidate(
     }
 
 
-def has_relevant_result(query: str, items: Iterable[dict[str, Any]]) -> bool:
-    """Whether any annotated result shares a word of the query.
+def relevant_results(query: str, items: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The annotated results holding a distinctive term of the query as a whole word."""
+    terms = distinctive_terms(query)
+    return [
+        item for item in items if matched_terms(terms, item["title"], item["snippet"], item["url"])
+    ]
 
-    Bare numbers do not count when the query has words too: a year or a code
-    such as ``9237`` also appears on pages about something else entirely.
+
+def has_relevant_result(query: str, items: Iterable[dict[str, Any]]) -> bool:
+    """Whether any annotated result holds a distinctive term of the query as a whole word.
+
+    A bare number or a short code does not count when the query has words too: a year
+    or a code such as ``9237`` or ``7g3`` also appears on pages about something else.
     """
-    wanted = query_tokens(query)
-    words = {token for token in wanted if not token.isdigit()} or wanted
-    return any(
-        words & query_tokens(f"{item['title']} {item['snippet']} {item['url']}") for item in items
-    )
+    return bool(relevant_results(query, items))
 
 
 def rank_candidates(
@@ -1005,16 +1085,16 @@ def rank_candidates(
 ) -> list[dict[str, Any]]:
     """Rank candidates by relevance, agreement, authority, and recency, then diversify.
 
-    Results that share nothing with the query are dropped, and when nothing
-    relevant is left the list is empty: an empty answer is honest, a page of
-    unrelated links is not. Relevant results scoring under
+    Results that hold no distinctive term of the query as a whole word are
+    dropped, and when nothing relevant is left the list is empty: an empty
+    answer is honest, a page of unrelated links is not. Relevant results scoring under
     ``MIN_RESULT_SCORE`` are dropped beside better ones and kept only when no
     relevant result reaches it.
     """
     annotated = annotate_candidates(query, candidates, year_now=year_now, today=today)
-    if not has_relevant_result(query, annotated):
+    relevant = relevant_results(query, annotated)
+    if not relevant:
         return []
-    relevant = [item for item in annotated if item["relevance"] > 0]
     eligible = [item for item in relevant if item["score"] >= MIN_RESULT_SCORE] or relevant
 
     eligible.sort(

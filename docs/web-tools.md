@@ -606,8 +606,9 @@ headless browser met as well.
   what the provider returned.
 - In `discover` and `deep`, a relevant result scoring under 0.25 is dropped
   beside better ones and kept only when no relevant result reaches 0.25. When
-  every returned result names less than 30% of the query's words, `warnings`
-  holds `low_relevance_results`. `fast` keeps the provider's order.
+  every returned result holds under half of the query's words (30% before
+  round 3), `warnings` holds `low_relevance_results`. `fast` keeps the
+  provider's order.
 
 ### Official and academic sources
 
@@ -848,3 +849,38 @@ headless browser met as well.
   7,605 and its answer from 26,603 to 25,575; a page of ordinary size keeps
   its metadata as it was (`metadata_truncated: false`), and the bound is for
   the pages that embed far more.
+
+## Resilience and ergonomics (round 3, 2026-10-23)
+
+### A floor under relevance
+
+- `zlorgfimble quaxotronic 7g3` answered eight results from DuckDuckGo and kept
+  three, each with relevance 1/3 (above the old floor of 0.3) and no warning: a
+  YouTube channel named `7g3`, an antibody clone called 7G3, a page of links.
+  They held nothing of the query but the 3-character code `7g3`, which names a
+  handle, a clone or a model as readily as a topic. The other two words, the
+  ones that say what was asked, were in no result.
+- A result is relevant only when it holds one of the query's distinctive terms
+  as a whole word: a joined token (`next.js`) or a word between separators
+  (`Meow-7g3` holds `7g3`, `sqlite-bm25-search` holds `sqlite` and `bm25`), never
+  a piece of a longer word (`a7g3b9`, `google` for `go`). The words an address
+  spells count (`kela.fi/housing-allowance`); its ids do not: a query string, a
+  numbered segment, a handle (`/@7g3_na`).
+- Distinctive terms are the query's words minus stopwords, bare numbers (a
+  year, `9237`, a version such as `3.12`) and short codes (3 characters or
+  fewer mixing letters and digits: `7g3`, `b12`, `mp3`), when the query has
+  other words. Numbers and codes still count towards `relevance`, the share of
+  the query's words a result holds; they never make a result relevant alone. A
+  query made of nothing else keeps them: `7g3` finds what holds `7g3`, and
+  `7g3 antibody` keeps the antibody's page and drops the channel.
+- A query whose distinctive terms no result holds answers `results: []` and
+  `no_relevant_results`, at every depth, `fast` included. The nonsense query
+  above now answers nothing.
+- With two or more words, when every result holds under half of them,
+  `warnings` holds `low_relevance_results` and the results stay. The floor was
+  0.3 of the words, which a result matching one word of three (0.33) passed.
+- `relevance` of a real result can only rise: words joined by a hyphen, a slash
+  or an underscore now match (`sqlite-bm25-search` held neither `sqlite` nor
+  `bm25` before). The recorded top results of the ten queries in
+  `benchmarks/search_relevance_queries.json` all keep their results and their
+  warnings stay empty (`tests/test_web_search_floor.py`).

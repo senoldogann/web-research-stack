@@ -37,8 +37,8 @@ from web_scraper.web_tools.discovery import (
     annotate_candidates,
     build_facets,
     build_search_angles,
-    has_relevant_result,
     rank_candidates,
+    relevant_results,
 )
 from web_scraper.web_tools.errors import WebToolError
 from web_scraper.web_tools.fetcher import FetchError, FetchResult, HostGate, SafeFetcher
@@ -330,10 +330,9 @@ class WebToolsService:
         search_ms = (time.perf_counter() - started) * 1000
         ranking_started = time.perf_counter()
         if resolved_depth == "fast":
-            # Provider order, minus results that share nothing with the query.
+            # Provider order, minus results that hold no distinctive word of the query.
             annotated = annotate_candidates(cleaned, candidates.values())
-            relevant = [item for item in annotated if item["relevance"] > 0]
-            results = relevant[:resolved_limit] if has_relevant_result(cleaned, relevant) else []
+            results = relevant_results(cleaned, annotated)[:resolved_limit]
         else:
             results = rank_candidates(cleaned, candidates.values(), resolved_limit)
         if not results:

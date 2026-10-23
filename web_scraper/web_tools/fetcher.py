@@ -275,7 +275,9 @@ class SafeFetcher:
                         if status >= 400:
                             html = self._decode(body, response)
                             interstitial = (
-                                detect_interstitial(html, str(response.url), status)
+                                detect_interstitial(
+                                    html, str(response.url), status, content_type=content_type
+                                )
                                 if self._is_textual(content_type)
                                 else None
                             )
@@ -324,7 +326,9 @@ class SafeFetcher:
                             )
 
                         html = self._decode(body, response)
-                        interstitial = detect_interstitial(html, str(response.url), status)
+                        interstitial = detect_interstitial(
+                            html, str(response.url), status, content_type=content_type
+                        )
                         if interstitial:
                             raise FetchError(
                                 "blocked",

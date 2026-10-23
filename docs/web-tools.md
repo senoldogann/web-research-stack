@@ -741,3 +741,10 @@ headless browser met as well.
   answered every angle, and 6.81 s when it refused the primary angle, which
   was cut at 5 s; the same refusal took 22.03 s, and 45.67 s on the base,
   without the budget.
+
+### Small fixes
+
+- A sitemap or feed (`application/xml`, `text/xml`, RSS, Atom) is checked for a
+  challenge with the XML parser: the HTML parser misread it and warned
+  (`XMLParsedAsHTMLWarning`) on every `web_map`. lxml resolves internal
+  entities only, so an external entity in a hostile sitemap reads no file.

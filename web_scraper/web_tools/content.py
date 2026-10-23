@@ -121,8 +121,15 @@ class StructuredResult:
     truncated: bool = False
 
 
-def _soup(html: str) -> BeautifulSoup:
-    return BeautifulSoup(html or "", "lxml")
+# Sitemaps and feeds: read with the XML parser, as the HTML one misreads them and warns
+# (XMLParsedAsHTMLWarning). lxml resolves internal entities only, never a file or a URL.
+_XML_TYPES = frozenset(
+    {"application/xml", "text/xml", "application/rss+xml", "application/atom+xml"}
+)
+
+
+def _soup(html: str, *, xml: bool = False) -> BeautifulSoup:
+    return BeautifulSoup(html or "", "xml" if xml else "lxml")
 
 
 def _clean_text(value: str) -> str:
@@ -459,7 +466,13 @@ def _visible_text(soup: BeautifulSoup) -> str:
     return _clean_text(soup.get_text(" ")).lower()
 
 
-def detect_interstitial(html: str, final_url: str, status_code: int = 200) -> Optional[str]:
+def detect_interstitial(
+    html: str,
+    final_url: str,
+    status_code: int = 200,
+    *,
+    content_type: str = "",
+) -> Optional[str]:
     """Classify bot challenges, blocks, and login/pay walls from fetched HTML.
 
     A captcha needs evidence a visitor would meet: a widget in the DOM or a
@@ -473,7 +486,7 @@ def detect_interstitial(html: str, final_url: str, status_code: int = 200) -> Op
     raw = html or ""
     size = _body_bytes(raw)
     succeeded = 200 <= status_code < 300
-    soup = _soup(raw)
+    soup = _soup(raw, xml=content_type in _XML_TYPES)
     for tag in soup(_INVISIBLE_TAGS):
         tag.decompose()
 

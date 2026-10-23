@@ -72,8 +72,12 @@ def _trio(**kinds: str) -> tuple[Scripted, Scripted, Scripted]:
 
 
 class TestSettings:
-    def test_the_default_chain_is_lite_then_google(self) -> None:
-        assert WebToolsSettings().search_fallback_providers == ["duckduckgo_lite", "google"]
+    def test_the_default_chain_is_lite_then_yahoo_then_google(self) -> None:
+        assert WebToolsSettings().search_fallback_providers == [
+            "duckduckgo_lite",
+            "yahoo",
+            "google",
+        ]
 
     def test_the_chain_is_read_from_its_variable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(
@@ -113,7 +117,12 @@ class TestSettings:
     async def test_the_service_registers_the_lite_adapter(self) -> None:
         service = WebToolsService.from_env()
         try:
-            assert set(service.search_adapters) == {"duckduckgo", "duckduckgo_lite", "google"}
+            assert set(service.search_adapters) == {
+                "duckduckgo",
+                "duckduckgo_lite",
+                "yahoo",
+                "google",
+            }
             assert service.search_adapters["google"].headless is True
         finally:
             await service.close()

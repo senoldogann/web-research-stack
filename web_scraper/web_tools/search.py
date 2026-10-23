@@ -15,6 +15,7 @@ from web_scraper.duckduckgo_search import (
 )
 from web_scraper.google_search import GoogleSearchBlocked, GoogleSearcher
 from web_scraper.web_tools.errors import WebToolError
+from web_scraper.yahoo_search import YahooBlocked, YahooSearcher, close_yahoo_session
 
 
 @dataclass
@@ -195,6 +196,51 @@ class DuckDuckGoLiteSearchAdapter(DuckDuckGoSearchAdapter):
     searcher_class = DuckDuckGoLiteSearcher
 
 
+class YahooSearchAdapter:
+    """Yahoo Search over plain HTTP: the provider between DuckDuckGo lite and the browser.
+
+    It takes the relative date filter (a day, a week, a month) and the language of a call; a
+    region and a date range it does not (the service's own date filter drops results dated
+    outside a range all the same).
+    """
+
+    name = "yahoo"
+    headless = False
+
+    def __init__(
+        self, searcher: YahooSearcher | None = None, *, language: str = "en-US,en;q=0.9"
+    ) -> None:
+        self._searcher = searcher or YahooSearcher(language=language)
+
+    async def search(
+        self,
+        query: str,
+        limit: int,
+        *,
+        date_filter: Optional[str] = None,
+        options: Optional[SearchOptions] = None,
+    ) -> list[SearchResult]:
+        extra: dict[str, Any] = (
+            {"language": options.language} if options and options.language else {}
+        )
+        try:
+            raw = await self._searcher.search(
+                query, num_results=limit, date_filter=date_filter, **extra
+            )
+        except YahooBlocked as exc:
+            raise WebToolError(
+                "search_failed", "Yahoo refused the search", detail="bot_detected"
+            ) from exc
+        except Exception as exc:  # noqa: BLE001 - surface a stable error
+            raise WebToolError(
+                "search_failed", "Yahoo search failed", detail=type(exc).__name__
+            ) from exc
+        return _from_dicts(raw)
+
+    async def aclose(self) -> None:
+        await close_yahoo_session()
+
+
 class GoogleSearchAdapter:
     """Google search constrained to windowless backends (Camoufox/headless Chrome)."""
 
@@ -264,10 +310,12 @@ def build_search_adapter(name: str) -> SearchAdapter:
         return DuckDuckGoSearchAdapter()
     if normalized == "duckduckgo_lite":
         return DuckDuckGoLiteSearchAdapter()
+    if normalized == "yahoo":
+        return YahooSearchAdapter()
     if normalized == "google":
         return GoogleSearchAdapter()
     raise WebToolError(
         "invalid_request",
         f"Unknown search provider: {normalized}",
-        detail="Use 'duckduckgo', 'duckduckgo_lite' or 'google'",
+        detail="Use 'duckduckgo', 'duckduckgo_lite', 'yahoo' or 'google'",
     )

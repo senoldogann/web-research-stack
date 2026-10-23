@@ -200,7 +200,7 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
                     "language, sites, exclude_sites, date_from and date_to narrow a search. read "
                     "N (0 to 5) also reads the top N results: content or content_error on each; "
                     "it costs seconds. A refused or timed-out call goes on to DuckDuckGo lite, "
-                    "then Google; provider names who answered. With nothing relevant, results is "
+                    "Yahoo, then Google; provider names who answered. With nothing relevant, results is "
                     "empty and warnings holds no_relevant_results; low_relevance_results says "
                     "every result holds under half of the query's words. Results carry "
                     "source_type (official, academic, news, press_release, social, reference, "

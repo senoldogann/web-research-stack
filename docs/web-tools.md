@@ -143,7 +143,7 @@ Copy `.env.example` to `.env` and set what you need. The important web tool knob
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `SEARCH_PROVIDER` | `duckduckgo` | `duckduckgo`, `duckduckgo_lite` or `google` |
+| `SEARCH_PROVIDER` | `duckduckgo` | `duckduckgo`, `duckduckgo_lite`, `yahoo` or `google` |
 | `SEARCH_DEPTH` | `discover` | Default `fast`, `discover`, or `deep` |
 | `SEARCH_ANGLE_DELAY_MS` | `150` | Pause between discovery angles (0..5000) |
 | `SEARCH_ANGLE_BUDGET_MS` | `5000` | How long the angles after the base may take once it answered (0..120000; `0` waits for every angle); one still out is cut, see "A cut angle says so" |
@@ -153,7 +153,7 @@ Copy `.env.example` to `.env` and set what you need. The important web tool knob
 | `SEARCH_TIMEOUT_SECONDS` | `30` | Per-call provider timeout |
 | `SEARCH_PROVIDER_CONCURRENCY` | `1` | Calls one provider takes at a time |
 | `SEARCH_JITTER_MIN_MS` / `SEARCH_JITTER_MAX_MS` | `250` / `500` | Random gap between a provider's calls |
-| `SEARCH_FALLBACK_PROVIDERS` | `duckduckgo_lite,google` | The chain a failed call goes down, in order; `none` turns it off. The older single `SEARCH_FALLBACK_PROVIDER` is read when this is unset |
+| `SEARCH_FALLBACK_PROVIDERS` | `duckduckgo_lite,yahoo,google` | The chain a failed call goes down, in order; `none` turns it off. The older single `SEARCH_FALLBACK_PROVIDER` is read when this is unset |
 | `SEARCH_FALLBACK_TIMEOUT_SECONDS` | `60` | Timeout of a fallback call (a cold headless browser) |
 | `SEARCH_PROVIDER_COOLDOWN_SECONDS` | `5` | First cooldown after a failed provider call |
 | `SEARCH_PROVIDER_MAX_COOLDOWN_SECONDS` | `300` | Cap for the doubling cooldown |
@@ -904,7 +904,7 @@ headless browser met as well.
 - A refused DuckDuckGo search went to the headless Google, which takes 6 s to
   tens of seconds when cold (one `fast` call took 12.8 s, a `deep` one 6-7 s).
   The fallback is now a chain, `SEARCH_FALLBACK_PROVIDERS`, `duckduckgo_lite,google`
-  by default: `duckduckgo_lite` is DuckDuckGo's lite page
+  at first and `duckduckgo_lite,yahoo,google` since "Yahoo before the browser" below: `duckduckgo_lite` is DuckDuckGo's lite page
   (`https://lite.duckduckgo.com/lite/`, a table of results instead of divs) as a
   provider of its own, over plain HTTP, and Google comes after it. Each provider
   keeps its own gate (`SEARCH_PROVIDER_CONCURRENCY`, the jitter) and its own
@@ -1324,4 +1324,37 @@ About 30 calls in all, one search at a time, 8 s or more apart.
   archive. `archive_skipped` was empty in both reads: the newest copy the CDX lists with
   status 200 was itself readable. `tests/test_web_archive_transport.py` holds the limits with
   a fake session.
+
+### Yahoo before the headless browser
+
+- After about 30 calls in 35 minutes from one address, DuckDuckGo refused both its endpoints
+  (html and lite) and the base angle fell to the headless Google, 25 s when cold. A second plain-HTTP
+  provider, `yahoo`, now stands between `duckduckgo_lite` and `google` in the default chain
+  (`SEARCH_FALLBACK_PROVIDERS=duckduckgo_lite,yahoo,google`), with its own gate and cooldown like
+  every provider, and `provider: "yahoo"` asks it directly.
+- Two candidates were probed once each, a minute apart, through an impersonating `curl_cffi`
+  session (the stack an adapter uses), on `python asyncio tutorial`. **Yahoo**
+  (`https://search.yahoo.com/search?p=...`) answered HTTP 200 in about a second with seven organic
+  results in `div.algo-sr`. **Mojeek** (`https://www.mojeek.com/search?q=...`) answered HTTP 403,
+  "Sorry your network appears to be sending automated queries so we can't process your search at
+  this time"; nothing is added for it.
+- The parser (`web_scraper/yahoo_search.py`, a fixture of the live answer in
+  `tests/fixtures/yahoo_python_asyncio_tutorial.html`, scripts and styles stripped) reads each
+  `div.algo-sr`: the title of its `h3.title`, the snippet of its `div.compText p` (Yahoo puts the date
+  in front, `Jul 30, 2025 ·` or `2 days ago ·`, which the search's own date reading uses), and the
+  address out of Yahoo's redirect (`.../RU=<encoded address>/RK=...`). A page's `Next` link is followed
+  to at most three pages while fewer results than asked for are in. A result on Yahoo itself is never
+  one.
+- What it does and does not take: the relative date filter (`day`, `week`, `month` as Yahoo's
+  `btf`; Yahoo has none for a year) and a call's `language` (as `Accept-Language`). A region and a
+  date range are not sent (the date range still drops results dated outside it, after the search).
+- Refusals: HTTP 403, 429 and 999, a redirect off `https://search.yahoo.com` (its consent page
+  included), more than four redirects, and a page with no results that talks of unusual traffic or a
+  captcha are `search_failed` with `detail: bot_detected`, as for DuckDuckGo. A redirect that stays on
+  `search.yahoo.com` is followed by the searcher itself (Yahoo sends a first request through a
+  `/_bv/v.gif` cookie step and back), never by the HTTP client, so nothing outside Yahoo is asked.
+- Measured live (2026-10-23): `provider: "yahoo"` at `fast` answered in 2.4 s (the first request of the
+  process, with that cookie step); with both DuckDuckGo endpoints made to refuse in the process, the
+  chain's `tried` was `duckduckgo` failed, `duckduckgo_lite` failed, `yahoo` answered, in 0.6 s, where
+  the headless browser had taken 25 s.
 

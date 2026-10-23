@@ -64,9 +64,9 @@ def _float(name: str, default: float) -> float:
         return default
 
 
-# What a search falls back to, in the order it asks: DuckDuckGo's lite page (plain HTTP)
-# before the headless browser.
-DEFAULT_FALLBACK_PROVIDERS = ("duckduckgo_lite", "google")
+# What a search falls back to, in the order it asks: DuckDuckGo's lite page and Yahoo (both
+# plain HTTP) before the headless browser.
+DEFAULT_FALLBACK_PROVIDERS = ("duckduckgo_lite", "yahoo", "google")
 
 
 def provider_names(values: Iterable[str]) -> list[str]:

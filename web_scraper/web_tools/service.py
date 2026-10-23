@@ -64,6 +64,7 @@ from web_scraper.web_tools.search import (
     SearchAdapter,
     SearchOptions,
     SearchResult,
+    YahooSearchAdapter,
     normalize_domains,
     normalize_language,
     normalize_region,
@@ -210,6 +211,7 @@ class WebToolsService:
                 region=settings.search_region,
                 language=settings.search_language,
             ),
+            "yahoo": YahooSearchAdapter(language=settings.search_language),
             "google": GoogleSearchAdapter(),
         }
         return cls(

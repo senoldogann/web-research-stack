@@ -26,15 +26,28 @@ class DuckDuckGoBlocked(RuntimeError):
     """DuckDuckGo answered with its bot-detection response."""
 
 
-class _SharedSession:
-    """The one browser-like HTTP client every DuckDuckGo call of the process goes through.
+def accept_language(language: str) -> str:
+    """An Accept-Language for a language tag: ``fi`` is ``fi,en;q=0.5``."""
+    base = language.split("-")[0]
+    parts = [language]
+    if base != language:
+        parts.append(f"{base};q=0.9")
+    if base != "en":
+        parts.append("en;q=0.5")
+    return ",".join(parts)
+
+
+class SharedSession:
+    """The one browser-like HTTP client a search provider's calls in the process go through.
 
     A client made for each search sent a new TLS fingerprint, no cookies and a fresh
     connection every time, and asked the JavaScript page for a token first. This one is made
-    once per event loop, impersonates one Chrome, and keeps DuckDuckGo's cookies.
+    once per event loop, impersonates one Chrome, and keeps the provider's cookies. Each
+    provider has its own (DuckDuckGo's two endpoints share one).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, timeout: Optional[float] = None) -> None:
+        self._timeout = timeout
         self._session: Any = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
@@ -42,7 +55,7 @@ class _SharedSession:
         loop = asyncio.get_running_loop()
         if self._session is None or self._loop is not loop:
             self._session = requests.AsyncSession(
-                timeout=config.duckduckgo_request_timeout_seconds,
+                timeout=self._timeout or config.duckduckgo_request_timeout_seconds,
                 impersonate=HeaderFactory.stable_impersonate_target(),
             )
             self._loop = loop
@@ -57,7 +70,7 @@ class _SharedSession:
                 pass
 
 
-_SESSION = _SharedSession()
+_SESSION = SharedSession()
 
 
 async def close_duckduckgo_session() -> None:
@@ -93,16 +106,7 @@ class DuckDuckGoSearcher:
         # A client with ``post`` (tests give one); by default the process's shared session.
         self._client = client
 
-    @staticmethod
-    def _accept_language(language: str) -> str:
-        """An Accept-Language for a language tag: ``fi`` is ``fi,en;q=0.5``."""
-        base = language.split("-")[0]
-        parts = [language]
-        if base != language:
-            parts.append(f"{base};q=0.9")
-        if base != "en":
-            parts.append("en;q=0.5")
-        return ",".join(parts)
+    _accept_language = staticmethod(accept_language)
 
     def _build_headers(self, language: Optional[str] = None) -> Dict[str, str]:
         # The impersonated browser sends its own user agent, client hints and accept

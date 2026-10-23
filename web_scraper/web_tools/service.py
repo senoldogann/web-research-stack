@@ -428,7 +428,9 @@ class WebToolsService:
         search_ms = (time.perf_counter() - started) * 1000
         ranking_started = time.perf_counter()
         if resolved_depth == "fast":
-            # Provider order, minus results that hold no distinctive word of the query.
+            # Provider order, minus results that hold no distinctive word of the query. The
+            # whole pool is scored, so BM25 sees the same corpus as in discover and deep;
+            # annotate_candidates keeps the provider's order.
             annotated = annotate_candidates(cleaned, candidates.values())
             results = relevant_results(cleaned, annotated)[:resolved_limit]
         else:
@@ -743,12 +745,17 @@ class WebToolsService:
             if should_yield():
                 raise _ProviderCoolingDown(name)
             await gate.pace()
-            # An adapter is given the options only when a caller asked for some: with none, the
-            # call is what it always was.
-            extra: dict[str, Any] = {"options": options} if options else {}
+            # An adapter is given the date filter and the options only when a caller asked for
+            # them: with none, the call is what it always was, so an adapter written as
+            # ``search(query, limit)`` keeps working.
+            extra: dict[str, Any] = {}
+            if date_filter is not None:
+                extra["date_filter"] = date_filter
+            if options:
+                extra["options"] = options
             try:
                 results = await asyncio.wait_for(
-                    adapter.search(query, limit, date_filter=date_filter, **extra),
+                    adapter.search(query, limit, **extra),
                     timeout=timeout or self.settings.search_timeout_seconds,
                 )
             except asyncio.TimeoutError:

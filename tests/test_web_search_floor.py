@@ -198,8 +198,10 @@ async def test_two_of_three_words_and_one_of_two_words_do_not_warn() -> None:
     assert second["results"][0]["relevance"] == 0.5
 
 
-def _benchmark_rows() -> list[tuple[str, list[SearchResult]]]:
-    recorded = json.loads((BENCHMARKS / "web_search_relevance.json").read_text(encoding="utf-8"))
+def _benchmark_rows(
+    name: str = "web_search_relevance.json",
+) -> list[tuple[str, list[SearchResult]]]:
+    recorded = json.loads((BENCHMARKS / name).read_text(encoding="utf-8"))
     queries = {
         row["query"]
         for row in json.loads((BENCHMARKS / "search_relevance_queries.json").read_text("utf-8"))
@@ -220,5 +222,28 @@ async def test_real_queries_keep_their_results_and_their_relevance(
         response = await _service(results).search(query, limit=8, depth=depth)
 
         assert {item["url"] for item in response["results"]} == {r.url for r in results}
+        assert response["warnings"] == []
+        assert max(item["relevance"] for item in response["results"]) >= 0.5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "results"),
+    _benchmark_rows("web_search_relevance_integration.json"),
+    ids=lambda value: str(value)[:40],
+)
+async def test_the_integration_run_keeps_what_holds_a_word_of_the_query(
+    query: str, results: list[SearchResult]
+) -> None:
+    # The second recorded run of the ten queries (2026-10-22, the integration of search v2 with
+    # the reliability work). A row holds titles and addresses, no snippets: a page that is about
+    # the query only through its snippet (Edge's release notes under "MDN AbortController") is
+    # dropped, as every page that holds no word of the query is. The others stay.
+    held = {r.url for r in results if has_relevant_result(query, _items([r]))}
+    assert len(held) >= len(results) - 1
+    for depth in ("fast", "discover"):
+        response = await _service(results).search(query, limit=8, depth=depth)
+
+        assert {item["url"] for item in response["results"]} == held
         assert response["warnings"] == []
         assert max(item["relevance"] for item in response["results"]) >= 0.5

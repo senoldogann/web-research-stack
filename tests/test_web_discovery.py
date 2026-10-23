@@ -580,6 +580,22 @@ def test_bm25f_saturates_repeated_terms() -> None:
     assert by_url[repeated.result.url]["bm25"] < 2 * by_url[single.result.url]["bm25"]
 
 
+def test_bm25_is_squashed_into_zero_one_not_scaled_to_the_best_match() -> None:
+    # Each is the only result of its pool: scaled to the pool's best match, both would be 1.0.
+    query = "finnish housing allowance rules"
+    weak = _candidate("https://a.example.com/lapland", "Housing in Lapland")
+    strong = _candidate(
+        "https://b.example.com/rules",
+        "Finnish housing allowance rules",
+        "The rules of the Finnish housing allowance",
+    )
+
+    weak_bm25 = annotate_candidates(query, [weak], year_now=2026)[0]["bm25"]
+    strong_bm25 = annotate_candidates(query, [strong], year_now=2026)[0]["bm25"]
+
+    assert 0 < weak_bm25 < strong_bm25 < 1
+
+
 def test_weighted_rrf_prefers_current_angle_over_background() -> None:
     background = _candidate(
         "https://a.example.com/background",
@@ -665,6 +681,38 @@ async def test_freshness_query_forwards_date_filter_to_provider() -> None:
 
     assert search.date_filters == ["year"]
     assert result["queries"][0]["date_filter"] == "year"
+
+
+@pytest.mark.asyncio
+async def test_an_adapter_without_a_date_filter_is_called_when_none_is_asked() -> None:
+    # An adapter written as search(query, limit), before date filters, keeps working: the filter
+    # is passed to an adapter only when the query asked for one.
+    class PlainSearch:
+        name = "fake"
+
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int]] = []
+
+        async def search(self, query: str, limit: int) -> list[SearchResult]:
+            self.calls.append((query, limit))
+            return [
+                SearchResult(
+                    "Asyncio guide",
+                    "https://docs.python.org/3/library/asyncio.html",
+                    "Official guide",
+                    "docs.python.org",
+                )
+            ]
+
+    search = PlainSearch()
+
+    result = await _service(search).search("asyncio", limit=5, depth="fast")  # type: ignore[arg-type]
+
+    assert search.calls == [("asyncio", 5)]
+    assert result["queries"][0]["date_filter"] is None
+    assert [item["url"] for item in result["results"]] == [
+        "https://docs.python.org/3/library/asyncio.html"
+    ]
 
 
 @pytest.mark.asyncio

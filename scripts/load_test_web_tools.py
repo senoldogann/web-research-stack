@@ -168,10 +168,7 @@ class TrackingHostGate(HostGate):
     def summary(self) -> dict[str, Any]:
         gaps: list[float] = []
         for starts in self.starts.values():
-            gaps.extend(
-                (later - earlier) * 1000
-                for earlier, later in zip(starts, starts[1:])
-            )
+            gaps.extend((later - earlier) * 1000 for earlier, later in zip(starts, starts[1:]))
         return {
             "max_active_by_host": dict(self.max_active),
             "min_start_gap_ms": round(min(gaps), 2) if gaps else None,
@@ -464,12 +461,8 @@ async def _run() -> dict[str, Any]:
 
         SERVER_METRICS.reset_peak()
         gate.reset()
-        single_urls = [
-            f"http://load.test/load/single{i}" for i in range(60)
-        ]
-        summary["scrape_single_host"] = await run_scrapes(
-            service, single_urls, concurrency=64
-        )
+        single_urls = [f"http://load.test/load/single{i}" for i in range(60)]
+        summary["scrape_single_host"] = await run_scrapes(service, single_urls, concurrency=64)
         summary["scrape_single_host"]["server"] = SERVER_METRICS.snapshot()
         summary["scrape_single_host"]["gate"] = gate.summary()
 
@@ -480,17 +473,13 @@ async def _run() -> dict[str, Any]:
             for host in range(1, 9)
             for index in range(20)
         ]
-        summary["scrape_multi_host"] = await run_scrapes(
-            service, multi_urls, concurrency=160
-        )
+        summary["scrape_multi_host"] = await run_scrapes(service, multi_urls, concurrency=160)
         summary["scrape_multi_host"]["server"] = SERVER_METRICS.snapshot()
         summary["scrape_multi_host"]["gate"] = gate.summary()
 
         SERVER_METRICS.reset_peak()
         gate.reset()
-        summary["crawl"] = await run_crawl_load(
-            service, port, jobs=6, pages=MAX_CRAWL_PAGES
-        )
+        summary["crawl"] = await run_crawl_load(service, port, jobs=6, pages=MAX_CRAWL_PAGES)
         summary["crawl"]["server"] = SERVER_METRICS.snapshot()
         summary["crawl"]["gate"] = gate.summary()
 
@@ -501,10 +490,7 @@ async def _run() -> dict[str, Any]:
 
         search_started = time.perf_counter()
         searches = await asyncio.gather(
-            *(
-                service.search("load test", provider="stub", limit=5)
-                for _ in range(32)
-            )
+            *(service.search("load test", provider="stub", limit=5) for _ in range(32))
         )
         summary["search_stub"] = {
             "requests": len(searches),
@@ -524,9 +510,7 @@ async def _run() -> dict[str, Any]:
             "crawl_max_8": summary["crawl"]["server"]["max_active"] <= 8,
             "single_host_no_errors": summary["scrape_single_host"]["failed"] == 0,
             "multi_host_no_errors": summary["scrape_multi_host"]["failed"] == 0,
-            "crawl_no_failures": all(
-                value == 0 for value in summary["crawl"]["failed_per_job"]
-            ),
+            "crawl_no_failures": all(value == 0 for value in summary["crawl"]["failed_per_job"]),
             "crawl_fetched_all_pages": all(
                 value == summary["crawl"]["pages_per_job"]
                 for value in summary["crawl"]["fetched_per_job"]

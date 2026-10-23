@@ -1008,8 +1008,10 @@ def annotate_candidates(
     items = list(candidates)
     terms = _bm25_query_terms(query)
     raw_scores = _bm25_raw_scores(terms, [_document_stats(item) for item in items])
-    peak = max(raw_scores, default=0.0)
-    normalized = [score / peak if peak > 0 else 0.0 for score in raw_scores]
+    # Squash raw BM25 into (0, 1) instead of scaling it to the pool's best match: a pool of
+    # only weak matches must not look as strong as a pool with a genuine answer, and one page
+    # that spells the whole query does not take all of BM25's weight from the others.
+    normalized = [score / (score + 1.0) for score in raw_scores]
     now = today or date.today()
     news = _wants_news(query)
     window = detect_date_filter(query, year=now.year)

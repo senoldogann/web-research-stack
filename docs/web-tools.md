@@ -123,16 +123,23 @@ deterministically:
 - a per-domain cap of `ceil(limit / 3)` and a source-type diversity adjustment,
   so one site or one kind of source cannot fill the page.
 
-Scores are relative ranking weights, not probabilities. Every result carries
-`source_type`, `year`, `recency`, `angles`, `relevance`, `bm25`, and `score`. The
-response also includes `facets` (source types, recency buckets, domains, angles,
-candidate count), per-angle `queries` with result/new counts, date filters and
-errors, `warnings`, and `cache_hit`. If an enrichment angle fails, usable
-results from the remaining angles are returned with a warning. Every failed
-provider call puts that provider into a cooldown (5 s doubling to 300 s, reset by
-a successful call) during which its calls go to the Google fallback; see
-"Search provider pacing, fallback, and cooldown" below. `fast` keeps provider
-order and does not fan out, so it sends the fewest requests. Successful responses are cached for
+Scores are ranking weights, not probabilities. `bm25` is squashed into 0..1
+(`raw / (raw + 1)`), not scaled to the best match of the search: a pool of only
+weak matches does not look as strong as a pool with a genuine answer, and one page
+that spells the whole query does not take all of BM25's weight from an official
+page whose title holds fewer of the query's words. Whether a result is about the
+query at all is `relevance`, the share of the query's words it holds (see "A
+floor under relevance" below). Every result carries `source_type`, `year`,
+`recency`, `angles`, `relevance`, `bm25`, and `score`. The response also includes
+`facets` (source types, recency buckets, domains, angles, candidate count),
+per-angle `queries` with provider, result/new counts, date filters and errors,
+`warnings`, and `cache_hit`. If an angle fails, usable results from the remaining
+angles are returned with a warning. Each provider is paced, failures earn it a
+cooldown (5 s doubling to 300 s, reset by a successful call), and the fallback
+chain answers while it rests (see
+[Search provider pacing, fallback, and cooldown](#search-provider-pacing-fallback-and-cooldown)).
+`fast` keeps provider order and does not fan out, so it sends the fewest
+requests. Successful responses are cached for
 `WEB_TOOLS_SEARCH_CACHE_TTL_SECONDS` (default 300 s) per provider/depth/limit/
 query/locale, so a repeated search skips the provider entirely.
 
@@ -437,19 +444,70 @@ the successful angles with a `background_query_failed` warning instead of
 failing the search. The `primary` angle succeeded in the `deep` run. That is the
 designed partial-failure behavior, not a complete four-angle result. A repeated
 `discover` search returned from cache in 0.35 ms with `cache_hit=true`; a failed
-provider call would instead cool that provider down and send its next calls to
-the fallback. When the provider
-cooperates, `deep` adds its fourth angle; when it does not, retry later or use
-`fast` to conserve provider budget.
+provider call would instead put that provider in cooldown, and the fallback chain
+would answer while it rests. When the provider cooperates, `deep` adds its
+fourth angle; when it does not, retry later or use `fast` to conserve provider
+budget.
+
+### Search relevance evaluation
+
+`scripts/evaluate_web_search.py` scores a live `web_search` against
+`benchmarks/search_relevance_queries.json`: ten labelled queries whose expected
+hosts (or subdomains) mark a result relevant. It measures the whole ranked list,
+not just the first hit: nDCG@5, MRR, official-source hits in the top 3,
+freshness hits in the top 5, unique domains, provider warnings, and the returned
+top results. The run writes `benchmarks/web_search_relevance.json`; pass
+`--no-write` to inspect a run without replacing it, or `--output` to write it
+elsewhere (the order of the rows of that file is pinned by
+`tests/fixtures/ranking_of_recorded_queries.json`).
+
+Two `discover` runs of 2026-10-22 (`limit=8`, DuckDuckGo) are recorded, and each
+answered all ten queries:
+
+| Metric | Search v2 alone | Search v2 with the reliability work |
+|---|---:|---:|
+| Mean nDCG@5 | 0.853 | 0.837 |
+| Mean MRR | 0.833 | 0.850 |
+| Official source in top 3 | 9/10 | 10/10 |
+| Freshness hit in top 5 | 2/2 | 2/2 |
+| Mean unique domains in top 5 | 4.4 | 4.1 |
+
+The first run (15:12 UTC) is `benchmarks/web_search_relevance.json`; three of its
+queries carry `background_query_failed`. The second (16:37 UTC) is
+`benchmarks/web_search_relevance_integration.json`, made on the branch that
+integrated search v2 with the reliability work; four of its queries carry
+`provider_fallback`, the Google fallback having answered. Both are read by
+`tests/test_web_search_floor.py`. Nine queries scored nDCG@5 of 0.62 or more in
+each run. The exception of the second was `Türkiye yapay zeka eylem planı 2026`
+(nDCG 0): the provider returned no page on the fixture's expected domain, so the
+ranking had nothing relevant to place; the first run scored it 1.0. Labels are
+expected domains, not human relevance grades, and a live run moves with provider
+coverage; compare runs on the same fixture rather than treating one score as an
+absolute quality claim. Neither run is of the ranking of version 1.2.0: run the
+script again to measure it.
+
+The ranking can also be measured offline on the recorded rows: re-rank the
+recorded top five of each query (titles and addresses; a row holds no snippet)
+and score it with the same labels. On 2026-10-23, with BM25 scaled to the pool's
+best match, as it was until the integration branch was merged, the two runs came
+to a mean nDCG@5 of 0.792 and 0.703 (MRR 0.745 and 0.650). With BM25 squashed
+into (0, 1), the integration branch's way and the ranking now, they came to
+0.928 and 0.815 (MRR 0.933 and 0.783): ten of the twenty rows higher, none
+lower, an official page (`react.dev`'s `useEffect`, `sqlite.org`'s `fts5`)
+coming before pages that spell the whole query. The integration branch also
+weighted BM25 by `relevance`; with it the means were 0.869 and 0.822 (MRR 0.833
+and 0.800), three rows lower than with the squash alone and one higher, and
+that weighting is not in the ranking. These compare rankings of five results
+each; they are no live measure.
 
 ## Verification
 
 Checks actually run during this work:
 
 ```bash
-.venv/bin/python -m pytest -q          # 234 passed
+.venv/bin/python -m pytest -q          # 952 passed
 .venv/bin/python -m ruff check web_scraper tests scripts   # All checks passed
-.venv/bin/python -m ruff format --check web_scraper tests  # 60 files already formatted
+.venv/bin/python -m ruff format --check web_scraper tests scripts  # 118 files already formatted
 .venv/bin/python scripts/benchmark_web_tools.py   # 6/6 checks passed
 .venv/bin/python scripts/load_test_web_tools.py   # 10/10 checks passed
 ```
@@ -457,7 +515,13 @@ Checks actually run during this work:
 The live `fast` / `discover` / `deep` comparison above was also run against
 DuckDuckGo on 2026-10-22. The full suite count includes the discovery, search
 cache, cooldown, timeout, locale, and BM25F tests in `tests/test_web_discovery.py`
-and `tests/test_web_service.py`.
+and `tests/test_web_service.py`, the pacing, fallback, and cooldown tests in
+`tests/test_web_search_resilience.py`, the empty-answer tests in
+`tests/test_web_search_honesty.py`, the floor under relevance, with the two
+recorded runs, in `tests/test_web_search_floor.py`, and the source-type tests in
+`tests/test_web_source_types.py`. The pytest, ruff and load-test lines were run
+again after `main` (the integration branch, PR #5) was merged into this branch
+on 2026-10-23; the benchmark line is the one of the earlier work.
 
 The MCP server was also started through Dot's own MCP SDK (`Client(mode="auto")`)
 and exercised live: protocol `2025-11-25`, 8 tools, a DuckDuckGo search returning
@@ -484,9 +548,10 @@ pick up the new schema.
 - The default DuckDuckGo path can be rate-limited. A 202 bot-detection response
   is reported as `search_failed` with `detail=bot_detected`; a 200 response with
   no result nodes still returns an empty list, which is a provider quality
-  signal. Every failed call cools the provider down and sends its next calls to
-  the Google fallback. The adapter can be replaced without changing the service
-  contract.
+  signal. Any failed provider call starts that provider's cooldown; with a
+  fallback registered, later calls go to the fallback chain while it rests. The
+  adapter can be replaced without changing the service contract: one written as
+  `search(query, limit)` is called so when no date filter or option is asked.
 - `discover` and `deep` send 3 and 4 provider queries instead of 1. They cost
   more latency and provider budget than `fast`; use `fast` when that matters.
   An individual angle failure is surfaced in `warnings` and may reduce coverage.
@@ -903,7 +968,10 @@ headless browser met as well.
   or an underscore now match (`sqlite-bm25-search` held neither `sqlite` nor
   `bm25` before). The recorded top results of the ten queries in
   `benchmarks/search_relevance_queries.json` all keep their results and their
-  warnings stay empty (`tests/test_web_search_floor.py`).
+  warnings stay empty (`tests/test_web_search_floor.py`); of the second recorded
+  run (see "Search relevance evaluation") one result goes, Edge's release notes
+  under `MDN AbortController`, which holds no word of the query in its title or
+  address (the row records no snippet, which may hold it).
 
 ### Search that does not fall to the browser every time
 
@@ -1085,9 +1153,10 @@ less.
 - `depth: fast` keeps the provider's order, as it always did: the types are
   labelled on its results all the same, but only `discover` and `deep` rank by
   them.
-- The ten recorded queries of `benchmarks/web_search_relevance.json` rank as
-  they did (none of their results is an outlet, a post or a press release):
-  `tests/test_web_search_sources.py` holds their order.
+- The ten recorded queries of `benchmarks/web_search_relevance.json` are not
+  touched by the types (none of their results is an outlet, a post or a press
+  release): `tests/test_web_search_sources.py` holds their order, as BM25
+  squashed into (0, 1) puts them (see "Search relevance evaluation").
 
 ### Several pages in one call
 

@@ -298,9 +298,12 @@ def test_news_words_of_other_languages_make_a_news_query(query: str, news: bool)
 
 
 def test_real_queries_keep_their_results_and_their_order() -> None:
-    # The ten recorded queries of benchmarks/web_search_relevance.json, ranked as they were
-    # before the source types of round 3 (tests/fixtures/ranking_of_recorded_queries.json):
-    # none of their results is an outlet, a post or a press release, so none moves.
+    # The ten recorded queries of benchmarks/web_search_relevance.json, ranked with BM25 squashed
+    # into (0, 1) (tests/fixtures/ranking_of_recorded_queries.json): none of their results is an
+    # outlet, a post or a press release, so the source types of round 3 do not touch them. Up to
+    # the merge of the integration branch the order pinned here was the one with BM25 scaled to
+    # the pool's best match; the squash moved eight of the ten, an official page above blog posts
+    # that spell the whole query (react.dev's useEffect went from fifth to first).
     recorded = json.loads((BENCHMARKS / "web_search_relevance.json").read_text(encoding="utf-8"))
     golden = json.loads((FIXTURES / "ranking_of_recorded_queries.json").read_text(encoding="utf-8"))
     assert len(recorded["results"]) == len(golden) == 10

@@ -9,6 +9,7 @@ import pytest
 from web_scraper.api_runtime import InMemoryTTLCache
 from web_scraper.web_tools.discovery import (
     MIN_RESULT_RELEVANCE,
+    MIN_RESULT_SCORE,
     DiscoveryCandidate,
     has_relevant_result,
     rank_candidates,
@@ -106,14 +107,17 @@ def test_low_scoring_relevant_result_is_dropped_beside_better_ones() -> None:
     assert [item["url"] for item in results] == [strong.result.url]
 
 
-def test_weak_match_is_kept_when_nothing_better_exists() -> None:
+def test_low_scoring_relevant_result_is_kept_when_nothing_scores_higher() -> None:
     query = "finnish housing allowance rules"
     weak = _candidate("https://blog.example.net/lapland", "Housing in Lapland", rank=15)
 
     results = rank_candidates(query, [weak], 5, year_now=2026)
 
+    # Alone it scores under the floor of a listed result, and it is listed all the same: BM25 is
+    # not scaled to the best match of the pool (here itself), or it would always reach it.
     assert [item["url"] for item in results] == [weak.result.url]
     assert 0 < results[0]["relevance"] < MIN_RESULT_RELEVANCE
+    assert results[0]["score"] < MIN_RESULT_SCORE
 
 
 @pytest.mark.asyncio

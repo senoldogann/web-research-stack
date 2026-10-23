@@ -4,11 +4,43 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Iterable, Optional
 
-import dotenv
+from web_scraper.local_env import load_local_env
 
 _BROWSER_PREFERENCES = {"auto", "chrome", "chromium", "camoufox"}
+
+# The smallest Markdown cap a scrape accepts. The request schema states it and
+# the service refuses a smaller one, so no layer silently raises a caller's cap.
+MIN_MARKDOWN_CHARS = 500
+
+# The most links one web_scrape request may ask for (``max_links``); the server's
+# ``scrape_max_links`` is the default, and ``max_links`` its own ceiling.
+SCRAPE_MAX_LINKS_CEILING = 200
+
+# web_scrape with ``urls``: how many pages one call reads, how many at a time from one host,
+# and the bounds of the cap on the whole answer (``max_total_chars``).
+SCRAPE_BATCH_MIN_URLS = 2
+SCRAPE_BATCH_MAX_URLS = 10
+SCRAPE_BATCH_PER_HOST = 2
+SCRAPE_BATCH_MIN_TOTAL_CHARS = 5_000
+SCRAPE_BATCH_MAX_TOTAL_CHARS = 500_000
+
+# web_search with ``read``: how many of the top results one call reads, how much of each
+# (the default and the ceiling), all of it inside the bound on the whole answer.
+SEARCH_READ_MAX = 5
+SEARCH_READ_CHARS_DEFAULT = 4_000
+SEARCH_READ_CHARS_MAX = 20_000
+
+# web_extract's bounds: the values one ``all`` field may return, and the size of
+# a whole answer in characters (its compact JSON).
+EXTRACT_MAX_ITEMS_CEILING = 1_000
+# How far into a field's matches an ``all`` field may start (``offset``).
+EXTRACT_OFFSET_CEILING = 1_000_000
+EXTRACT_MAX_CHARS_FLOOR = 1_000
+EXTRACT_MAX_CHARS_CEILING = 200_000
 
 
 def _bool(name: str, default: bool) -> bool:
@@ -32,6 +64,47 @@ def _float(name: str, default: float) -> float:
         return default
 
 
+# What a search falls back to, in the order it asks: DuckDuckGo's lite page and Yahoo (both
+# plain HTTP) before the headless browser.
+DEFAULT_FALLBACK_PROVIDERS = ("duckduckgo_lite", "yahoo", "google")
+
+
+def provider_names(values: Iterable[str]) -> list[str]:
+    """Provider names, trimmed, lower-cased and unique; ``none`` and ``off`` name no provider."""
+    names: list[str] = []
+    for value in values:
+        name = str(value).strip().lower()
+        if name and name not in {"none", "off"} and name not in names:
+            names.append(name)
+    return names
+
+
+def _fallback_chain_from_env() -> list[str]:
+    """``..._FALLBACK_PROVIDERS`` (a list), else the older single ``..._FALLBACK_PROVIDER``."""
+    raw: Optional[str] = os.getenv("WEB_TOOLS_SEARCH_FALLBACK_PROVIDERS")
+    if raw is None:
+        raw = os.getenv("WEB_TOOLS_SEARCH_FALLBACK_PROVIDER")
+    if raw is None:
+        return list(DEFAULT_FALLBACK_PROVIDERS)
+    return provider_names(raw.split(","))
+
+
+def _data_dir_from_env() -> str:
+    """The folder the web tools keep their data in (crawl jobs): ``WEB_TOOLS_DATA_DIR``.
+
+    Unset, it is ``web-research`` in the XDG data home (``$XDG_DATA_HOME``, else
+    ``~/.local/share``). An empty value, ``none`` or ``off`` keeps nothing on disk.
+    """
+    raw = os.getenv("WEB_TOOLS_DATA_DIR")
+    if raw is None:
+        base = os.getenv("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+        return str(Path(base).expanduser() / "web-research")
+    raw = raw.strip()
+    if raw.lower() in {"", "none", "off"}:
+        return ""
+    return str(Path(raw).expanduser())
+
+
 def _csv(name: str) -> list[str]:
     raw = os.getenv(name, "")
     return [item.strip() for item in raw.split(",") if item.strip()]
@@ -45,13 +118,17 @@ class WebToolsSettings:
     search_timeout_seconds: float = 30.0
     search_default_depth: str = "discover"
     search_angle_delay_ms: int = 150
+    # How long the angles after the base may take once it answered; 0 waits for all.
+    search_angle_budget_ms: int = 5_000
     search_region: str = "wt-wt"
     search_language: str = "en-US,en;q=0.9"
     search_cache_ttl_seconds: int = 300
     search_provider_concurrency: int = 1
     search_jitter_min_ms: int = 250
     search_jitter_max_ms: int = 500
-    search_fallback_provider: str = "google"
+    search_fallback_providers: list[str] = field(
+        default_factory=lambda: list(DEFAULT_FALLBACK_PROVIDERS)
+    )
     search_fallback_timeout_seconds: float = 60.0
     search_provider_cooldown_seconds: int = 5
     search_provider_max_cooldown_seconds: int = 300
@@ -69,6 +146,10 @@ class WebToolsSettings:
 
     cache_ttl_seconds: int = 900
     cache_max_entries: int = 256
+    # The fetched documents scrape and extract share (0 seconds turns it off), bounded.
+    page_cache_ttl_seconds: int = 300
+    page_cache_max_entries: int = 64
+    page_cache_max_bytes: int = 20_000_000
 
     browser_enabled: bool = True
     browser_preference: str = "auto"
@@ -81,6 +162,9 @@ class WebToolsSettings:
     markdown_max_chars: int = 50_000
     max_links: int = 500
     scrape_max_links: int = 50
+    scrape_batch_concurrency: int = 4
+    scrape_batch_max_total_chars: int = 60_000
+    search_read_max_total_chars: int = 60_000
     default_map_limit: int = 500
     max_map_limit: int = 5_000
     max_sitemaps: int = 25
@@ -98,7 +182,16 @@ class WebToolsSettings:
     max_crawl_jobs: int = 32
     max_crawl_errors: int = 100
 
+    # How long the walk through the Internet Archive's copies of a walled page may take.
+    archive_budget_seconds: float = 20.0
+
+    # Where crawl jobs are kept so a restart does not lose them; empty keeps nothing on disk
+    # (what a settings made by hand does: only from_env, the server's own, names a folder).
+    data_dir: str = ""
+
     max_extract_fields: int = 50
+    extract_max_items: int = 100
+    extract_max_chars: int = 20_000
 
     def __post_init__(self) -> None:
         self.search_provider = (self.search_provider or "duckduckgo").strip().lower()
@@ -106,6 +199,7 @@ class WebToolsSettings:
         depth = (self.search_default_depth or "discover").strip().lower()
         self.search_default_depth = depth if depth in {"fast", "discover", "deep"} else "discover"
         self.search_angle_delay_ms = min(max(self.search_angle_delay_ms, 0), 5_000)
+        self.search_angle_budget_ms = min(max(self.search_angle_budget_ms, 0), 120_000)
         region = (self.search_region or "wt-wt").strip().lower()
         self.search_region = region if re.fullmatch(r"[a-z]{2}-[a-z]{2}|wt-wt", region) else "wt-wt"
         language = (self.search_language or "").strip()
@@ -119,8 +213,7 @@ class WebToolsSettings:
             max(self.search_jitter_max_ms, self.search_jitter_min_ms),
             10_000,
         )
-        fallback = (self.search_fallback_provider or "").strip().lower()
-        self.search_fallback_provider = "" if fallback in {"", "none", "off"} else fallback
+        self.search_fallback_providers = provider_names(self.search_fallback_providers or [])
         self.search_fallback_timeout_seconds = max(self.search_fallback_timeout_seconds, 1.0)
         self.search_provider_cooldown_seconds = max(self.search_provider_cooldown_seconds, 0)
         self.search_provider_max_cooldown_seconds = max(
@@ -139,6 +232,9 @@ class WebToolsSettings:
         self.host_min_interval_ms = max(self.host_min_interval_ms, 0)
         self.cache_ttl_seconds = max(self.cache_ttl_seconds, 1)
         self.cache_max_entries = max(self.cache_max_entries, 1)
+        self.page_cache_ttl_seconds = max(self.page_cache_ttl_seconds, 0)
+        self.page_cache_max_entries = max(self.page_cache_max_entries, 1)
+        self.page_cache_max_bytes = max(self.page_cache_max_bytes, 1_000)
 
         preference = (self.browser_preference or "auto").strip().lower()
         self.browser_preference = preference if preference in _BROWSER_PREFERENCES else "auto"
@@ -148,9 +244,18 @@ class WebToolsSettings:
         self.browser_max_contexts = max(self.browser_max_contexts, 1)
         self.browser_render_min_chars = max(self.browser_render_min_chars, 20)
 
-        self.markdown_max_chars = max(self.markdown_max_chars, 500)
+        self.markdown_max_chars = max(self.markdown_max_chars, MIN_MARKDOWN_CHARS)
         self.max_links = max(self.max_links, 1)
         self.scrape_max_links = min(max(self.scrape_max_links, 0), self.max_links)
+        self.scrape_batch_concurrency = max(self.scrape_batch_concurrency, 1)
+        self.scrape_batch_max_total_chars = min(
+            max(self.scrape_batch_max_total_chars, SCRAPE_BATCH_MIN_TOTAL_CHARS),
+            SCRAPE_BATCH_MAX_TOTAL_CHARS,
+        )
+        self.search_read_max_total_chars = min(
+            max(self.search_read_max_total_chars, SCRAPE_BATCH_MIN_TOTAL_CHARS),
+            SCRAPE_BATCH_MAX_TOTAL_CHARS,
+        )
         self.default_map_limit = max(self.default_map_limit, 1)
         self.max_map_limit = max(self.max_map_limit, self.default_map_limit)
         self.max_sitemaps = max(self.max_sitemaps, 1)
@@ -171,17 +276,24 @@ class WebToolsSettings:
         self.crawl_job_ttl_seconds = max(self.crawl_job_ttl_seconds, 60)
         self.max_crawl_jobs = max(self.max_crawl_jobs, 1)
         self.max_crawl_errors = max(self.max_crawl_errors, 1)
+        self.archive_budget_seconds = max(self.archive_budget_seconds, 0.1)
         self.max_extract_fields = max(self.max_extract_fields, 1)
+        self.extract_max_items = min(max(self.extract_max_items, 1), EXTRACT_MAX_ITEMS_CEILING)
+        self.extract_max_chars = min(
+            max(self.extract_max_chars, EXTRACT_MAX_CHARS_FLOOR),
+            EXTRACT_MAX_CHARS_CEILING,
+        )
 
     @classmethod
     def from_env(cls) -> WebToolsSettings:
         """Build settings from WEB_TOOLS_* environment variables."""
-        dotenv.load_dotenv()
+        load_local_env()
         return cls(
             search_provider=os.getenv("WEB_TOOLS_SEARCH_PROVIDER", "duckduckgo"),
             search_timeout_seconds=_float("WEB_TOOLS_SEARCH_TIMEOUT_SECONDS", 30.0),
             search_default_depth=os.getenv("WEB_TOOLS_SEARCH_DEPTH", "discover"),
             search_angle_delay_ms=_int("WEB_TOOLS_SEARCH_ANGLE_DELAY_MS", 150),
+            search_angle_budget_ms=_int("WEB_TOOLS_SEARCH_ANGLE_BUDGET_MS", 5_000),
             search_region=os.getenv("WEB_TOOLS_SEARCH_REGION", "wt-wt"),
             search_language=os.getenv(
                 "WEB_TOOLS_SEARCH_LANGUAGE",
@@ -191,7 +303,7 @@ class WebToolsSettings:
             search_provider_concurrency=_int("WEB_TOOLS_SEARCH_PROVIDER_CONCURRENCY", 1),
             search_jitter_min_ms=_int("WEB_TOOLS_SEARCH_JITTER_MIN_MS", 250),
             search_jitter_max_ms=_int("WEB_TOOLS_SEARCH_JITTER_MAX_MS", 500),
-            search_fallback_provider=os.getenv("WEB_TOOLS_SEARCH_FALLBACK_PROVIDER", "google"),
+            search_fallback_providers=_fallback_chain_from_env(),
             search_fallback_timeout_seconds=_float(
                 "WEB_TOOLS_SEARCH_FALLBACK_TIMEOUT_SECONDS",
                 60.0,
@@ -216,6 +328,9 @@ class WebToolsSettings:
             host_min_interval_ms=_int("WEB_TOOLS_HOST_MIN_INTERVAL_MS", 200),
             cache_ttl_seconds=_int("WEB_TOOLS_CACHE_TTL_SECONDS", 900),
             cache_max_entries=_int("WEB_TOOLS_CACHE_MAX_ENTRIES", 256),
+            page_cache_ttl_seconds=_int("WEB_TOOLS_PAGE_CACHE_TTL_SECONDS", 300),
+            page_cache_max_entries=_int("WEB_TOOLS_PAGE_CACHE_MAX_ENTRIES", 64),
+            page_cache_max_bytes=_int("WEB_TOOLS_PAGE_CACHE_MAX_BYTES", 20_000_000),
             browser_enabled=_bool("WEB_TOOLS_BROWSER_ENABLED", True),
             browser_preference=os.getenv("WEB_TOOLS_BROWSER_PREFERENCE", "auto"),
             browser_timeout_seconds=_float("WEB_TOOLS_BROWSER_TIMEOUT_SECONDS", 30.0),
@@ -226,6 +341,9 @@ class WebToolsSettings:
             markdown_max_chars=_int("WEB_TOOLS_MARKDOWN_MAX_CHARS", 50_000),
             max_links=_int("WEB_TOOLS_MAX_LINKS", 500),
             scrape_max_links=_int("WEB_TOOLS_SCRAPE_MAX_LINKS", 50),
+            scrape_batch_concurrency=_int("WEB_TOOLS_SCRAPE_BATCH_CONCURRENCY", 4),
+            scrape_batch_max_total_chars=_int("WEB_TOOLS_SCRAPE_BATCH_MAX_TOTAL_CHARS", 60_000),
+            search_read_max_total_chars=_int("WEB_TOOLS_SEARCH_READ_MAX_TOTAL_CHARS", 60_000),
             default_map_limit=_int("WEB_TOOLS_DEFAULT_MAP_LIMIT", 500),
             max_map_limit=_int("WEB_TOOLS_MAX_MAP_LIMIT", 5_000),
             max_sitemaps=_int("WEB_TOOLS_MAX_SITEMAPS", 25),
@@ -240,5 +358,9 @@ class WebToolsSettings:
             crawl_job_ttl_seconds=_int("WEB_TOOLS_CRAWL_JOB_TTL_SECONDS", 3_600),
             max_crawl_jobs=_int("WEB_TOOLS_MAX_CRAWL_JOBS", 32),
             max_crawl_errors=_int("WEB_TOOLS_MAX_CRAWL_ERRORS", 100),
+            archive_budget_seconds=_float("WEB_TOOLS_ARCHIVE_BUDGET_SECONDS", 20.0),
+            data_dir=_data_dir_from_env(),
             max_extract_fields=_int("WEB_TOOLS_MAX_EXTRACT_FIELDS", 50),
+            extract_max_items=_int("WEB_TOOLS_EXTRACT_MAX_ITEMS", 100),
+            extract_max_chars=_int("WEB_TOOLS_EXTRACT_MAX_CHARS", 20_000),
         )

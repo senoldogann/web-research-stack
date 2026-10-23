@@ -580,6 +580,22 @@ def test_bm25f_saturates_repeated_terms() -> None:
     assert by_url[repeated.result.url]["bm25"] < 2 * by_url[single.result.url]["bm25"]
 
 
+def test_bm25_is_squashed_into_zero_one_not_scaled_to_the_best_match() -> None:
+    # Each is the only result of its pool: scaled to the pool's best match, both would be 1.0.
+    query = "finnish housing allowance rules"
+    weak = _candidate("https://a.example.com/lapland", "Housing in Lapland")
+    strong = _candidate(
+        "https://b.example.com/rules",
+        "Finnish housing allowance rules",
+        "The rules of the Finnish housing allowance",
+    )
+
+    weak_bm25 = annotate_candidates(query, [weak], year_now=2026)[0]["bm25"]
+    strong_bm25 = annotate_candidates(query, [strong], year_now=2026)[0]["bm25"]
+
+    assert 0 < weak_bm25 < strong_bm25 < 1
+
+
 def test_weighted_rrf_prefers_current_angle_over_background() -> None:
     background = _candidate(
         "https://a.example.com/background",
@@ -665,6 +681,87 @@ async def test_freshness_query_forwards_date_filter_to_provider() -> None:
 
     assert search.date_filters == ["year"]
     assert result["queries"][0]["date_filter"] == "year"
+
+
+@pytest.mark.asyncio
+async def test_an_adapter_without_a_date_filter_is_called_when_none_is_asked() -> None:
+    # An adapter written as search(query, limit), before date filters, keeps working: the filter
+    # is passed to an adapter only when the query asked for one.
+    class PlainSearch:
+        name = "fake"
+
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int]] = []
+
+        async def search(self, query: str, limit: int) -> list[SearchResult]:
+            self.calls.append((query, limit))
+            return [
+                SearchResult(
+                    "Asyncio guide",
+                    "https://docs.python.org/3/library/asyncio.html",
+                    "Official guide",
+                    "docs.python.org",
+                )
+            ]
+
+    search = PlainSearch()
+
+    result = await _service(search).search("asyncio", limit=5, depth="fast")  # type: ignore[arg-type]
+
+    assert search.calls == [("asyncio", 5)]
+    assert result["queries"][0]["date_filter"] is None
+    assert [item["url"] for item in result["results"]] == [
+        "https://docs.python.org/3/library/asyncio.html"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_repeated_failures_lengthen_only_that_providers_cooldown() -> None:
+    # With no fallback registered, a cooldown never fails a search by itself:
+    # the provider is asked again, and each failure doubles its cooldown.
+    search = RoutingSearch(failures={"asyncio"})
+    service = _service(search)
+
+    for _ in range(2):
+        with pytest.raises(WebToolError) as exc:
+            await service.search("asyncio", limit=5, depth="fast")
+        assert exc.value.detail == "bot_detected"
+
+    snapshot = await service.metrics_snapshot()
+    assert len(search.calls) == 2
+    assert snapshot["search_providers"]["fake"]["consecutive_failures"] == 2
+    assert 5 < snapshot["search_providers"]["fake"]["cooldown_remaining_s"] <= 10
+
+
+@pytest.mark.asyncio
+async def test_blocked_angles_put_the_provider_on_cooldown() -> None:
+    angles = build_search_angles("asyncio", "discover")
+    base_query, current_query, background_query = [angle.query for angle in angles]
+    search = RoutingSearch(
+        {
+            base_query: [
+                SearchResult(
+                    "Asyncio guide",
+                    "https://docs.python.org/3/library/asyncio.html",
+                    "Official guide",
+                    "docs.python.org",
+                )
+            ]
+        },
+        failures={current_query, background_query},
+    )
+    service = _service(search)
+
+    first = await service.search("asyncio", limit=5)
+
+    assert first["results"]
+    assert first["warnings"] == [
+        "current_query_failed",
+        "background_query_failed",
+    ]
+    snapshot = await service.metrics_snapshot()
+    assert snapshot["search_providers"]["fake"]["consecutive_failures"] == 2
+    assert snapshot["search_providers"]["fake"]["cooldown_remaining_s"] > 0
 
 
 @pytest.mark.asyncio

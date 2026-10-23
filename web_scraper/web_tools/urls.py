@@ -192,6 +192,15 @@ def matches_url_filters(
     return any(fnmatchcase(url, pattern) for pattern in include_patterns)
 
 
+def url_on_domains(url: str, domains: list[str]) -> bool:
+    """Whether *url* is on one of *domains* or on a subdomain of one."""
+    try:
+        host = (urlsplit(url).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return False
+    return any(host == domain or host.endswith("." + domain) for domain in domains)
+
+
 def content_hash(markdown: str) -> str:
     """Fingerprint extracted text while ignoring insignificant whitespace."""
     normalised = " ".join(markdown.split())

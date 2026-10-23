@@ -5,8 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import platform
+import re
+import subprocess
 import sys
-from typing import Any, Callable, Coroutine, Optional
+from pathlib import Path
+from typing import IO, Any, Callable, Coroutine, Mapping, Optional
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -24,8 +28,59 @@ from web_scraper.web_tools.service import WebToolsService
 logger = logging.getLogger("web_scraper.mcp")
 
 _PROTOCOL_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
-_SERVER_INFO = {"name": "web-research", "version": __version__}
+_SERVER_NAME = "web-research"
 _TOOL_CONCURRENCY = 8
+# The search parameters a request may add; each is passed on only when it is set.
+_SEARCH_PARAMETERS = {"region", "language", "sites", "exclude_sites", "date_from", "date_to"}
+_SEARCH_READ_PARAMETERS = {"read", "read_chars", "archive"}
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_GIT_TIMEOUT_SECONDS = 1
+
+
+def _git_commit(root: Path, run: Callable[..., Any]) -> Optional[str]:
+    """The short commit of the checkout this package runs from, None when it is not one."""
+    if not (root / ".git").exists():
+        return None
+    try:
+        done = run(
+            ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=_GIT_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    commit = (done.stdout or "").strip()
+    if done.returncode != 0 or not re.fullmatch(r"[0-9a-f]{7,40}", commit):
+        return None
+    return commit
+
+
+def build_server_info(
+    root: Optional[Path] = None, *, run: Callable[..., Any] = subprocess.run
+) -> dict[str, str]:
+    """``serverInfo``: the version, and ``+g<short sha>`` when the package runs from a git checkout.
+
+    Read once, at start, with git given one second: the owner can tell which code is live
+    from the version a client reports and from the line the server writes to its log.
+    """
+    commit = _git_commit(root or _PROJECT_ROOT, run)
+    return {"name": _SERVER_NAME, "version": f"{__version__}+g{commit}" if commit else __version__}
+
+
+def startup_line(info: Mapping[str, str], python: Optional[str] = None) -> str:
+    """The one line written to stderr at start: name, version, commit and Python."""
+    version = info["version"]
+    commit = version.partition("+g")[2] or "unknown"
+    return (
+        f"{info['name']} mcp server started: version={version} commit={commit} "
+        f"python={python or platform.python_version()}"
+    )
+
+
+def announce(info: Mapping[str, str], stream: Optional[IO[str]] = None) -> None:
+    print(startup_line(info), file=stream or sys.stderr, flush=True)
 
 
 class _ArgumentError(ValueError):
@@ -49,12 +104,25 @@ async def _search(service: WebToolsService, arguments: dict[str, Any]) -> dict[s
         limit=request.limit,
         provider=request.provider,
         depth=request.depth,
+        **request.model_dump(include=_SEARCH_PARAMETERS, exclude_none=True),
+        **request.model_dump(include=_SEARCH_READ_PARAMETERS, exclude_defaults=True),
     )
 
 
 async def _scrape(service: WebToolsService, arguments: dict[str, Any]) -> dict[str, Any]:
     request = WebScrapeRequest.model_validate(arguments)
-    return await service.scrape(request.url, max_chars=request.max_chars)
+    options = request.model_dump(include={"links", "max_links"}, exclude_defaults=True)
+    if request.urls:
+        return await service.scrape_many(
+            request.urls,
+            max_chars=request.max_chars,
+            archive=request.archive,
+            max_total_chars=request.max_total_chars,
+            **options,
+        )
+    return await service.scrape(
+        str(request.url), max_chars=request.max_chars, archive=request.archive, **options
+    )
 
 
 async def _map(service: WebToolsService, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -71,7 +139,7 @@ async def _map(service: WebToolsService, arguments: dict[str, Any]) -> dict[str,
 
 async def _extract(service: WebToolsService, arguments: dict[str, Any]) -> dict[str, Any]:
     request = WebExtractRequest.model_validate(arguments)
-    return await service.extract(request.url, request.extraction_schema)
+    return await service.extract(request.url, request.field_specs(), max_chars=request.max_chars)
 
 
 async def _crawl_start(service: WebToolsService, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -128,12 +196,21 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
                     "an official or primary-source angle; depth=fast sends one query. Ranking "
                     "uses field-weighted BM25, weighted cross-angle consensus, source authority, "
                     "inferred recency, and near-duplicate/domain diversity. Explicit freshness "
-                    "queries get provider date filters; successful answers are cached per query, "
-                    "and a blocking provider is paced, cooled down, and covered by a registered "
-                    "fallback. Results carry source_type, year, recency, angles, relevance, bm25, "
-                    "score, and cache_hit, with coverage facets; warnings say no_relevant_results "
-                    "or low_relevance_results instead of padding unrelated links. Search "
-                    "discovers URLs only; use web_scrape to read a result."
+                    "queries get provider date filters; responses are cached per query. region, "
+                    "language, sites, exclude_sites, date_from and date_to narrow a search. read "
+                    "N (0 to 5) also reads the top N results: content or content_error on each; "
+                    "it costs seconds. A refused or timed-out call goes on to DuckDuckGo lite, "
+                    "Yahoo, then Google; provider names who answered. With nothing relevant, results is "
+                    "empty and warnings holds no_relevant_results; low_relevance_results says "
+                    "every result holds under half of the query's words. Results carry "
+                    "source_type (official, academic, news, press_release, social, reference, "
+                    "code, community, other), year, recency (by year: current is this year or "
+                    "last), date (day or month, from the address, snippet or title, with "
+                    "date_source and age_days), freshness (this_week ... undated, by that date "
+                    "first), kind (article, listing, front, page; a news query ranks articles "
+                    "before listings and front pages), angles, relevance, bm25, score, and "
+                    "cache_hit, with coverage facets. Search discovers URLs only; use "
+                    "web_scrape to read a result."
                 ),
                 "inputSchema": WebSearchRequest.model_json_schema(),
                 "annotations": _annotations(
@@ -147,13 +224,19 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
                 "name": "web_scrape",
                 "description": (
                     "Fetch one public URL HTTP-first and return clean Markdown, title, "
-                    "description, canonical URL, status, up to 50 links from the page content "
-                    "(menus, headers, footers, and sidebars left out; links_truncated says "
-                    "more exist, web_map lists them all), metadata, content hash, and stage "
-                    "timings. A shared headless browser is used only for JavaScript "
-                    "shells or access interstitials; CAPTCHA and login walls fail fast. A PDF "
-                    "comes back as Markdown text with content_type application/pdf and its "
-                    "page count in pages."
+                    "description, canonical URL, status, links from the page content (50 by "
+                    "default; max_links 0 to 200, links: false for none; menus, headers, "
+                    "footers, and sidebars left out; links_truncated says more exist, web_map "
+                    "lists them all), metadata, content hash, and stage timings. max_chars "
+                    "bounds the Markdown only. urls (2 to 10) instead of url reads pages in "
+                    "one call: pages, in order, each an answer or {url, error}; max_total_chars "
+                    "(60,000) bounds the whole answer. A shared headless browser is used only "
+                    "for JavaScript shells or access interstitials; CAPTCHA and login walls "
+                    "fail fast, their error's hint saying what to try next: archive: true reads "
+                    "the Internet Archive's newest copy that is not itself a wall "
+                    "(fetched_with archive, archived_at, archive_skipped). A PDF comes back as "
+                    "Markdown text with content_type application/pdf and its page count in "
+                    "pages."
                 ),
                 "inputSchema": WebScrapeRequest.model_json_schema(),
                 "annotations": _annotations(
@@ -168,7 +251,9 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
                 "description": (
                     "List URLs from robots.txt sitemaps, nested sitemap indexes, and page "
                     "links with domain scope, substring search, include/exclude glob filters, "
-                    "and a limit."
+                    "and a limit. total counts every matching URL, returned those in urls, "
+                    "and truncated says the limit cut some. A site no request reached lists "
+                    "nothing and says why in errors."
                 ),
                 "inputSchema": WebMapRequest.model_json_schema(),
                 "annotations": _annotations(
@@ -181,9 +266,16 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
             {
                 "name": "web_extract",
                 "description": (
-                    "Extract structured fields from one page with CSS selectors. Each field "
+                    "Extract structured fields from one page with CSS selectors, or by name: "
+                    "a field with no selector (headline, author, published_at, description, "
+                    "site_name, keywords, lead, ...) is read from the page's JSON-LD, meta "
+                    "tags and HTML conventions, and dates come back in ISO 8601. Each field "
                     "reports how it was found, its evidence, and its source URL; missing "
-                    "required fields are reported, never invented."
+                    "required fields are reported, never invented. A field with all: true "
+                    "returns up to max_items matches (100 by default); offset skips the first N "
+                    "to page on (provenance gives total, returned, offset, truncated, and "
+                    "next_offset when values were left out). The whole answer stays under "
+                    "max_chars (20,000 by default), its truncated flag set when anything was cut."
                 ),
                 "inputSchema": WebExtractRequest.model_json_schema(by_alias=True),
                 "annotations": _annotations(
@@ -198,7 +290,8 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
                 "description": (
                     "Queue a background crawl and return its job id immediately. Pages are "
                     "deduplicated by canonical URL and content hash; robots.txt, domain scope, "
-                    "depth/page limits, filters, and per-host limits apply."
+                    "depth/page limits, filters, and per-host limits apply. use_sitemap seeds "
+                    "it from the site's sitemaps, pages no link reaches."
                 ),
                 "inputSchema": WebCrawlRequest.model_json_schema(),
                 "annotations": _annotations(
@@ -243,8 +336,25 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
     ]
 
 
+def _lean(node: Any, names: bool = False) -> Any:
+    """A JSON schema without its ``title`` labels, which only repeat a property's name.
+
+    Dot sends every tool's schema with each model request, so what says nothing is left out.
+    ``names`` marks a mapping of property names, whose keys are kept whatever they are.
+    """
+    if isinstance(node, dict):
+        return {
+            key: _lean(value, key in {"properties", "$defs"})
+            for key, value in node.items()
+            if names or key != "title"
+        }
+    if isinstance(node, list):
+        return [_lean(item) for item in node]
+    return node
+
+
 def _tools() -> list[dict[str, Any]]:
-    return [spec for spec, _ in _tool_specs()]
+    return [{**spec, "inputSchema": _lean(spec["inputSchema"])} for spec, _ in _tool_specs()]
 
 
 def _text_result(payload: dict[str, Any]) -> dict[str, Any]:
@@ -283,12 +393,14 @@ def _dispatch_error(exc: Exception) -> dict[str, Any]:
     if isinstance(exc, _ArgumentError):
         return _error_result("invalid_arguments", str(exc))
     if isinstance(exc, WebToolError):
+        extra = {"hint": exc.hint} if exc.hint else {}
         return _error_result(
             exc.code,
             str(exc),
             url=exc.url,
             status_code=exc.status_code,
             detail=exc.detail,
+            **extra,
         )
     logger.warning("mcp_tool_failed error=%s", type(exc).__name__)
     return _error_result("internal_error", "The tool failed unexpectedly")
@@ -297,8 +409,11 @@ def _dispatch_error(exc: Exception) -> dict[str, Any]:
 class McpServer:
     """Minimal MCP server: initialize, ping, tools/list, tools/call, notifications."""
 
-    def __init__(self, service: WebToolsService) -> None:
+    def __init__(
+        self, service: WebToolsService, server_info: Optional[Mapping[str, str]] = None
+    ) -> None:
         self.service = service
+        self._server_info = dict(server_info or {"name": _SERVER_NAME, "version": __version__})
         self._handlers: dict[str, Handler] = {
             spec["name"]: handler for spec, handler in _tool_specs()
         }
@@ -351,7 +466,7 @@ class McpServer:
         return {
             "protocolVersion": version,
             "capabilities": {"tools": {"listChanged": False}},
-            "serverInfo": _SERVER_INFO,
+            "serverInfo": dict(self._server_info),
             "instructions": (
                 "Local web research tools. Search discovers URLs; scrape, map, and extract "
                 "read pages HTTP-first with a shared headless browser fallback; crawl runs "
@@ -466,8 +581,10 @@ def _request_key(request_id: Any) -> str:
 
 
 async def _serve() -> None:
+    info = await asyncio.to_thread(build_server_info)
+    announce(info)
     service = WebToolsService.from_env()
-    server = McpServer(service)
+    server = McpServer(service, server_info=info)
     try:
         await server.run()
     finally:

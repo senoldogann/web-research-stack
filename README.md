@@ -16,6 +16,26 @@
 
 **Web Scraper** is a powerful, production-ready web scraping and research tool with full-stack capabilities. It combines a Python FastAPI backend with a modern React Next.js frontend, featuring LLM-powered research capabilities with citation support.
 
+### Install
+
+The MCP server for web search and reading that Dot, the always-on agent for macOS, uses ships as a Python package, `dotagent-web-research` (the import package is `web_scraper`):
+
+```bash
+pip install dotagent-web-research
+# or, as a command of its own
+uv tool install dotagent-web-research
+```
+
+It installs two commands: `web-research-mcp`, the MCP server over stdio (tools `web_search`, `web_scrape`, `web_map`, `web_extract`, `web_crawl_start`, `web_crawl_status`, `web_crawl_results`, `web_crawl_cancel`), and `web-scraper`, the CLI and REST server described below. The headless-browser fallbacks are extras: `pip install "dotagent-web-research[camoufox]"` or `"[playwright]"`.
+
+**How Dot uses it.** Dot's package depends on this one, so a fresh Dot install brings it. Dot starts `web-research-mcp` as one of its MCP servers (named `web-research`) and its tools reach the agent as `mcp__web-research__web_search`, `mcp__web-research__web_scrape` and so on. In Dot's `config.toml` it is one table; [docs/web-tools.md](docs/web-tools.md) has it and the settings (`WEB_TOOLS_*`) the server reads.
+
+```toml
+[[mcp]]
+name = "web-research"
+command = "web-research-mcp"
+```
+
 ### Features
 
 - **Dual Interface**: CLI commands and REST API
@@ -128,6 +148,20 @@ MIT License
 ### Genel Bakış
 
 **Web Scraper**, güçlü ve üretim ortamına hazır bir web kazıma ve araştırma aracıdır. Python FastAPI backend ile modern React Next.js frontend'i birleştirir, alıntılı LLM destekli araştırma özelliklerine sahiptir.
+
+### Kurulum
+
+Dot'un (macOS için her zaman açık ajan) kullandığı web arama ve okuma MCP sunucusu bir Python paketi olarak gelir: `dotagent-web-research` (içe aktarılan paket `web_scraper`):
+
+```bash
+pip install dotagent-web-research
+# veya kendi başına bir komut olarak
+uv tool install dotagent-web-research
+```
+
+İki komut kurar: stdio üzerinden MCP sunucusu `web-research-mcp` ve aşağıda anlatılan CLI ile REST sunucusu `web-scraper`. Headless tarayıcı yedekleri ek pakettir: `pip install "dotagent-web-research[camoufox]"` veya `"[playwright]"`.
+
+**Dot bunu nasıl kullanır.** Dot'un paketi buna bağlıdır; yeni bir Dot kurulumu bunu da getirir. Dot `web-research-mcp`'yi MCP sunucularından biri olarak (`web-research` adıyla) başlatır; araçlar ajana `mcp__web-research__web_search`, `mcp__web-research__web_scrape` gibi görünür. Ayrıntı ve ayarlar için [docs/web-tools.md](docs/web-tools.md).
 
 ### Özellikler
 

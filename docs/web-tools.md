@@ -109,8 +109,8 @@ deterministically:
 - weighted reciprocal-rank fusion across angles: base 1.0, current 0.9, primary
   0.8, background 0.75. Agreement between angles is still valuable, but a hit
   from the historical angle cannot outweigh the exact query as easily.
-- source-type authority (`official`, `academic`, `news`, `reference`, `code`,
-  `community`, `other`), classified from the host and path;
+- source-type authority (`official`, `academic`, `news`, `press_release`, `social`,
+  `reference`, `code`, `community`, `other`), classified from the host and path;
 - publication year inferred from title, snippet, and URL, with `current`,
   `recent`, `historical`, or `unknown` recency;
 - a current-year bonus, plus a historical bonus for authoritative sources so
@@ -123,15 +123,20 @@ deterministically:
 - a per-domain cap of `ceil(limit / 3)` and a source-type diversity adjustment,
   so one site or one kind of source cannot fill the page.
 
-Scores are ranking weights, not probabilities. BM25 is squashed into 0..1 and
-counts through query coverage, so one rare term cannot outrank a result that
-matches most of the query. Every result carries `source_type`, `year`,
+Scores are ranking weights, not probabilities. `bm25` is squashed into 0..1
+(`raw / (raw + 1)`), not scaled to the best match of the search: a pool of only
+weak matches does not look as strong as a pool with a genuine answer, and one page
+that spells the whole query does not take all of BM25's weight from an official
+page whose title holds fewer of the query's words. Whether a result is about the
+query at all is `relevance`, the share of the query's words it holds (see "A
+floor under relevance" below). Every result carries `source_type`, `year`,
 `recency`, `angles`, `relevance`, `bm25`, and `score`. The response also includes
 `facets` (source types, recency buckets, domains, angles, candidate count),
 per-angle `queries` with provider, result/new counts, date filters and errors,
-`warnings`, and `cache_hit`. If an angle fails, usable results from the
-remaining angles are returned with a warning. Each provider is paced, failures
-earn it a cooldown, and a registered fallback answers while it rests (see
+`warnings`, and `cache_hit`. If an angle fails, usable results from the remaining
+angles are returned with a warning. Each provider is paced, failures earn it a
+cooldown (5 s doubling to 300 s, reset by a successful call), and the fallback
+chain answers while it rests (see
 [Search provider pacing, fallback, and cooldown](#search-provider-pacing-fallback-and-cooldown)).
 `fast` keeps provider order and does not fan out, so it sends the fewest
 requests. Successful responses are cached for
@@ -145,20 +150,25 @@ Copy `.env.example` to `.env` and set what you need. The important web tool knob
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `SEARCH_PROVIDER` | `duckduckgo` | `duckduckgo` or `google` |
+| `SEARCH_PROVIDER` | `duckduckgo` | `duckduckgo`, `duckduckgo_lite`, `yahoo` or `google` |
 | `SEARCH_DEPTH` | `discover` | Default `fast`, `discover`, or `deep` |
 | `SEARCH_ANGLE_DELAY_MS` | `150` | Pause between discovery angles (0..5000) |
-| `SEARCH_REGION` | `wt-wt` | DuckDuckGo `kl` region, e.g. `tr-tr`; `wt-wt` is neutral |
-| `SEARCH_LANGUAGE` | `en-US,en;q=0.9` | `Accept-Language` value |
+| `SEARCH_ANGLE_BUDGET_MS` | `5000` | How long the angles after the base may take once it answered (0..120000; `0` waits for every angle); one still out is cut, see "A cut angle says so" |
+| `SEARCH_REGION` | `wt-wt` | DuckDuckGo `kl` region, e.g. `tr-tr`; `wt-wt` is neutral. A request's `region` replaces it |
+| `SEARCH_LANGUAGE` | `en-US,en;q=0.9` | `Accept-Language` value. A request's `language` replaces it |
 | `SEARCH_CACHE_TTL_SECONDS` | `300` | Search response cache TTL |
-| `SEARCH_TIMEOUT_SECONDS` | `30` | Per-provider call timeout |
-| `SEARCH_PROVIDER_CONCURRENCY` | `1` | Simultaneous calls per provider |
-| `SEARCH_JITTER_MIN_MS` | `250` | Shortest random gap between provider calls |
-| `SEARCH_JITTER_MAX_MS` | `500` | Longest random gap between provider calls |
-| `SEARCH_FALLBACK_PROVIDER` | `google` | Provider asked once after a failure; `none` disables |
-| `SEARCH_FALLBACK_TIMEOUT_SECONDS` | `60` | Fallback call timeout (cold browser start) |
-| `SEARCH_PROVIDER_COOLDOWN_SECONDS` | `5` | Base cooldown after a failed call |
+| `SEARCH_TIMEOUT_SECONDS` | `30` | Per-call provider timeout |
+| `SEARCH_PROVIDER_CONCURRENCY` | `1` | Calls one provider takes at a time |
+| `SEARCH_JITTER_MIN_MS` / `SEARCH_JITTER_MAX_MS` | `250` / `500` | Random gap between a provider's calls |
+| `SEARCH_FALLBACK_PROVIDERS` | `duckduckgo_lite,yahoo,google` | The chain a failed call goes down, in order; `none` turns it off. The older single `SEARCH_FALLBACK_PROVIDER` is read when this is unset |
+| `SEARCH_FALLBACK_TIMEOUT_SECONDS` | `60` | Timeout of a fallback call (a cold headless browser) |
+| `SEARCH_PROVIDER_COOLDOWN_SECONDS` | `5` | First cooldown after a failed provider call |
 | `SEARCH_PROVIDER_MAX_COOLDOWN_SECONDS` | `300` | Cap for the doubling cooldown |
+| `SCRAPE_MAX_LINKS` | `50` | Links `web_scrape` lists by default, from the page content; a request's `max_links` (0 to 200) replaces it |
+| `SCRAPE_BATCH_CONCURRENCY` | `4` | Pages one `web_scrape` call with `urls` reads at a time (and at most 2 from one host) |
+| `SCRAPE_BATCH_MAX_TOTAL_CHARS` | `60000` | Cap on a whole batch answer, in characters; a request's `max_total_chars` (5,000 to 500,000) replaces it |
+| `SEARCH_READ_MAX_TOTAL_CHARS` | `60000` | Cap on a whole `web_search` answer that read pages (`read`), the content included |
+| `ARCHIVE_BUDGET_SECONDS` | `20` | Time the walk through the archive's copies may take (`archive: true`) |
 | `FETCH_TIMEOUT_SECONDS` | `20` | Per-request timeout |
 | `FETCH_RETRIES` | `1` | Retries for transient failures only |
 | `MAX_RESPONSE_BYTES` | `5000000` | Response body cap |
@@ -168,6 +178,8 @@ Copy `.env.example` to `.env` and set what you need. The important web tool knob
 | `HOST_MIN_INTERVAL_MS` | `200` | Minimum delay between starts per host |
 | `CACHE_TTL_SECONDS` | `900` | Scrape cache TTL |
 | `CACHE_MAX_ENTRIES` | `256` | Scrape cache capacity |
+| `PAGE_CACHE_TTL_SECONDS` | `300` | How long a fetched page is kept for scrape and extract; `0` turns the page cache off |
+| `PAGE_CACHE_MAX_ENTRIES` / `PAGE_CACHE_MAX_BYTES` | `64` / `20000000` | The page cache's bounds, in pages and in bytes of HTML |
 | `BROWSER_ENABLED` | `true` | Enable the headless worker |
 | `BROWSER_PREFERENCE` | `auto` | `auto`, `chrome`, `chromium`, or `camoufox` |
 | `BROWSER_POST_LOAD_WAIT_MS` | `500` | Settle time after DOM content loaded |
@@ -177,12 +189,19 @@ Copy `.env.example` to `.env` and set what you need. The important web tool knob
 | `MAX_CRAWL_PAGES` | `100` | Hard page cap |
 | `MAX_CRAWL_DEPTH` | `4` | Hard depth cap |
 | `CRAWL_CONCURRENCY` | `4` | Pages fetched in parallel by a crawl job |
-| `MAX_CRAWL_JOBS` | `32` | In-memory job cap |
+| `MAX_CRAWL_JOBS` | `32` | Retained job cap, in memory and on disk |
+| `DATA_DIR` | `~/.local/share/web-research` (`$XDG_DATA_HOME/web-research`) | Folder where crawl jobs are kept (`crawl-jobs.sqlite3`); empty or `off` keeps none |
 
 `API_WEB_RATE_LIMIT_PER_MINUTE` controls authenticated REST access to the web
 routes. Existing general and scrape research limits are unchanged.
 
 ## Dot Desktop integration
+
+The package is published as `dotagent-web-research` (`pip install dotagent-web-research`,
+`uv tool install dotagent-web-research`) and installs a `web-research-mcp` command that
+starts this server over stdio. Dot's package depends on it, so a fresh Dot install brings
+it, and its table is `command = "web-research-mcp"`. From a checkout (the owner's), the
+launcher below does the same.
 
 Dot starts local MCP servers itself over stdio. Add one table to
 `~/Library/Application Support/Dot/config.toml` (this repository does **not**
@@ -425,10 +444,10 @@ the successful angles with a `background_query_failed` warning instead of
 failing the search. The `primary` angle succeeded in the `deep` run. That is the
 designed partial-failure behavior, not a complete four-angle result. A repeated
 `discover` search returned from cache in 0.35 ms with `cache_hit=true`; a failed
-provider call would instead put that provider in cooldown, and a registered
-fallback would answer while it rests. When the provider cooperates, `deep` adds
-its fourth angle; when it does not, retry later or use `fast` to conserve
-provider budget.
+provider call would instead put that provider in cooldown, and the fallback chain
+would answer while it rests. When the provider cooperates, `deep` adds its
+fourth angle; when it does not, retry later or use `fast` to conserve provider
+budget.
 
 ### Search relevance evaluation
 
@@ -438,45 +457,71 @@ hosts (or subdomains) mark a result relevant. It measures the whole ranked list,
 not just the first hit: nDCG@5, MRR, official-source hits in the top 3,
 freshness hits in the top 5, unique domains, provider warnings, and the returned
 top results. The run writes `benchmarks/web_search_relevance.json`; pass
-`--no-write` to inspect a run without replacing it.
+`--no-write` to inspect a run without replacing it, or `--output` to write it
+elsewhere (the order of the rows of that file is pinned by
+`tests/fixtures/ranking_of_recorded_queries.json`).
 
-The 2026-10-22 `discover` run (`limit=8`, DuckDuckGo with the Google fallback
-standing in for five queries) answered all ten:
+Two `discover` runs of 2026-10-22 (`limit=8`, DuckDuckGo) are recorded, and each
+answered all ten queries:
 
-| Metric | Value |
-|---|---:|
-| Mean nDCG@5 | 0.837 |
-| Mean MRR | 0.850 |
-| Official source in top 3 | 10/10 |
-| Freshness hit in top 5 | 2/2 |
-| Mean unique domains in top 5 | 4.1 |
+| Metric | Search v2 alone | Search v2 with the reliability work |
+|---|---:|---:|
+| Mean nDCG@5 | 0.853 | 0.837 |
+| Mean MRR | 0.833 | 0.850 |
+| Official source in top 3 | 9/10 | 10/10 |
+| Freshness hit in top 5 | 2/2 | 2/2 |
+| Mean unique domains in top 5 | 4.4 | 4.1 |
 
-Nine queries scored nDCG@5 ≥ 0.62; seven were at least 0.95. The exception was
-`Türkiye yapay zeka eylem planı 2026` (nDCG 0): the provider returned no page on
-the fixture's expected domain, so the ranking had nothing relevant to place.
-Labels are expected domains, not human relevance grades, and a live run moves
-with provider coverage; compare runs on the same fixture rather than treating
-one score as an absolute quality claim.
+The first run (15:12 UTC) is `benchmarks/web_search_relevance.json`; three of its
+queries carry `background_query_failed`. The second (16:37 UTC) is
+`benchmarks/web_search_relevance_integration.json`, made on the branch that
+integrated search v2 with the reliability work; four of its queries carry
+`provider_fallback`, the Google fallback having answered. Both are read by
+`tests/test_web_search_floor.py`. Nine queries scored nDCG@5 of 0.62 or more in
+each run. The exception of the second was `Türkiye yapay zeka eylem planı 2026`
+(nDCG 0): the provider returned no page on the fixture's expected domain, so the
+ranking had nothing relevant to place; the first run scored it 1.0. Labels are
+expected domains, not human relevance grades, and a live run moves with provider
+coverage; compare runs on the same fixture rather than treating one score as an
+absolute quality claim. Neither run is of the ranking of version 1.2.0: run the
+script again to measure it.
+
+The ranking can also be measured offline on the recorded rows: re-rank the
+recorded top five of each query (titles and addresses; a row holds no snippet)
+and score it with the same labels. On 2026-10-23, with BM25 scaled to the pool's
+best match, as it was until the integration branch was merged, the two runs came
+to a mean nDCG@5 of 0.792 and 0.703 (MRR 0.745 and 0.650). With BM25 squashed
+into (0, 1), the integration branch's way and the ranking now, they came to
+0.928 and 0.815 (MRR 0.933 and 0.783): ten of the twenty rows higher, none
+lower, an official page (`react.dev`'s `useEffect`, `sqlite.org`'s `fts5`)
+coming before pages that spell the whole query. The integration branch also
+weighted BM25 by `relevance`; with it the means were 0.869 and 0.822 (MRR 0.833
+and 0.800), three rows lower than with the squash alone and one higher, and
+that weighting is not in the ranking. These compare rankings of five results
+each; they are no live measure.
 
 ## Verification
 
 Checks actually run during this work:
 
 ```bash
-.venv/bin/python -m pytest -q          # 367 passed
+.venv/bin/python -m pytest -q          # 952 passed
 .venv/bin/python -m ruff check web_scraper tests scripts   # All checks passed
-.venv/bin/python -m ruff format --check web_scraper tests scripts  # 82 files already formatted
+.venv/bin/python -m ruff format --check web_scraper tests scripts  # 118 files already formatted
 .venv/bin/python scripts/benchmark_web_tools.py   # 6/6 checks passed
 .venv/bin/python scripts/load_test_web_tools.py   # 10/10 checks passed
 ```
 
 The live `fast` / `discover` / `deep` comparison above was also run against
 DuckDuckGo on 2026-10-22. The full suite count includes the discovery, search
-cache, timeout, locale, and BM25F tests in `tests/test_web_discovery.py` and
-`tests/test_web_service.py`, the pacing, fallback, and cooldown tests in
+cache, cooldown, timeout, locale, and BM25F tests in `tests/test_web_discovery.py`
+and `tests/test_web_service.py`, the pacing, fallback, and cooldown tests in
 `tests/test_web_search_resilience.py`, the empty-answer tests in
-`tests/test_web_search_honesty.py`, and the source-type tests in
-`tests/test_web_source_types.py`.
+`tests/test_web_search_honesty.py`, the floor under relevance, with the two
+recorded runs, in `tests/test_web_search_floor.py`, and the source-type tests in
+`tests/test_web_source_types.py`. The pytest, ruff and load-test lines were run
+again after `main` (the integration branch, PR #5) was merged into this branch
+on 2026-10-23; the benchmark line is the one of the earlier work.
 
 The MCP server was also started through Dot's own MCP SDK (`Client(mode="auto")`)
 and exercised live: protocol `2025-11-25`, 8 tools, a DuckDuckGo search returning
@@ -494,16 +539,19 @@ pick up the new schema.
   client-rendered page whose shell contains more than `BROWSER_RENDER_MIN_CHARS`
   of boilerplate may stay on the HTTP path. Raise or lower that threshold only
   with a benchmark.
-- `web_extract` fetches the page fresh; it does not use the scrape cache.
-- Crawl jobs and the scrape/search caches live in one process and are lost on
-  restart. REST and MCP have separate caches. Provider cooldown state is also
+- `web_extract` does not use the scrape cache (it holds scrape answers) but shares the
+  page cache with `web_scrape`: a page fetched in the last 5 minutes is not fetched again.
+- The scrape, search and page caches live in one process and are lost on
+  restart (crawl jobs are not: they are kept on disk, see "Crawl jobs outlive a
+  restart"). REST and MCP have separate caches. Provider cooldown state is also
   per process.
 - The default DuckDuckGo path can be rate-limited. A 202 bot-detection response
   is reported as `search_failed` with `detail=bot_detected`; a 200 response with
   no result nodes still returns an empty list, which is a provider quality
   signal. Any failed provider call starts that provider's cooldown; with a
-  fallback registered, later calls go to the fallback while it rests. The
-  adapter can be replaced without changing the service contract.
+  fallback registered, later calls go to the fallback chain while it rests. The
+  adapter can be replaced without changing the service contract: one written as
+  `search(query, limit)` is called so when no date filter or option is asked.
 - `discover` and `deep` send 3 and 4 provider queries instead of 1. They cost
   more latency and provider budget than `fast`; use `fast` when that matters.
   An individual angle failure is surfaced in `warnings` and may reduce coverage.
@@ -605,8 +653,9 @@ headless browser met as well.
   `SEARCH_FALLBACK_TIMEOUT_SECONDS` (60): the headless Google browser's first
   search took 36 s in testing.
 - A failed call (`bot_detected`, a timeout, or another provider error) is asked
-  once of the fallback provider (`SEARCH_FALLBACK_PROVIDER`, default `google`;
-  `none` turns it off). `provider` names who answered (`google`, or
+  of the fallback chain (`SEARCH_FALLBACK_PROVIDERS`; before round 3 one
+  `SEARCH_FALLBACK_PROVIDER`, default `google`), see "Search that does not fall
+  to the browser every time" below. `provider` names who answered (`google`, or
   `duckduckgo+google` when the angles were split), `requested_provider` keeps
   the requested one, the angle's entry in `queries` carries
   `fallback: {from, to, reason, error}`, and `warnings` gets `provider_fallback`.
@@ -638,8 +687,9 @@ headless browser met as well.
   instead of a `search_failed` error. `facets.total_candidates` still counts
   what the provider returned.
 - In `discover` and `deep`, a relevant result scoring under 0.25 is dropped
-  beside better ones. When no relevant result reaches 0.25, the relevant ones
-  are returned with the warning `low_relevance_results`. `fast` keeps the
+  beside better ones and kept only when no relevant result reaches 0.25. When
+  every returned result holds under half of the query's words (30% before
+  round 3), `warnings` holds `low_relevance_results`. `fast` keeps the
   provider's order.
 
 ### Official and academic sources
@@ -648,7 +698,8 @@ headless browser met as well.
   `gov.<country>` (`gov.tr`, `gov.au`), `.gov`, `.mil`, and `.int` (checked
   before every other class), and a curated list of Finnish public bodies:
   `kela.fi`, `traficom.fi`, `stat.fi`, `vero.fi`, `dvv.fi`, `eduskunta.fi`,
-  `oamk.fi`, `yle.fi`, and `ouka.fi` (the City of Oulu).
+  `oamk.fi`, and `ouka.fi` (the City of Oulu). `yle.fi`, the public
+  broadcaster, was in this list until round 3, which made it a `news` outlet.
 - `academic` now also covers `.edu.<country>` and `.ac.<country>` (`edu.tr`,
   `ac.jp`, `ac.uk`) and the Finnish universities `oulu.fi` (University of Oulu),
   `helsinki.fi`, `aalto.fi`, `utu.fi`, `jyu.fi`, `tuni.fi`, `uwasa.fi`,
@@ -689,3 +740,696 @@ headless browser met as well.
   `/tietoja-ja-tilastoja` went from 15.8 KB to 9.9 KB, and to 6.2 KB with
   `max_chars=1500`. What is left is page content: those 45 front-page links are
   its news, topic, and service links, and the rest is its Markdown.
+
+## Defect fixes (2026-10-23)
+
+### DNS failures
+
+- A host that does not resolve now fails with `dns_error` (HTTP 502), its name
+  in `detail` and the message `Could not resolve host <name>`; before, it was an
+  `unsafe_target` (400), which told the caller the URL was refused rather than
+  unreachable. localhost, private and link-local addresses, and a name that
+  resolves to one, stay `unsafe_target`.
+
+### Map of an unreachable site
+
+- `web_map` lists the base URL once its page was read. A site no request
+  reached (`https://this-domain-definitely-does-not-exist-xyz123.com/`) returned
+  that URL with `total: 1`; it now returns `urls: []`, `total: 0`, and the three
+  failed requests (robots.txt, sitemap.xml, the page) in `errors`.
+- `total` counts every URL that matched the scope and filters before `limit`
+  cut the list; `returned` counts `urls`, and `truncated` is `true` when the
+  limit left some out. Before, `total` was the length of the cut list.
+
+### Cache hits time themselves
+
+- A `web_scrape` or `web_search` answered from the cache reported the timings
+  of the call that filled it (a repeated scrape said `total_ms: 903` and took
+  under a millisecond). Its `timings` now hold only `cache_lookup_ms` and the
+  real `total_ms`; the stored call's timings move to `cached_timings`, and
+  `cached_at` says when it was made (UTC), so a caller can judge its age.
+
+### One minimum for `max_chars`
+
+- The scrape schema accepted `max_chars` from 1 while the service raised any
+  value under 500 to 500, so `max_chars: 1` returned 500 characters. The schema
+  now states the minimum (`minimum: 500`), a smaller value is refused (HTTP 422
+  on REST, `invalid_arguments` on MCP, `invalid_request` from the service), and
+  the server's cap (`WEB_TOOLS_MARKDOWN_MAX_CHARS`, 50,000 by default) still
+  applies above it.
+
+### Bounded extraction
+
+- `web_extract` had no bound: `{"links": {"selector": "a", "attribute": "href",
+  "all": true}}` on the Wikipedia article on the Eiffel Tower answered 114,465
+  characters. A field with `all: true` now returns at most `max_items` values
+  (100 by default, up to 1,000, `WEB_TOOLS_EXTRACT_MAX_ITEMS`), and its
+  provenance holds `total` (every match), `returned`, and `truncated`.
+- The whole answer stays under `max_chars` (20,000 characters of compact JSON by
+  default, 1,000 to 200,000, `WEB_TOOLS_EXTRACT_MAX_CHARS`): the largest field is
+  cut first (a list from its end, a text at its tail with `…`), then evidence;
+  the field's provenance says `truncated`, and so does the answer's
+  `truncated`. The request schema now describes a field object (`selector`,
+  `fallback_selectors`, `attribute`, `all`, `max_items`, `type`, `required`).
+
+### Angles run together after the base
+
+- `discover` and `deep` asked their angles one after another, with a 150 ms
+  pause between them. The base angle still goes first (a refusal it meets
+  starts the provider's cooldown before the others ask); the angles after it
+  now start together, `SEARCH_ANGLE_DELAY_MS` apart, and each waits for the
+  provider's gate, so `SEARCH_PROVIDER_CONCURRENCY` and the jitter still decide
+  how many calls reach a provider at once. Their outcomes are merged in angle
+  order whichever answers first, so `queries`, the `angle_*_ms` timings and the
+  ranking are the same as before for the same answers.
+- With the default concurrency of 1 the calls still reach DuckDuckGo one at a
+  time (it refuses overlapping ones), so a healthy search takes as long as
+  before: `AI news October 2026` at `deep` took 4.66 s before and 4.68 s after,
+  measured back to back on 2026-10-23. A concurrency of 2 or more lets the
+  angles after the base overlap. What made searches take 12–45 s was a refusal
+  sending angles to the headless Google fallback (43 s for one base angle in
+  the same measurement); the next section bounds that.
+
+### A time budget for the angles after the base
+
+- Once the base angle has answered, the angles after it have
+  `SEARCH_ANGLE_BUDGET_MS` (5,000 by default; `0` waits for every angle). One
+  still out then is cut: its entry in `queries` holds the error `timeout` with
+  the detail `angle_budget`, `warnings` gets `<angle>_query_failed`, and the
+  results of the angles that answered are ranked as usual. A cut is the
+  search's own limit, so it starts no cooldown for the provider. The base angle
+  is never cut.
+- A refused angle waits out the cooldown or starts the headless Google
+  fallback (6–43 s measured), and the base's answer waited for it. Measured on
+  2026-10-23 with `AI news October 2026` at `deep`: 5.06 s when DuckDuckGo
+  answered every angle, and 6.81 s when it refused the primary angle, which
+  was cut at 5 s; the same refusal took 22.03 s, and 45.67 s on the base,
+  without the budget.
+
+### Small fixes
+
+- A sitemap or feed (`application/xml`, `text/xml`, RSS, Atom) is checked for a
+  challenge with the XML parser: the HTML parser misread it and warned
+  (`XMLParsedAsHTMLWarning`) on every `web_map`. lxml resolves internal
+  entities only, so an external entity in a hostile sitemap reads no file.
+- A challenge error reads `Target returned an access_blocked interstitial`
+  (it said "a access_blocked"); `a captcha` and `an access_wall` follow the
+  same rule.
+
+### Fields by name, dates in ISO 8601
+
+- A `web_extract` field asked in plain words came back `null`: `headline`,
+  `author` and `published_at` found nothing unless a CSS selector named them,
+  and a page's JSON-LD was read for a few names only (an author list came back
+  as a Python repr). A field with no selector, or a well-known one whose
+  selectors find nothing, is now read by its name (`fields.py`): JSON-LD first
+  (an article's item before the site's, `@id` references followed), then meta
+  tags (`article:published_time`, `og:site_name`, `author`, ...), then the HTML
+  conventions (`<time datetime>`, `rel=author`, `itemprop`, the first `h1`).
+  The names cover the headline and title, author (byline, writer),
+  published and modified dates (`published_at`, `datePublished`, `date`, ...),
+  description, image, site name (publisher), section, keywords (tags),
+  language, canonical URL, `lead` (the article's first paragraph of twelve
+  words or more, past labels such as "In this article", tables of contents,
+  photo captions and carousels: AP News put a caption first), body, word count,
+  name, and price. Provenance says which source answered. A name it does not
+  know is read from JSON-LD and meta tags under that name alone, and is
+  otherwise reported missing.
+- Dates read by name, and any field of `type: "date"`, come back in ISO 8601:
+  `Oct 23, 2026 8:00 AM` is `2026-10-23T08:00:00`, `Fri, 23 Oct 2026 08:00:00
+  GMT` is `2026-10-23T08:00:00+00:00`; one that cannot be read stays as
+  written. A selected element's text keeps a space between its parts, so two
+  spans no longer read `Oct 23, 20268:00 AM` (nor `Link , more` the other
+  way), and a date-typed field prefers the element's `datetime`.
+- Measured live: the Wikipedia article on the Eiffel Tower answers
+  `published_at` `2001-03-01T20:20:29+00:00`, `modified_at`, `publisher`
+  `Wikimedia Foundation, Inc.` and its first paragraph as `lead`; an AP News
+  article answers its headline, author, ISO dates, `AP News` and `Business`
+  from JSON-LD, and its opening paragraph as `lead`.
+
+### How old a result is, and what kind of page
+
+- `recency` goes by the newest year a result names, so in October a February
+  article was `current`, and an agent read that as fresh. Each result now also
+  carries `date` (`YYYY-MM-DD`, or `YYYY-MM` for a month), read from its
+  address (`/2026/10/20/`, `-2026-10-20`, `/archives/2026/10`), its snippet (a
+  date in words, or the provider's "3 days ago" and "Yesterday" at its head)
+  or its title, in that order, with `date_source` and `age_days`; `freshness`
+  (`this_week`, `this_month`, `this_year`, `older`, `undated`) reads that date
+  first and the year only without it. A date after tomorrow is none. `recency`
+  is unchanged, and its description now says it goes by the year.
+- `kind` says what the address shows: `article` (a slug of four words or
+  more, filler words left out, a dated path, an id, or `/article/`, `/wiki/`,
+  `/story/`), `listing` (a section, tag, archive, author or search page, or
+  `news.html`), `front` (a home page), or `page` when it cannot tell.
+- A news query (a freshness cue such as "this week", "latest", "today", or
+  the word "news") ranks articles above listings and front pages, and when the
+  query says how fresh and a result's date can answer, the date decides: a
+  result inside the window gains, one outside it loses more, and the
+  year-based bonus is left out for it. Facets count `kinds` and `freshness`.
+- Measured live on 2026-10-23 with `AI news this week` at `discover`: the
+  first run with the kind alone put a CNN article of 28 February first; with
+  the date deciding, it fell to sixth, under a page dated that day.
+
+### What to try after a wall
+
+- A page behind a captcha or a refusal (Reuters answers HTTP 401 with a
+  captcha) came back as an error and nothing else. A `blocked`, `http_error`,
+  `timeout` or `network_error` from `web_scrape` now carries a `hint`, the one
+  field the error envelope gains, and only when there is something to try:
+  ask again with `archive: true`, or find the story elsewhere with
+  `web_search`. A `dns_error` or an `unsafe_target` has none.
+- `archive: true` (off by default) reads the Internet Archive's latest copy
+  when the site would not serve the page (round 3 replaced the lookup below with
+  the CDX index, see "Archive copies that are not themselves captchas"): its
+  availability API, asked for the
+  copy closest to today (without a date it named one a year old), names the
+  snapshot, and the `id_` form of the snapshot's address serves the page as
+  archived, without the archive's banner. The page's links are read against
+  its own address, not the archive's, and `url` is the page's. The answer says so:
+  `fetched_with: "archive"`, `archived_at` (UTC), `archive_url`, and the
+  warning `archived_copy`; it may be days old. A page that answers is read
+  live as before. With no copy the site's error stands, its hint saying so,
+  and an archive that does not answer is told apart from one with no copy.
+- Measured on 2026-10-23: Reuters' AI section answered `blocked`/`captcha`
+  with the hint, and with `archive: true` its archived copy (2,324 characters,
+  its links on reuters.com). The newest copy the archive holds is of
+  2025-09-25, which `archived_at` says: Reuters seems to wall off the
+  archive's crawler too, so a caller should read that date. archive.org
+  answered HTTP 429 for a while that morning (curl's requests too); that
+  failure is told apart from no copy.
+
+### Bounded metadata
+
+- A scrape's `metadata` carried every meta tag and up to 20 JSON-LD items
+  whole, so a page could make its answer as large as it liked: an
+  `articleBody` repeats the text the Markdown already holds, and a catalogue
+  page embeds its products. The Markdown and the links were bounded; this was
+  not, and one scrape answered 912,000 characters on one line. `metadata` now
+  keeps at most 500 characters of any text and 20 items of any list, the meta
+  tags while they fill 5,000 characters and the JSON-LD items while the whole
+  fits 10,000, in that shape; `metadata_truncated` says when anything was
+  cut. `web_extract` still reads the page's whole JSON-LD.
+- Measured live: an AP News article's metadata went from 8,660 characters to
+  7,605 and its answer from 26,603 to 25,575; a page of ordinary size keeps
+  its metadata as it was (`metadata_truncated: false`), and the bound is for
+  the pages that embed far more.
+
+## Resilience and ergonomics (round 3, 2026-10-23)
+
+### A floor under relevance
+
+- `zlorgfimble quaxotronic 7g3` answered eight results from DuckDuckGo and kept
+  three, each with relevance 1/3 (above the old floor of 0.3) and no warning: a
+  YouTube channel named `7g3`, an antibody clone called 7G3, a page of links.
+  They held nothing of the query but the 3-character code `7g3`, which names a
+  handle, a clone or a model as readily as a topic. The other two words, the
+  ones that say what was asked, were in no result.
+- A result is relevant only when it holds one of the query's distinctive terms
+  as a whole word: a joined token (`next.js`) or a word between separators
+  (`Meow-7g3` holds `7g3`, `sqlite-bm25-search` holds `sqlite` and `bm25`), never
+  a piece of a longer word (`a7g3b9`, `google` for `go`). The words an address
+  spells count (`kela.fi/housing-allowance`); its ids do not: a query string, a
+  numbered segment, a handle (`/@7g3_na`).
+- Distinctive terms are the query's words minus stopwords, bare numbers (a
+  year, `9237`, a version such as `3.12`) and short codes (3 characters or
+  fewer mixing letters and digits: `7g3`, `b12`, `mp3`), when the query has
+  other words. Numbers and codes still count towards `relevance`, the share of
+  the query's words a result holds; they never make a result relevant alone. A
+  query made of nothing else keeps them: `7g3` finds what holds `7g3`, and
+  `7g3 antibody` keeps the antibody's page and drops the channel.
+- A query whose distinctive terms no result holds answers `results: []` and
+  `no_relevant_results`, at every depth, `fast` included. The nonsense query
+  above now answers nothing.
+- With two or more words, when every result holds under half of them,
+  `warnings` holds `low_relevance_results` and the results stay. The floor was
+  0.3 of the words, which a result matching one word of three (0.33) passed.
+- `relevance` of a real result can only rise: words joined by a hyphen, a slash
+  or an underscore now match (`sqlite-bm25-search` held neither `sqlite` nor
+  `bm25` before). The recorded top results of the ten queries in
+  `benchmarks/search_relevance_queries.json` all keep their results and their
+  warnings stay empty (`tests/test_web_search_floor.py`); of the second recorded
+  run (see "Search relevance evaluation") one result goes, Edge's release notes
+  under `MDN AbortController`, which holds no word of the query in its title or
+  address (the row records no snippet, which may hold it).
+
+### Search that does not fall to the browser every time
+
+- A refused DuckDuckGo search went to the headless Google, which takes 6 s to
+  tens of seconds when cold (one `fast` call took 12.8 s, a `deep` one 6-7 s).
+  The fallback is now a chain, `SEARCH_FALLBACK_PROVIDERS`, `duckduckgo_lite,google`
+  at first and `duckduckgo_lite,yahoo,google` since "Yahoo before the browser" below: `duckduckgo_lite` is DuckDuckGo's lite page
+  (`https://lite.duckduckgo.com/lite/`, a table of results instead of divs) as a
+  provider of its own, over plain HTTP, and Google comes after it. Each provider
+  keeps its own gate (`SEARCH_PROVIDER_CONCURRENCY`, the jitter) and its own
+  cooldown, a name without an adapter is left out, and `provider` may name
+  `duckduckgo_lite` too.
+- A call walks the chain: the primary (skipped, with no call, while it cools down
+  and a fallback is healthy), then each fallback in order, skipping the cooling
+  ones, until one answers. If every fallback fails, the primary is still asked
+  when it was skipped: a cooldown steers calls, it never fails a search.
+- `queries[].fallback` says who was asked and why each was left: `from` (the
+  primary), `to` (who answered, or the last asked), `reason` (why the primary was
+  left: `bot_detected`, `search_timeout`, `provider_cooldown`, ...), `error` (the
+  error of `to` when it failed too) and `tried`, in order, each
+  `{"provider", "status": "answered" | "failed" | "skipped", "reason"}`.
+- `depth: fast` asks the plain-HTTP providers before a headless browser, whatever
+  the configured order, and never waits for a cooldown to end: a cooling
+  provider is skipped, and the browser is asked only after every HTTP provider
+  failed or is cooling. An adapter says it drives a browser with `headless = True`
+  (the Google one does).
+- Why DuckDuckGo called the searches bots, measured on 2026-10-23 (seven calls):
+  a lite POST of `q` and `kl` alone was answered HTTP 202 with a duck-picking
+  challenge, twice, the second time after loading the lite form page first; the
+  html endpoint's GET of `q` and `kl` alone, without the `vqd` token the old code
+  fetched from `duckduckgo.com` first, was refused the same way; the same
+  searches posted with the fields DuckDuckGo's own forms carry (`s=0`,
+  `o=json`, `api=d.js`, `vqd=`, `kl`, `bing_market`) were answered 200 with
+  results, in one request. The old client also sent a random user agent (Chrome,
+  Firefox, Windows, Linux) and `sec-ch-ua` hints of another version and system
+  over a TLS fingerprint of a third (curl_cffi's `impersonate`, drawn at random per
+  search), made a new client without cookies for every search, and asked
+  `duckduckgo.com` for a token before each one. Now a search is one POST of the
+  form fields from one long-lived client (per event loop) that impersonates one
+  Chrome, keeps DuckDuckGo's cookies and sends that browser's own headers, none
+  overridden (only `Accept-Language`, `Origin`, `Referer` and `Sec-Fetch-Site`
+  are ours, as a form submit sets them); the next page is the form DuckDuckGo
+  returns, posted back. A challenge is still `search_failed` with
+  `detail=bot_detected`. Whether this lowers the refusal rate cannot be shown
+  with a few calls: a refusal depends on the address and the pace as well.
+
+### Archive copies that are not themselves captchas
+
+- `archive: true` asked the archive's availability API for the closest copy and
+  read only that one. On WSJ, NYT and Reuters the closest copy is the captcha
+  the archive's crawler met: none of three tries read a page. It now asks the
+  CDX index for the last copies that answered 200, one per content digest
+  (`https://web.archive.org/cdx/search/cdx?url=...&output=json&filter=statuscode:200&collapse=digest&limit=-8&fl=timestamp,original,statuscode,digest`),
+  and reads them newest first (the `id_` address of each, under the address it
+  was archived at), at most four, within `ARCHIVE_BUDGET_SECONDS` (20 by
+  default). The first copy that reads is the answer, and `archived_at` is that
+  copy's date, not the newest one's.
+- A copy the existing challenge check flags (a captcha, a login wall, an
+  `access_blocked` page) or that has no text to read is skipped and listed in
+  `archive_skipped`, newest first, each `{"timestamp", "reason"}` (`captcha`,
+  `access_wall`, `access_blocked`, `empty_content`, or the error's code). It is
+  `[]` when the newest copy read, and absent when the archive was not used. No
+  headless browser is opened for an archived copy.
+- When no copy reads, the site's error stands and its hint says which: the
+  archive holds no copy; its newest copies are walls too (their dates and
+  reasons); it answered HTTP 429, with the advice to try again later (on the
+  lookup or on a copy, which ends the walk); it did not answer; or the walk ran
+  past the time budget.
+- archive.today (`https://archive.ph/newest/<url>`) is left out. One request
+  from this Mac on 2026-10-23, with the fetcher's own user agent, got no
+  answer: the connection timed out after 25 s, so it serves this tool no page,
+  readable or not. It is also known to put a captcha in front of automated
+  clients, which the tool must not try to pass. Add it as a second source only
+  where it answers a script a readable page.
+
+### The version, and which code runs
+
+- The version is `1.2.0` (`pyproject.toml`, `web_scraper/__init__.py`).
+- The MCP server's `serverInfo.version` carries the commit when the package
+  runs from a git checkout: `1.2.0+g727ec4f` (a worktree counts). It is read
+  once, at start, with `git rev-parse --short HEAD` given one second; without a
+  checkout, or when git is missing, slow or fails, it is the plain `1.2.0`.
+- At start the server writes one line to stderr, which Dot keeps in
+  `~/Library/Logs/Dot/mcp-web-research.log`, so the owner can see which code is
+  live:
+  `web-research mcp server started: version=1.2.0+g727ec4f commit=727ec4f python=3.13.16`
+  (`commit=unknown` without one).
+- The `XMLParsedAsHTMLWarning` that filled that log came from every path that
+  reads a document with the HTML parser: scraping or extracting from a feed, a
+  sitemap served as `text/html`, a challenge check with no content type. A
+  document that opens with an XML declaration and is not XHTML is now parsed with
+  the XML parser whatever type it was sent as (an XHTML page stays a web page),
+  so no warning is raised; a feed still reads, its `title` and items by selector.
+
+### Search parameters
+
+`web_search` takes six optional parameters beside `query`, `limit`, `provider`
+and `depth`; with none of them a search is what it was, and the server's
+`SEARCH_REGION` and `SEARCH_LANGUAGE` stay the defaults.
+
+| Parameter | Value | Becomes |
+|---|---|---|
+| `region` | `fi-fi`, `us-en`, `wt-wt` (country-language) | DuckDuckGo `kl` (and `bing_market`); Google `gl`, the country part, none for `wt-wt` |
+| `language` | `fi`, `en`, `pt-BR` | Google `hl`; DuckDuckGo takes its region from `kl` and gets the language as the call's `Accept-Language` (`fi,en;q=0.5`), which it may or may not honour |
+| `sites` | up to 5 domains | `site:` operators on every angle (`(site:a.com OR site:b.com)`), and a post-filter keeping only results on those domains or their subdomains |
+| `exclude_sites` | up to 5 domains | `-site:` operators, and a post-filter dropping those domains and their subdomains |
+| `date_from`, `date_to` | ISO dates, `2026-10-01` | DuckDuckGo `df=2026-10-01..2026-10-20` (an open side is closed by today, or by 1990-01-01); Google `tbs=cdr:1,cd_min:10/1/2026,cd_max:10/20/2026` |
+
+- A domain may be given as a URL (`https://docs.python.org/3/`), in capitals or
+  with `www.`: it is reduced to `docs.python.org`. `notpython.org` and
+  `python.org.evil.example` are not on `python.org`.
+- A result with a known date outside the range is dropped; one with no date is
+  kept. The date is the one a result shows (`date`, read from its address,
+  snippet or title); a month (`2026-10`) is inside when any of its days is.
+- Against an explicit range the year-based angles are not added: `discover`
+  and `deep` send no `current` (the year) and no `background` (history) angle,
+  and a freshness cue in the query ("latest") sets no relative filter; the range
+  replaces it. Every angle carries the parameters, the operators take room from
+  the query rather than from the provider's length limit, and the fallback
+  providers get the same parameters.
+- The search cache key holds all six (the order of the domains does not matter),
+  so a search with another region, site or range is a new search.
+- A bad value is refused: HTTP 422 on REST, `invalid_arguments` on MCP,
+  `invalid_request` from the service (`region` such as `finland`, more than five
+  domains, a `date_from` after `date_to`).
+
+### Scrape output: links on request
+
+- `web_scrape` takes `links` (true by default) and `max_links` (0 to 200, 50 by
+  default, the server's `SCRAPE_MAX_LINKS`; held to `MAX_LINKS`, 500).
+  `links: false` returns none, and `links_truncated` is then `false`: nothing
+  was left out, the caller asked for none. `max_links: 0` with links on returns
+  none and `links_truncated` says the page has some.
+- Each limit bounds one thing: `max_chars` the Markdown only, `max_links` the
+  links. A page's menus, headers, footers and sidebars are still left out of
+  the list and still count towards `links_truncated`; `web_map` lists every link.
+- The scrape cache key holds the choice, so a scrape without links and one with
+  200 are separate entries.
+
+### Reliable sources first
+
+The deployed search was weighed on news queries (2026-10-23, 727ec4f): besides
+WSJ and Democracy Now!, most results were small aggregator sites, a Facebook
+video and unknown blogs, and they scored highest. An aggregator that copies a
+headline wins on BM25 and freshness, and only 17 English-language outlets were
+`news`; everything else, a post included, was `other` with authority 0, never
+less.
+
+- **Outlets by name** (`web_scraper/web_tools/sources.py`, one frozenset per
+  group with a comment): wire services (Reuters, AP, AFP, UPI, dpa, EFE, ANSA,
+  STT, Anadolu), national and public broadcasters (BBC, YLE, NHK, DW,
+  France 24, TRT, NPR, PBS, CBC, ABC Australia, SVT, NRK, DR, ...), the papers of
+  record and major outlets of the US, the UK and Ireland, the EU (Le Monde,
+  Spiegel, El País, Corriere, ...), the Nordics (Helsingin Sanomat,
+  Kauppalehti, Kaleva, Dagens Nyheter, ...), Turkey (Hürriyet, Sabah, Sözcü,
+  Cumhuriyet, Habertürk, ...), Asia, the Americas, the Middle East and Africa,
+  and the business and tech press (Bloomberg, FT, CNBC, TechCrunch, The Verge,
+  Ars Technica, Wired, ...). A host matches itself and its subdomains. It is kept
+  to established outlets: a site is not `news` because its name sounds like it
+  (`newsnow-ai-daily.com` is `other`), and tabloids and state propaganda outlets
+  are left out. `yle.fi` moved here from `official`.
+- **`social`**: Facebook (`fb.watch` too), Instagram, TikTok, X and Twitter,
+  Threads, LinkedIn, Bluesky, Telegram, and YouTube *for a news query only*: a
+  tutorial on YouTube is what was asked for, a video about the news is not the
+  story. **`press_release`**: PR Newswire, GlobeNewswire, Business Wire,
+  ACCESS Newswire, EIN Presswire, PRWeb, Mynewsdesk, STT Info, and the like.
+  Both have authority 0 on every other query, as `other` has.
+- **Blog hosts** (`blogspot.com`, `wordpress.com`, `substack.com`, Tumblr,
+  Ghost, ...) count as `community`.
+- **Ordering on a news query** (a freshness cue, the current year, or the word
+  "news" or its Finnish, Turkish, Swedish, German, French, Spanish and Italian
+  forms): an outlet gets +0.05 on top of its authority, `community` loses 0.06,
+  a `press_release` 0.24 and a `social` post 0.30. A relevant, fresh article of
+  an outlet then goes above a page of an unknown site, a post or a press release
+  of the same freshness, whatever its BM25. The date still decides when the
+  query says how fresh: it weighs 0.30, so a fresh page goes before a stale
+  outlet's article. Diversity holds: the per-domain cap and the source-type
+  adjustment run after, on these scores.
+- `depth: fast` keeps the provider's order, as it always did: the types are
+  labelled on its results all the same, but only `discover` and `deep` rank by
+  them.
+- The ten recorded queries of `benchmarks/web_search_relevance.json` are not
+  touched by the types (none of their results is an outlet, a post or a press
+  release): `tests/test_web_search_sources.py` holds their order, as BM25
+  squashed into (0, 1) puts them (see "Search relevance evaluation").
+
+### Several pages in one call
+
+- `web_scrape` takes `urls` (2 to 10 URLs) in place of `url`: exactly one of the
+  two. The answer is `{"pages": [...], "timings": {"total_ms": ...}}`, the pages
+  in the order given. Each is that page's own scrape answer (with
+  `markdown_truncated`, below) or `{"url", "error"}` with the error envelope (code,
+  message, url, status_code, detail and, for a walled page, its `hint`). One
+  page failing never fails the others; `links`, `max_links`, `max_chars` and
+  `archive` apply to every page. The single-URL answer is unchanged.
+- Limits: `SCRAPE_BATCH_CONCURRENCY` pages at a time (4 by default) and at most
+  two at a time from one host, whatever the number of hosts: a page waits for its
+  host's turn before it takes one of the four, so a queue on one host never keeps
+  another host's page waiting. The fetcher's own per-host gate and the page cache
+  still apply, so a page read before is served from the cache.
+- The whole answer stays under `max_total_chars` (60,000 characters of compact JSON
+  by default, 5,000 to 500,000). The pages whose Markdown is over one shared
+  length are cut to it, so a long page loses most and a short one nothing; a cut
+  Markdown ends with `…` and its page says `markdown_truncated: true` (it is
+  `false` on every other page of a batch, and absent from a single answer). Only
+  if that cannot fit do the links, then the metadata, then the rest of the
+  Markdown give way (`links_truncated` and `metadata_truncated` say so). A
+  cut never reaches the cache: a single scrape of the same URL afterwards is whole.
+- REST: `POST /api/v1/web/scrape` answers a batch with the same shape; a request with
+  both `url` and `urls`, or neither, is refused (HTTP 422). The schema keeps `url` a
+  string and `urls` an array (2 to 10) with no top-level `oneOf`.
+- The REST 422 body no longer turns into a 500 when a validator raised
+  `ValueError` (the exception object was left in `ctx.error`): `details[].ctx.error` is
+  now its message.
+
+### Search that can read its top results
+
+- Search gave links and snippets, not the articles, so an agent searched and
+  then scraped each result by hand. `web_search` takes `read` (0 to 5, default
+  0): the top N results, in the order the answer has them, are read in the same
+  call with the batch scrape of "Several pages in one call".
+- Each result read carries `content`, its Markdown cut to `read_chars` (4,000 by
+  default, 500 to 20,000) with `content_truncated` (`true` when the page has more),
+  or `content_error`, the error envelope (code, message, url, status_code, detail
+  and, for a walled page, its `hint`). The results that were not read carry
+  neither, and with `read: 0`, the default, the answer is exactly what it was
+  (no `content` field, no `read_ms`).
+- Reading costs seconds: `timings.read_ms` says how many, and `total_ms` includes
+  it. The pages are read together (4 at a time, 2 per host) through the scrape
+  cache, so a page read a minute ago is not fetched again.
+- The whole answer stays under `SEARCH_READ_MAX_TOTAL_CHARS` (60,000 characters of
+  compact JSON): the contents over one shared length are cut to it, each ending in
+  `…` with `content_truncated: true`, so a long page loses most and a short one
+  nothing.
+- A walled page is not retried from the Internet Archive unless asked: the request
+  takes `archive` as `web_scrape` does, and a walled page's `content_error` carries
+  the hint to ask for it.
+- The search itself is cached as before, without the reading (the key does not hold
+  `read`): a search repeated with another `read` asks the provider once and each
+  page is read once; a search with `read: 0` never gets the content another asked
+  for.
+
+### Extract: paging past the cap
+
+- A field with `all: true` returns at most `max_items` values (100 by default, 1 to
+  1,000) per field; the request schema carries it under
+  `$defs.WebExtractField.properties` and the tool description names it, for a client
+  that does not follow `$ref`. What was missing was a way to read the rest.
+- `offset` (0 to 1,000,000), per field, with `all: true`, skips the first N matches
+  (the non-empty values, in document order); `max_items` is the page's size. The
+  field's provenance holds `offset` (0 when none was asked) and, when matches are
+  left after the page, `truncated: true` and `next_offset`, the offset to ask for
+  next. The last page has no `next_offset` and `truncated: false`. An offset past
+  the last match answers an empty list for a field that exists, not a missing field.
+  A field that is not `all` ignores it.
+- The character cap (`max_chars`) still bounds each answer: when it cuts values from
+  the end of a page, `returned` and `next_offset` follow what was kept, so paging on
+  from `next_offset` loses nothing. A list of 250 items is read in three pages:
+  `offset` 0, 100, 200 returned 100, 100 and 50, the first two with `next_offset`
+  100 and 200 (`tests/test_web_extract_paging.py`). Fields read by their name
+  (`keywords`, a JSON-LD list) page the same way.
+
+### Crawl seeded from the sitemap
+
+- A crawl found a site's pages by their links, so the pages no link reaches (an
+  archive, an orphaned article) were missed. `use_sitemap: true` in the crawl's
+  options (`web_crawl_start`, `POST /api/v1/web/crawl`; false by default) seeds the
+  frontier from the site's sitemaps, read as `web_map` reads them: the `Sitemap:`
+  lines of robots.txt, `/sitemap.xml`, and the sitemaps an index names (at most
+  `MAX_SITEMAPS`).
+- The seeds come right after the start page, in the sitemap's order, as its
+  equals (depth 0, so a seed's own links are followed to `max_depth` as ever).
+  They are kept in scope (the host, and its subdomains only with
+  `include_subdomains`), through `include_patterns` and `exclude_patterns`, and
+  behind robots.txt (a disallowed seed is counted in `skipped`), and they count
+  against `max_pages`: no more than `max_pages - 1` are queued, so a crawl of 20
+  pages over a 500-page sitemap reads the start page and the first 19 seeds, and
+  link-following has what is left, none here. A page both listed and linked is read
+  once.
+- The job's `progress.seeded` says how many seeds were queued and its `options`
+  show `use_sitemap`. A sitemap that cannot be read is an entry in the job's `errors`,
+  not its end, and a site with no robots.txt is not an error of it.
+- Covered by `tests/test_web_crawl_sitemap.py`: a fake site whose sitemap lists pages
+  no link reaches, scope, filters, robots, `max_pages`, an index, and a missing sitemap.
+
+### One fetch for scrape and extract of the same page
+
+- The scrape cache holds the scrape's *answer*, keyed by URL, `max_chars`, links and
+  `archive`; `web_extract` used none, so scraping a page and extracting from it
+  fetched it twice (and so did two scrapes with different caps). A short-lived page
+  cache now sits at the fetch layer (`web_scraper/web_tools/pagecache.py`): it holds
+  the fetched document, the HTML as the tools last read it (rendered by the browser
+  when the page needed it), keyed by the page's canonical URL, and each call parses
+  it as it needs, with its own `max_chars`, links and selectors.
+- It lives `PAGE_CACHE_TTL_SECONDS` (300; 0 turns it off) and is bounded in documents
+  (`PAGE_CACHE_MAX_ENTRIES`, 64) and in bytes of HTML (`PAGE_CACHE_MAX_BYTES`, 20 MB):
+  the oldest unused goes first, and a page that alone is over the byte bound is not
+  kept. `GET /api/v1/web/stats` lists its entries, bytes, hits and misses.
+- Never kept: an error of any kind; a challenge page (a captcha, a login wall, an
+  `access_blocked` page are errors, so the next call tries again); an archived copy
+  (`archive: true`); a PDF; a page with nothing to read (`empty_content`) or whose
+  browser render failed; a page read by a crawl.
+- `web_extract`'s answer says `cache_hit`, `true` when the page came from the page
+  cache. Its timings do not pretend to fetch: `network_ms`, `http_ms` and `browser_ms` are
+  0, `extract_ms` and `total_ms` are this call's, and `cached_timings` holds what the
+  fetch cost when it was made. The same holds for a scrape's `timings` when the page was
+  stored (its `cache_hit` still means the scrape *answer* came from the scrape cache).
+
+### A cut angle says so
+
+- Once the base angle has answered, the angles after it have `SEARCH_ANGLE_BUDGET_MS`
+  (5,000 by default, 0 to 120,000, `0` waits for every angle; the base is never cut).
+  An angle still out then is cut. Its warning used to be `<angle>_query_failed`, the
+  same as a refusal, and only `queries[].error.detail == "angle_budget"` told them
+  apart. It is now `<angle>_query_cut` (`current_query_cut`, `background_query_cut`,
+  `primary_query_cut`); `<angle>_query_failed` is left to what the provider refused or
+  failed.
+- What a cut costs: that angle's results are missing from the ranking (the current-year
+  results, the history, the official documentation), so the answer is narrower than
+  a full `discover` or `deep`; the call that was in flight is dropped, and the narrower
+  answer is cached for `SEARCH_CACHE_TTL_SECONDS` like any other, so the same search
+  within five minutes is the same answer. A cut is the search's own limit: it starts no
+  cooldown for the provider and no fallback asks for it. Raise the budget (or set it to 0)
+  to wait for every angle, or use `depth: fast` for one query.
+
+### Crawl jobs outlive a restart
+
+- Jobs lived only in the manager's memory, and a restart of Dot's daemon restarts this
+  server, so every job (its pages included) was lost. Each job is now kept in SQLite
+  (the standard library) in a data folder, as it goes: its state, options, progress
+  counters, errors, duplicates and results, the results appended as their batch of
+  pages ends. The folder is `WEB_TOOLS_DATA_DIR`, by default `web-research` in the XDG
+  data home (`$XDG_DATA_HOME`, else `~/.local/share/web-research`); the package has no
+  data folder of its own (its research history takes a file path, relative to where the
+  server runs). An empty value, `none` or `off` keeps nothing on disk. A folder this
+  makes is `0700` and the database `0600`: crawled pages are the user's own.
+- After a restart a job that was `queued` or `running` is **`interrupted`**
+  (`finished_at` is when the server read it again), and so is one the server ended by
+  stopping (a graceful stop of the daemon is not a `cancelled`). Its pages stay readable
+  through `web_crawl_status` and `web_crawl_results`, as far as the last batch got; a
+  job being cancelled becomes `cancelled`, and the finished ones read as they were.
+  `interrupted` is final like `completed`: **resuming an interrupted job is left out**
+  (start the crawl again; the page cache and the scrape cache make the pages already read
+  cheap only while they live, which a restart ends).
+- The bounds hold on disk: `MAX_CRAWL_JOBS` and `CRAWL_JOB_TTL_SECONDS` prune a job's
+  rows and results together, as they prune it in memory, on every access and when the
+  server starts, counted from a job's last update (an interrupted job from the restart
+  that interrupted it). A job that is still going is never dropped to make room.
+- A folder that cannot be made or written, or a database that is damaged, costs the
+  persistence and not the crawl: the server logs one warning ("Crawl jobs are no longer
+  kept on disk") and goes on in memory. The tests keep nothing in the owner's data
+  folder (`WEB_TOOLS_DATA_DIR` is empty under them, and a settings made by hand names
+  no folder). Covered by `tests/test_web_crawl_persistence.py`: a manager closed and
+  made again over the same folder, a running and a queued job, a graceful stop, pruning
+  on disk, the folder and a damaged database.
+
+### What round 3 measured live (2026-10-23, this Mac, one run each)
+
+About 30 calls in all, one search at a time, 8 s or more apart.
+
+- **Search latency, same queries, base code (727ec4f) against this branch**, DuckDuckGo
+  answering every call at that moment:
+
+  | Query | depth | before | after |
+  |---|---|---:|---:|
+  | `python asyncio tutorial` | `fast` | 1.09 s | 0.69 s |
+  | `rust borrow checker explained` | `fast` | 1.08 s | 0.72 s |
+  | `AI regulation news this week` | `fast` | 0.93 s | 0.75 s |
+  | `python asyncio tutorial` | `discover` | 3.90 s | 4.49 s |
+
+  A `fast` search is one request instead of two (no token fetched from
+  `duckduckgo.com`), a third quicker, with the same results. `discover` sends its three
+  angles one at a time through the provider's gate, with its 250-500 ms jitter, as
+  before: the difference is DuckDuckGo's and the jitter's, one run each.
+- **The chain.** With the html endpoint made to refuse in the process (a simulated 202),
+  DuckDuckGo lite answered a `fast` search in 0.81 s (`tried`: html failed
+  `bot_detected`, lite answered); before, that search went to the headless Google. Later
+  in the same session, after about 30 calls in 35 minutes from this address, DuckDuckGo
+  refused *both* endpoints (`bot_detected`, `tried` shows each): the angles went to Google,
+  and the base angle took 25 s while the headless browser started. Lite helps when one
+  endpoint refuses (they judge a request by its form, and each has its own pace); it
+  cannot when the address itself is flagged.
+- **Archive.** Reuters' AI section answered 401/captcha; the CDX lookup answered 200
+  with its copies (the newest of 2025-09-25); the replay of that newest copy answered the
+  fetcher HTTP 429 whatever its headers (the fetcher's, only a user agent, or a user agent
+  and `Accept: */*`), while `curl` got 200 for the same address a few seconds before and
+  after. The 429 is the archive's reply to this client (`httpx`, HTTP/1.1), not a
+  header the fetcher could change, so the walk ends with its hint (`The Internet Archive
+  answered HTTP 429 ... try archive: true again later`) and the skip to a good copy could not be
+  shown live from this Mac (the tests cover it with fake transports and the real
+  interstitial check). Reading replays through `curl_cffi` was the way round it, done next:
+  see "Wayback replays are read like a browser" below.
+- **News search with `read`.** `AI regulation news this week` at `discover` with
+  `read: 2`: Reuters (`news`) first; its content was a `content_error` (`blocked`, captcha,
+  with the archive hint), `news.un.org` came back as 1,500 characters
+  (`content_truncated: true`), `timings.read_ms` 2.1 s, the whole answer 7.4 KB.
+
+### Wayback replays are read like a browser
+
+- The live check above found `web.archive.org` answering the `httpx` client HTTP 429 on a
+  replay whatever the headers, while curl got 200, so `archive: true` read no copy in practice
+  (the CDX list answered; the replay did not). The CDX list and the replays of
+  `web.archive.org`, and of no other host, are now read through a `curl_cffi` session that
+  impersonates one Chrome (the newest the installed `curl_cffi` knows), as the DuckDuckGo
+  searcher does (`web_scraper/web_tools/archive_fetcher.py`).
+- It is the same `SafeFetcher` with another transport, so every limit is the fetcher's own: the
+  byte cap (`MAX_RESPONSE_BYTES`, the download is stopped and closed when it is passed), the
+  timeout (`FETCH_TIMEOUT_SECONDS`), the retry of a transient failure (`FETCH_RETRIES`), the
+  redirect count, and the checks for a captcha, a login wall and a refusal, so an archived
+  captcha is still skipped into `archive_skipped`. A redirect is followed only within
+  `web.archive.org`; one out of it is refused like any other target.
+- The host is fixed in code: only `https://web.archive.org` on its own port, with no
+  credentials, is read this way (`web.archive.org.evil.example` and `archive.org` are not it),
+  and the fetcher's public-address check still runs on it. Nothing else goes through the
+  impersonated session. The page itself is still fetched by the ordinary fetcher.
+- Headers: the impersonated browser sends its own, coherent with its TLS fingerprint; the
+  fetcher's user agent and `Accept` headers are not sent to the archive. The body arrives
+  decoded, and a `Content-Encoding` that described the wire is left out of the answer so it
+  is not decoded twice.
+- Measured live (2026-10-23, three calls): Reuters' AI section answered 401/captcha and was
+  read from the archive, copy of 2025-09-25, 2,324 characters (the CDX list in 1.0 s, the
+  replay of 537 KB in 1.4 s, where `httpx` was answered 429); the New York Times'
+  technology section answered 403 and was read from its copy of 2026-08-28 (11,211
+  characters, the replay of 957 KB in 2.6 s); WSJ's AI section answered 200 and needed no
+  archive. `archive_skipped` was empty in both reads: the newest copy the CDX lists with
+  status 200 was itself readable. `tests/test_web_archive_transport.py` holds the limits with
+  a fake session.
+
+### Yahoo before the headless browser
+
+- After about 30 calls in 35 minutes from one address, DuckDuckGo refused both its endpoints
+  (html and lite) and the base angle fell to the headless Google, 25 s when cold. A second plain-HTTP
+  provider, `yahoo`, now stands between `duckduckgo_lite` and `google` in the default chain
+  (`SEARCH_FALLBACK_PROVIDERS=duckduckgo_lite,yahoo,google`), with its own gate and cooldown like
+  every provider, and `provider: "yahoo"` asks it directly.
+- Two candidates were probed once each, a minute apart, through an impersonating `curl_cffi`
+  session (the stack an adapter uses), on `python asyncio tutorial`. **Yahoo**
+  (`https://search.yahoo.com/search?p=...`) answered HTTP 200 in about a second with seven organic
+  results in `div.algo-sr`. **Mojeek** (`https://www.mojeek.com/search?q=...`) answered HTTP 403,
+  "Sorry your network appears to be sending automated queries so we can't process your search at
+  this time"; nothing is added for it.
+- The parser (`web_scraper/yahoo_search.py`, a fixture of the live answer in
+  `tests/fixtures/yahoo_python_asyncio_tutorial.html`, scripts and styles stripped) reads each
+  `div.algo-sr`: the title of its `h3.title`, the snippet of its `div.compText p` (Yahoo puts the date
+  in front, `Jul 30, 2025 ·` or `2 days ago ·`, which the search's own date reading uses), and the
+  address out of Yahoo's redirect (`.../RU=<encoded address>/RK=...`). A page's `Next` link is followed
+  to at most three pages while fewer results than asked for are in. A result on Yahoo itself is never
+  one.
+- What it does and does not take: the relative date filter (`day`, `week`, `month` as Yahoo's
+  `btf`; Yahoo has none for a year) and a call's `language` (as `Accept-Language`). A region and a
+  date range are not sent (the date range still drops results dated outside it, after the search).
+- Refusals: HTTP 403, 429 and 999, a redirect off `https://search.yahoo.com` (its consent page
+  included), more than four redirects, and a page with no results that talks of unusual traffic or a
+  captcha are `search_failed` with `detail: bot_detected`, as for DuckDuckGo. A redirect that stays on
+  `search.yahoo.com` is followed by the searcher itself (Yahoo sends a first request through a
+  `/_bv/v.gif` cookie step and back), never by the HTTP client, so nothing outside Yahoo is asked.
+- Measured live (2026-10-23): `provider: "yahoo"` at `fast` answered in 2.4 s (the first request of the
+  process, with that cookie step); with both DuckDuckGo endpoints made to refuse in the process, the
+  chain's `tried` was `duckduckgo` failed, `duckduckgo_lite` failed, `yahoo` answered, in 0.6 s, where
+  the headless browser had taken 25 s.
+

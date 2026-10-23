@@ -37,6 +37,11 @@ class HeaderFactory:
     }
 
     @classmethod
+    def stable_impersonate_target(cls) -> str:
+        """The newest verified Chrome target: one fingerprint for a long-lived client."""
+        return next(iter(cls._IMPERSONATE_MAP))
+
+    @classmethod
     def get_impersonate_target(cls) -> str:
         """Return a curl_cffi impersonate string for a random supported Chrome version."""
         return random.choice(list(cls._IMPERSONATE_MAP.keys()))  # noqa: S311

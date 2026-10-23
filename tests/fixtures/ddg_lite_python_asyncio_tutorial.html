@@ -1,0 +1,785 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">
+<html>
+
+<head>
+  <meta http-equiv="content-type" content="text/html; charset=UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=3.0, user-scalable=1;">
+  <meta name="referrer" content="origin">
+  <meta name="HandheldFriendly" content="true" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>python asyncio tutorial at DuckDuckGo</title>
+  <link title="DuckDuckGo (Lite)" type="application/opensearchdescription+xml" rel="search" href="//duckduckgo.com/opensearch_lite_v2.xml">
+  <link href="//duckduckgo.com/favicon.ico" rel="shortcut icon" />
+  <link rel="icon" href="//duckduckgo.com/favicon.ico" type="image/x-icon" />
+  <link id="icon60" rel="apple-touch-icon" href="//duckduckgo.com/assets/icons/meta/DDG-iOS-icon_60x60.png?v=2"/>
+  <link id="icon76" rel="apple-touch-icon" sizes="76x76" href="//duckduckgo.com/assets/icons/meta/DDG-iOS-icon_76x76.png?v=2"/>
+  <link id="icon120" rel="apple-touch-icon" sizes="120x120" href="//duckduckgo.com/assets/icons/meta/DDG-iOS-icon_120x120.png?v=2"/>
+  <link id="icon152" rel="apple-touch-icon" sizes="152x152" href="//duckduckgo.com/assets/icons/meta/DDG-iOS-icon_152x152.png?v=2"/>
+  <link rel="image_src" href="//duckduckgo.com/assets/icons/meta/DDG-icon_256x256.png">
+  <link rel="stylesheet" media="handheld, all" href="//duckduckgo.com/dist/lr.48ddfe4eadf6a534e93f.css" type="text/css"/>
+</head>
+
+<body>
+  <p class='extra'>&nbsp;</p>
+  <div class="header">
+    DuckDuckGo
+  </div>
+  <p class='extra'>&nbsp;</p>
+
+  <form action="/lite/" method="post">
+      <input class='query' type="text" size="40" name="q" value="python asyncio tutorial">
+      <input class='submit' type="submit" value="Search">
+      
+      
+      
+      
+
+      <div class="filters">
+        <select class="submit" name="kl">
+          
+            <option value="" >All Regions</option>
+          
+            <option value="ar-es" >Argentina</option>
+          
+            <option value="au-en" >Australia</option>
+          
+            <option value="at-de" >Austria</option>
+          
+            <option value="be-fr" >Belgium (fr)</option>
+          
+            <option value="be-nl" >Belgium (nl)</option>
+          
+            <option value="br-pt" >Brazil</option>
+          
+            <option value="bg-bg" >Bulgaria</option>
+          
+            <option value="ca-en" >Canada (en)</option>
+          
+            <option value="ca-fr" >Canada (fr)</option>
+          
+            <option value="ct-ca" >Catalonia</option>
+          
+            <option value="cl-es" >Chile</option>
+          
+            <option value="cn-zh" >China</option>
+          
+            <option value="co-es" >Colombia</option>
+          
+            <option value="hr-hr" >Croatia</option>
+          
+            <option value="cz-cs" >Czech Republic</option>
+          
+            <option value="dk-da" >Denmark</option>
+          
+            <option value="ee-et" >Estonia</option>
+          
+            <option value="fi-fi" >Finland</option>
+          
+            <option value="fr-fr" >France</option>
+          
+            <option value="de-de" >Germany</option>
+          
+            <option value="gr-el" >Greece</option>
+          
+            <option value="hk-tzh" >Hong Kong</option>
+          
+            <option value="hu-hu" >Hungary</option>
+          
+            <option value="is-is" >Iceland</option>
+          
+            <option value="in-en" >India (en)</option>
+          
+            <option value="id-en" >Indonesia (en)</option>
+          
+            <option value="ie-en" >Ireland</option>
+          
+            <option value="il-en" >Israel (en)</option>
+          
+            <option value="it-it" >Italy</option>
+          
+            <option value="jp-jp" >Japan</option>
+          
+            <option value="kr-kr" >Korea</option>
+          
+            <option value="lv-lv" >Latvia</option>
+          
+            <option value="lt-lt" >Lithuania</option>
+          
+            <option value="my-en" >Malaysia (en)</option>
+          
+            <option value="mx-es" >Mexico</option>
+          
+            <option value="nl-nl" >Netherlands</option>
+          
+            <option value="nz-en" >New Zealand</option>
+          
+            <option value="no-no" >Norway</option>
+          
+            <option value="pk-en" >Pakistan (en)</option>
+          
+            <option value="pe-es" >Peru</option>
+          
+            <option value="ph-en" >Philippines (en)</option>
+          
+            <option value="pl-pl" >Poland</option>
+          
+            <option value="pt-pt" >Portugal</option>
+          
+            <option value="ro-ro" >Romania</option>
+          
+            <option value="ru-ru" >Russia</option>
+          
+            <option value="xa-ar" >Saudi Arabia</option>
+          
+            <option value="sg-en" >Singapore</option>
+          
+            <option value="sk-sk" >Slovakia</option>
+          
+            <option value="sl-sl" >Slovenia</option>
+          
+            <option value="za-en" >South Africa</option>
+          
+            <option value="es-ca" >Spain (ca)</option>
+          
+            <option value="es-es" >Spain (es)</option>
+          
+            <option value="se-sv" >Sweden</option>
+          
+            <option value="ch-de" >Switzerland (de)</option>
+          
+            <option value="ch-fr" >Switzerland (fr)</option>
+          
+            <option value="tw-tzh" >Taiwan</option>
+          
+            <option value="th-en" >Thailand (en)</option>
+          
+            <option value="tr-tr" >Turkey</option>
+          
+            <option value="us-en" >US (English)</option>
+          
+            <option value="us-es" >US (Spanish)</option>
+          
+            <option value="ua-uk" >Ukraine</option>
+          
+            <option value="uk-en" >United Kingdom</option>
+          
+            <option value="vn-en" >Vietnam (en)</option>
+          
+        </select>
+
+        <select class="submit" name="df">
+          
+            <option value="" selected>Any Time</option>
+          
+            <option value="d" >Past Day</option>
+          
+            <option value="w" >Past Week</option>
+          
+            <option value="m" >Past Month</option>
+          
+            <option value="y" >Past Year</option>
+          
+        </select>
+      </div>
+  </form>
+
+  
+    <p class="extra">&nbsp;</p>
+    <table border="0">
+      <tr>
+        <td>
+          
+        </td>
+        <td>
+          
+            <!-- Next Page Button Sub-template -->
+<form class="next_form" action="/lite/" method="post">
+    <input type="submit" class='navbutton' value="Next Page &gt;">
+    <input type="hidden" name="q" value="python asyncio tutorial">
+    <input type="hidden" name="s" value="10">
+    <input type="hidden" name="nextParams" value="">
+    <input type="hidden" name="v" value="">
+    <input type="hidden" name="o" value="json">
+    <input type="hidden" name="dc" value="12">
+    <input type="hidden" name="api" value="d.js">
+    <input type="hidden" name="vqd" value="">
+    &nbsp;&nbsp;&nbsp;&nbsp;
+    
+    
+    
+      <input name="kl" value="wt-wt" type="hidden">
+    
+    
+    
+    
+</form>
+          
+        </td>
+      </tr>
+    </table>
+  
+
+  
+
+  <p class='extra'>&nbsp;</p>
+
+  <table border="0">
+    
+  </table>
+
+  <table border="0">
+    
+      
+      <!-- Web results are present -->
+      
+        
+          
+
+            <tr class="result-sponsored">
+              
+                <!-- Sponsored result with counter -->
+                <td valign="top">
+                  
+                    1.&nbsp;
+                  
+                </td>
+                <td>
+                  <a rel="nofollow" href="https://duckduckgo.com/y.js?ad_domain=udemy.com&amp;ad_provider=bingv7aa&amp;ad_type=txad&amp;click_metadata=LJIhWlpV2Pj2jchYj2hbebWO_51qId7n5_Aozt6733TtrvWekvVrW5w3grlDQ%2DQGPS_ZvdYGu92OTfXSUHRYzC59zdyrM5Z8JqCea0fcr1p1xWWeEUSKW5v5y3_AG3IJ9bV_oDHfi9KpTptNQvbZJw.fUwDEZ1qLUszcRxsNEfBQQ&amp;rut=dae92dedd03bb6c5ed61778ba0e69ed9414209c7f6ff6bbd90fbeda949dc7e8f&amp;u3=https%3A%2F%2Fwww.bing.com%2Faclick%3Fld%3De8NR8HIVRlHjpTduUE%2D_zHpTVUCUy8A9%2DttJEDa%2D%2DAPnT7iLj0sAb9oSXUhl4rfpSvVgo0CnC_1CvmBQ3O0VFJI8kgNcfyzjJNmHjm2AaHcttFNAhYQ71Ccn6YpU_ABD%2DEdwmZo_g59FOktOMfMx5jsACAjgmBsfvU2RjK_L98LsjtM_dsQjTvw7WHRwmVdWnyw6ERUGBtGCGEz8ZJwuBSp5gxJtY%26u%3DaHR0cHMlM2ElMmYlMmZ3d3cudWRlbXkuY29tJTJmY291cnNlJTJmc3VwZXJjaGFyZ2VkLXdlYi1zY3JhcGluZy13aXRoLWFzeW5jaW8tYW5kLXB5dGhvbiUyZiUzZnV0bV9jYW1wYWlnbiUzZEJHLVNlYXJjaF9EU0FfQWxwaGFfUHJvZl9sYS5FTl9jYy5ST1ctRW5nbGlzaCUyNnV0bV9zb3VyY2UlM2RiaW5nJTI2dXRtX21lZGl1bSUzZHBhaWQtc2VhcmNoJTI2cG9ydGZvbGlvJTNkQmluZy1ST1ctRW5nbGlzaCUyNnV0bV9hdWRpZW5jZSUzZG14JTI2dXRtX3RhY3RpYyUzZG5iJTI2dXRtX3Rlcm0lM2RfLl9hZ18xMzE3MjE3MzE4NjQ5NjA0Xy5fYWRfXy5fa3dfRGF0YSUyNTIwU2NpZW5jZSUyNnV0bV9jb250ZW50JTNkbyUyNmZ1bm5lbCUzZCUyNnRlc3QlM2QlMjZ1dG1fY2FtcGFpZ25faWQlM2Q2Mzg1OTYyMjglMjZtc2Nsa2lkJTNkYzZkMTg3M2Y0NDgxMWNlZDQxYTFlZGU0NmVlZjhkN2Q%26rlid%3Dc6d1873f44811ced41a1ede46eef8d7d&amp;vqd=4-189944893053274349254533389400155206382&amp;iurl=%7B1%7DIG%3DCD1762A5619440C895B09BD77B9EFB8D%26CID%3D04EF8D2AF61E6BDA08A49AD1F7F76A8D%26ID%3DDevEx%2C5037.1" class='result-link'>Python Asyncio Tutorial - Learn Asynchronous Web Scraping with Python</a>
+                  (Sponsored link - <a
+                    href="https://duckduckgo.com/duckduckgo-help-pages/company/ads-by-microsoft-on-duckduckgo-private-search/"
+                    rel="nofollow" class="result-link">more info</a>)
+                </td>
+                
+            </tr>
+
+            
+              <tr class="result-sponsored">
+                <td>&nbsp;&nbsp;&nbsp;</td>
+                <td class='result-snippet'>
+                  Learn Data Science online at your own pace. Start today and improve your skills. Join millions of learners from around the world already learning on Udemy.
+                </td>
+              </tr>
+            
+
+            
+              <tr class="result-sponsored">
+                <td>&nbsp;&nbsp;&nbsp;</td>
+                <td>
+                  <span class='link-text'>udemy.com</span>
+                  
+                </td>
+              </tr>
+            
+
+            <tr>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+            </tr>
+          
+
+          
+      
+        
+            <tr>
+              
+                <td valign="top">
+                  
+                    2.&nbsp;
+                  
+                </td>
+                <td>
+                  <a rel="nofollow" href="https://realpython.com/async-io-python/" class='result-link'>Python&#x27;s asyncio: A Hands-On Walkthrough - Real Python</a>
+                </td>
+                
+            </tr>
+
+            
+              
+                <!-- Only show abstract separately if there's a click URL (not EOF) -->
+                <tr>
+                  <td>&nbsp;&nbsp;&nbsp;</td>
+                  <td class='result-snippet'>
+                    <b>Python&#x27;s</b> <b>asyncio</b> library enables you to write concurrent code using the async and await keywords. The core building blocks of <b>async</b> <b>I/O</b> in <b>Python</b> are awaitable objects—most often coroutines—that an event loop schedules and executes asynchronously. This programming model lets you efficiently manage multiple I/O-bound tasks within a single thread of execution. In this <b>tutorial</b>, you&#x27;ll ...
+                  </td>
+                </tr>
+              
+            
+
+            
+              <tr>
+                <td>&nbsp;&nbsp;&nbsp;</td>
+                <td>
+                  <span class='link-text'>realpython.com/async-io-python/</span>
+                  
+                    &nbsp;&nbsp;&nbsp;
+                    <span class='timestamp'>2025-07-30T00:00:00.0000000</span>
+                  
+                </td>
+              </tr>
+            
+
+            <tr>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+            </tr>
+
+        
+      
+        
+            <tr>
+              
+                <td valign="top">
+                  
+                    3.&nbsp;
+                  
+                </td>
+                <td>
+                  <a rel="nofollow" href="https://www.geeksforgeeks.org/python/asyncio-in-python/" class='result-link'>asyncio in Python - GeeksforGeeks</a>
+                </td>
+                
+            </tr>
+
+            
+              
+                <!-- Only show abstract separately if there's a click URL (not EOF) -->
+                <tr>
+                  <td>&nbsp;&nbsp;&nbsp;</td>
+                  <td class='result-snippet'>
+                    <b>Asyncio</b> is used as a foundation for multiple <b>Python</b> asynchronous frameworks that provide high-performance network and web servers, database connection libraries, distributed task queues, etc Asynchronous Programming with <b>Asyncio</b> in <b>Python</b> In the example below, we&#x27;ll create a function and make it asynchronous using the async keyword.
+                  </td>
+                </tr>
+              
+            
+
+            
+              <tr>
+                <td>&nbsp;&nbsp;&nbsp;</td>
+                <td>
+                  <span class='link-text'>www.geeksforgeeks.org/python/asyncio-in-python/</span>
+                  
+                    &nbsp;&nbsp;&nbsp;
+                    <span class='timestamp'>2025-07-23T00:00:00.0000000</span>
+                  
+                </td>
+              </tr>
+            
+
+            <tr>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+            </tr>
+
+        
+      
+        
+            <tr>
+              
+                <td valign="top">
+                  
+                    4.&nbsp;
+                  
+                </td>
+                <td>
+                  <a rel="nofollow" href="https://codesamplez.com/programming/python-asyncio-tutorial" class='result-link'>Python AsyncIO Tutorial: A Comprehensive Guide To Async Python</a>
+                </td>
+                
+            </tr>
+
+            
+              
+                <!-- Only show abstract separately if there's a click URL (not EOF) -->
+                <tr>
+                  <td>&nbsp;&nbsp;&nbsp;</td>
+                  <td class='result-snippet'>
+                    Learn <b>Python</b> <b>AsyncIO</b> with our beginner-friendly <b>tutorial</b>. Master asynchronous programming, coroutines, and more. Start coding efficiently!
+                  </td>
+                </tr>
+              
+            
+
+            
+              <tr>
+                <td>&nbsp;&nbsp;&nbsp;</td>
+                <td>
+                  <span class='link-text'>codesamplez.com/programming/python-asyncio-tutorial</span>
+                  
+                    &nbsp;&nbsp;&nbsp;
+                    <span class='timestamp'>2025-02-10T00:00:00.0000000</span>
+                  
+                </td>
+              </tr>
+            
+
+            <tr>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+            </tr>
+
+        
+      
+        
+            <tr>
+              
+                <td valign="top">
+                  
+                    5.&nbsp;
+                  
+                </td>
+                <td>
+                  <a rel="nofollow" href="https://docs.python.org/3/library/asyncio.html" class='result-link'>asyncio — Asynchronous I/O — Python 3.15.1 documentation</a>
+                </td>
+                
+            </tr>
+
+            
+              
+                <!-- Only show abstract separately if there's a click URL (not EOF) -->
+                <tr>
+                  <td>&nbsp;&nbsp;&nbsp;</td>
+                  <td class='result-snippet'>
+                    <b>asyncio</b> is a library to write concurrent code using the async/await syntax. <b>asyncio</b> is used as a foundation for multiple <b>Python</b> asynchronous frameworks that provide high-performance network and web-servers, database connection libraries, distributed task queues, etc. <b>asyncio</b> is often a perfect fit for IO-bound and high-level structured network code.
+                  </td>
+                </tr>
+              
+            
+
+            
+              <tr>
+                <td>&nbsp;&nbsp;&nbsp;</td>
+                <td>
+                  <span class='link-text'>docs.python.org/3/library/asyncio.html</span>
+                  
+                </td>
+              </tr>
+            
+
+            <tr>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+            </tr>
+
+        
+      
+        
+            <tr>
+              
+                <td valign="top">
+                  
+                    6.&nbsp;
+                  
+                </td>
+                <td>
+                  <a rel="nofollow" href="https://docs.python.org/3/howto/a-conceptual-overview-of-asyncio.html" class='result-link'>A conceptual overview of asyncio — Python 3.15.0 documentation</a>
+                </td>
+                
+            </tr>
+
+            
+              
+                <!-- Only show abstract separately if there's a click URL (not EOF) -->
+                <tr>
+                  <td>&nbsp;&nbsp;&nbsp;</td>
+                  <td class='result-snippet'>
+                    A conceptual overview part 1: the high-level ¶ In part 1, we&#x27;ll cover the main, high-level building blocks of <b>asyncio</b>: the event loop, coroutine functions, coroutine objects, tasks, and await. Event loop ¶ Everything in <b>asyncio</b> happens relative to the event loop. It&#x27;s the star of the show, but prefers to work behind the scenes, managing and coordinating resources. It&#x27;s like an ...
+                  </td>
+                </tr>
+              
+            
+
+            
+              <tr>
+                <td>&nbsp;&nbsp;&nbsp;</td>
+                <td>
+                  <span class='link-text'>docs.python.org/3/howto/a-conceptual-overview-of-asyncio.html</span>
+                  
+                    &nbsp;&nbsp;&nbsp;
+                    <span class='timestamp'>2026-10-21T00:00:00.0000000</span>
+                  
+                </td>
+              </tr>
+            
+
+            <tr>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+            </tr>
+
+        
+      
+        
+            <tr>
+              
+                <td valign="top">
+                  
+                    7.&nbsp;
+                  
+                </td>
+                <td>
+                  <a rel="nofollow" href="https://superfastpython.com/python-asyncio/" class='result-link'>Python Asyncio: The Complete Guide - SuperFastPython</a>
+                </td>
+                
+            </tr>
+
+            
+              
+                <!-- Only show abstract separately if there's a click URL (not EOF) -->
+                <tr>
+                  <td>&nbsp;&nbsp;&nbsp;</td>
+                  <td class='result-snippet'>
+                    <b>Python</b> <b>Asyncio</b> provides asynchronous programming with coroutines. Asynchronous programming is a popular programming paradigm that allows a large number of lightweight tasks to run concurrently with very little memory overhead, compared to threads. This makes <b>asyncio</b> very attractive and widely used for <b>Python</b> web development, <b>Python</b> APIs that make web calls, and concurrency for socket ...
+                  </td>
+                </tr>
+              
+            
+
+            
+              <tr>
+                <td>&nbsp;&nbsp;&nbsp;</td>
+                <td>
+                  <span class='link-text'>superfastpython.com/python-asyncio/</span>
+                  
+                </td>
+              </tr>
+            
+
+            <tr>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+            </tr>
+
+        
+      
+        
+            <tr>
+              
+                <td valign="top">
+                  
+                    8.&nbsp;
+                  
+                </td>
+                <td>
+                  <a rel="nofollow" href="https://www.datacamp.com/tutorial/python-async-programming" class='result-link'>Python Async Programming: The Complete Guide - DataCamp</a>
+                </td>
+                
+            </tr>
+
+            
+              
+                <!-- Only show abstract separately if there's a click URL (not EOF) -->
+                <tr>
+                  <td>&nbsp;&nbsp;&nbsp;</td>
+                  <td class='result-snippet'>
+                    Speed up your code with <b>Python</b> async programming. A step-by-step guide to <b>asyncio</b>, concurrency, efficient HTTP requests, and database integration.
+                  </td>
+                </tr>
+              
+            
+
+            
+              <tr>
+                <td>&nbsp;&nbsp;&nbsp;</td>
+                <td>
+                  <span class='link-text'>www.datacamp.com/tutorial/python-async-programming</span>
+                  
+                    &nbsp;&nbsp;&nbsp;
+                    <span class='timestamp'>2025-12-08T00:00:00.0000000</span>
+                  
+                </td>
+              </tr>
+            
+
+            <tr>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+            </tr>
+
+        
+      
+        
+            <tr>
+              
+                <td valign="top">
+                  
+                    9.&nbsp;
+                  
+                </td>
+                <td>
+                  <a rel="nofollow" href="https://www.youtube.com/watch?v=oAkLSJNr5zY" class='result-link'>Python Tutorial: AsyncIO - Complete Guide to Asynchronous Programming ...</a>
+                </td>
+                
+            </tr>
+
+            
+              
+                <!-- Only show abstract separately if there's a click URL (not EOF) -->
+                <tr>
+                  <td>&nbsp;&nbsp;&nbsp;</td>
+                  <td class='result-snippet'>
+                    By the end of this video, you&#x27;ll have a solid understanding of asynchronous programming in <b>Python</b> and know exactly when and how to use <b>AsyncIO</b> in your own projects.
+                  </td>
+                </tr>
+              
+            
+
+            
+              <tr>
+                <td>&nbsp;&nbsp;&nbsp;</td>
+                <td>
+                  <span class='link-text'>www.youtube.com/watch?v=oAkLSJNr5zY</span>
+                  
+                </td>
+              </tr>
+            
+
+            <tr>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+            </tr>
+
+        
+      
+        
+            <tr>
+              
+                <td valign="top">
+                  
+                    10.&nbsp;
+                  
+                </td>
+                <td>
+                  <a rel="nofollow" href="https://realpython.com/ref/stdlib/asyncio/" class='result-link'>asyncio | Python Standard Library - Real Python</a>
+                </td>
+                
+            </tr>
+
+            
+              
+                <!-- Only show abstract separately if there's a click URL (not EOF) -->
+                <tr>
+                  <td>&nbsp;&nbsp;&nbsp;</td>
+                  <td class='result-snippet'>
+                    In this example, <b>asyncio</b> efficiently manages the concurrent HTTP requests, allowing for faster retrieval of web pages. Related Resources Course Hands-On <b>Python</b> 3 Concurrency With the <b>asyncio</b> Module Learn how to speed up your <b>Python</b> 3 programs using concurrency and the <b>asyncio</b> module in the standard library.
+                  </td>
+                </tr>
+              
+            
+
+            
+              <tr>
+                <td>&nbsp;&nbsp;&nbsp;</td>
+                <td>
+                  <span class='link-text'>realpython.com/ref/stdlib/asyncio/</span>
+                  
+                </td>
+              </tr>
+            
+
+            <tr>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+            </tr>
+
+        
+      
+        
+            <tr>
+              
+                <td valign="top">
+                  
+                    11.&nbsp;
+                  
+                </td>
+                <td>
+                  <a rel="nofollow" href="https://www.w3schools.com/python/ref_module_asyncio.asp" class='result-link'>Python asyncio Module - W3Schools</a>
+                </td>
+                
+            </tr>
+
+            
+              
+                <!-- Only show abstract separately if there's a click URL (not EOF) -->
+                <tr>
+                  <td>&nbsp;&nbsp;&nbsp;</td>
+                  <td class='result-snippet'>
+                    The <b>asyncio</b> module provides an event loop, tasks, and I/O primitives for concurrent code. Use async / await to write structured asynchronous programs, schedule coroutines, and work with networking, subprocesses, and synchronization primitives.
+                  </td>
+                </tr>
+              
+            
+
+            
+              <tr>
+                <td>&nbsp;&nbsp;&nbsp;</td>
+                <td>
+                  <span class='link-text'>www.w3schools.com/python/ref_module_asyncio.asp</span>
+                  
+                </td>
+              </tr>
+            
+
+            <tr>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+            </tr>
+
+        
+      
+    
+
+    
+      
+      <tr>
+        <td colspan=2>
+          
+          
+            <!-- Next Page Button Sub-template -->
+<form class="next_form" action="/lite/" method="post">
+    <input type="submit" class='navbutton' value="Next Page &gt;">
+    <input type="hidden" name="q" value="python asyncio tutorial">
+    <input type="hidden" name="s" value="10">
+    <input type="hidden" name="nextParams" value="">
+    <input type="hidden" name="v" value="">
+    <input type="hidden" name="o" value="json">
+    <input type="hidden" name="dc" value="12">
+    <input type="hidden" name="api" value="d.js">
+    <input type="hidden" name="vqd" value="">
+    &nbsp;&nbsp;&nbsp;&nbsp;
+    
+    
+    
+      <input name="kl" value="wt-wt" type="hidden">
+    
+    
+    
+    
+</form>
+          
+          
+        </td>
+      </tr>
+    
+  </table>
+
+  <p class='extra'>&nbsp;</p>
+
+  <form action="/lite/" method="post">
+      <input class='query' type="text" size="40" name="q" value="python asyncio tutorial" >
+      <input class='submit' type="submit" value="Search">
+      
+      
+      
+      
+      
+        <input name="kl" value="wt-wt" type="hidden">
+      
+  </form>
+
+  <p class='extra'>&nbsp;</p>
+
+  
+    <img src="//duckduckgo.com/t/sl_l"/>
+  
+  <div id='end-spacer'>&nbsp;</div>
+
+</body>
+</html>

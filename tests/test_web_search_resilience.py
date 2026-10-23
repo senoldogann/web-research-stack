@@ -46,11 +46,7 @@ class OverlapRefusingSearch:
         self.refused = 0
 
     async def search(
-        self,
-        query: str,
-        limit: int,
-        *,
-        date_filter: Optional[str] = None,
+        self, query: str, limit: int, *, date_filter: Optional[str] = None
     ) -> list[SearchResult]:
         self.calls += 1
         if self.in_flight:
@@ -80,11 +76,7 @@ class ScriptedSearch:
         self.calls: list[str] = []
 
     async def search(
-        self,
-        query: str,
-        limit: int,
-        *,
-        date_filter: Optional[str] = None,
+        self, query: str, limit: int, *, date_filter: Optional[str] = None
     ) -> list[SearchResult]:
         self.calls.append(query)
         if self.stall:
@@ -164,7 +156,7 @@ class TestProviderPacing:
 
         assert settings.search_provider_concurrency == 1
         assert (settings.search_jitter_min_ms, settings.search_jitter_max_ms) == (250, 500)
-        assert settings.search_fallback_provider == "google"
+        assert settings.search_fallback_providers == ["duckduckgo_lite", "yahoo", "google"]
         assert settings.search_provider_cooldown_seconds == 5
 
     def test_settings_read_pacing_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -178,7 +170,7 @@ class TestProviderPacing:
 
         assert settings.search_provider_concurrency == 2
         assert (settings.search_jitter_min_ms, settings.search_jitter_max_ms) == (100, 100)
-        assert settings.search_fallback_provider == ""
+        assert settings.search_fallback_providers == []
         assert settings.search_provider_cooldown_seconds == 7
 
 
@@ -206,6 +198,10 @@ class TestGoogleFallback:
             "to": "google",
             "reason": "bot_detected",
             "error": None,
+            "tried": [
+                {"provider": "duckduckgo", "status": "failed", "reason": "bot_detected"},
+                {"provider": "google", "status": "answered", "reason": None},
+            ],
         }
         assert google.calls == ["oulu weather"]
 
@@ -213,11 +209,7 @@ class TestGoogleFallback:
     async def test_empty_answer_from_google_still_names_google(self) -> None:
         class EmptyGoogle(ScriptedSearch):
             async def search(
-                self,
-                query: str,
-                limit: int,
-                *,
-                date_filter: Optional[str] = None,
+                self, query: str, limit: int, *, date_filter: Optional[str] = None
             ) -> list[SearchResult]:
                 self.calls.append(query)
                 return []
@@ -278,11 +270,7 @@ class TestGoogleFallback:
     async def test_failed_fallback_is_reported_on_the_angle(self) -> None:
         class BaseOnlyRefused(ScriptedSearch):
             async def search(
-                self,
-                query: str,
-                limit: int,
-                *,
-                date_filter: Optional[str] = None,
+                self, query: str, limit: int, *, date_filter: Optional[str] = None
             ) -> list[SearchResult]:
                 self.calls.append(query)
                 if query == "asyncio":
@@ -350,11 +338,7 @@ class TestProviderCooldown:
     async def test_queued_calls_behind_a_failure_go_to_the_fallback(self) -> None:
         class RefuseFirst(ScriptedSearch):
             async def search(
-                self,
-                query: str,
-                limit: int,
-                *,
-                date_filter: Optional[str] = None,
+                self, query: str, limit: int, *, date_filter: Optional[str] = None
             ) -> list[SearchResult]:
                 self.calls.append(query)
                 await asyncio.sleep(0.01)

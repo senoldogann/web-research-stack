@@ -356,7 +356,69 @@ async def test_map_applies_search_filter_and_limit() -> None:
     result = await service.map(base, search="docs", limit=1)
 
     assert result["urls"] == ["https://example.com/docs/a"]
+    # total counts every match the limit cut; returned counts what came back.
+    assert result["total"] == 2
+    assert result["returned"] == 1
+    assert result["truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_map_of_an_unreachable_site_lists_nothing() -> None:
+    base = "https://this-domain-definitely-does-not-exist-xyz123.com/"
+    unresolved = FetchError(
+        "dns_error",
+        "Could not resolve host this-domain-definitely-does-not-exist-xyz123.com",
+        detail="this-domain-definitely-does-not-exist-xyz123.com",
+    )
+    fetcher = FakeFetcher(
+        {
+            base + "robots.txt": unresolved,
+            base + "sitemap.xml": unresolved,
+            base: unresolved,
+        }
+    )
+    service = _service(fetcher)
+
+    result = await service.map(base)
+
+    assert result["urls"] == []
+    assert result["entries"] == []
+    assert result["total"] == 0
+    assert result["returned"] == 0
+    assert result["truncated"] is False
+    assert [error["code"] for error in result["errors"]] == ["dns_error"] * 3
+    assert [error["url"] for error in result["errors"]] == [
+        base + "robots.txt",
+        base + "sitemap.xml",
+        base,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_map_lists_the_base_only_once_its_page_was_read() -> None:
+    base = "https://example.com/missing"
+    sitemap = FetchResult(
+        url="https://example.com/sitemap.xml",
+        final_url="https://example.com/sitemap.xml",
+        status_code=200,
+        content_type="application/xml",
+        html="""<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+        <url><loc>https://example.com/missing/child</loc></url>
+        </urlset>""",
+    )
+    fetcher = FakeFetcher(
+        {
+            "https://example.com/robots.txt": _html_result("https://example.com/robots.txt", ""),
+            "https://example.com/sitemap.xml": sitemap,
+        }
+    )
+    service = _service(fetcher)
+
+    result = await service.map(base)
+
+    assert result["urls"] == ["https://example.com/missing/child"]
     assert result["total"] == 1
+    assert [error["status_code"] for error in result["errors"]] == [404]
 
 
 def test_latency_tracker_reports_p50_and_p95() -> None:

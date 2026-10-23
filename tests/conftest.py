@@ -8,6 +8,8 @@ from pathlib import Path
 
 # The API lifespan warms a real Google browser; the tests must not.
 os.environ.setdefault("GOOGLE_WARMUP_ON_STARTUP", "false")
+# The crawl jobs the server keeps live in a data folder; a test keeps none there.
+os.environ.setdefault("WEB_TOOLS_DATA_DIR", "")
 
 ROOT = Path(__file__).resolve().parents[1]
 

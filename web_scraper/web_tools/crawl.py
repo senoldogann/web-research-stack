@@ -1,4 +1,4 @@
-"""Background crawl jobs with bounded BFS, robots, dedupe, and cancellation."""
+"""Background crawl jobs with bounded BFS, robots, dedupe, cancellation and a restart that keeps them."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Mapping, Optional
 from urllib.parse import urlsplit
 
+from web_scraper.web_tools.crawl_store import CrawlStore
 from web_scraper.web_tools.errors import WebToolError
 from web_scraper.web_tools.settings import WebToolsSettings
 from web_scraper.web_tools.urls import (
@@ -23,7 +24,22 @@ from web_scraper.web_tools.urls import (
 )
 
 PageLoader = Callable[[str], Awaitable[dict[str, Any]]]
-_TERMINAL = {"completed", "cancelled", "failed"}
+# The URLs a site's sitemaps list (in scope of the crawl's options), and the errors met reading them.
+SeedLoader = Callable[["str", "CrawlOptions"], Awaitable[tuple[list[str], list[dict[str, Any]]]]]
+# A job is over in one of these: ``interrupted`` is what a restart (or a stop) of the server
+# made of a job that was queued or running; it is not resumed.
+_TERMINAL = {"completed", "cancelled", "failed", "interrupted"}
+_COUNTERS = (
+    "discovered",
+    "seeded",
+    "pages_attempted",
+    "fetched",
+    "failed",
+    "skipped",
+    "duplicates",
+    "current_depth",
+    "queue_size",
+)
 
 
 @dataclass
@@ -34,6 +50,8 @@ class CrawlOptions:
     include_patterns: list[str] = field(default_factory=list)
     exclude_patterns: list[str] = field(default_factory=list)
     respect_robots: bool = True
+    # Seed the frontier from the site's sitemaps: pages no link reaches.
+    use_sitemap: bool = False
 
     @classmethod
     def from_dict(
@@ -72,6 +90,20 @@ class CrawlOptions:
                 if respect_robots_value is None
                 else bool(respect_robots_value)
             ),
+            use_sitemap=bool(values.get("use_sitemap") or False),
+        )
+
+    @classmethod
+    def from_stored(cls, data: Mapping[str, Any], settings: WebToolsSettings) -> CrawlOptions:
+        """Options as ``to_dict`` wrote them, kept as they were whatever the settings are now."""
+        return cls(
+            max_pages=max(_int(data.get("max_pages"), settings.default_crawl_pages), 1),
+            max_depth=max(_int(data.get("max_depth"), settings.default_crawl_depth), 0),
+            include_subdomains=bool(data.get("include_subdomains", False)),
+            include_patterns=_string_list(data.get("include_patterns")),
+            exclude_patterns=_string_list(data.get("exclude_patterns")),
+            respect_robots=bool(data.get("respect_robots", True)),
+            use_sitemap=bool(data.get("use_sitemap", False)),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -82,6 +114,7 @@ class CrawlOptions:
             "include_patterns": list(self.include_patterns),
             "exclude_patterns": list(self.exclude_patterns),
             "respect_robots": self.respect_robots,
+            "use_sitemap": self.use_sitemap,
         }
 
 
@@ -97,6 +130,7 @@ class CrawlJob:
     created_ts: float = field(default_factory=time.time)
     updated_ts: float = field(default_factory=time.time)
     discovered: int = 1
+    seeded: int = 0
     pages_attempted: int = 0
     fetched: int = 0
     failed: int = 0
@@ -113,6 +147,53 @@ class CrawlJob:
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     tasks: set[asyncio.Task[Any]] = field(default_factory=set)
     run_task: Optional[asyncio.Task[Any]] = None
+    # How many results the store holds, and whether the server is stopping (a job it ends
+    # is interrupted, not cancelled).
+    persisted: int = 0
+    stopping: bool = False
+
+    def record(self) -> dict[str, Any]:
+        """The job as the store keeps it, results apart."""
+        return {
+            "job_id": self.job_id,
+            "url": self.url,
+            "status": self.status,
+            "options": self.options.to_dict(),
+            "progress": {name: getattr(self, name) for name in _COUNTERS},
+            "errors": list(self.errors),
+            "duplicates": list(self.duplicate_entries),
+            "created_at": self.created_at,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "created_ts": self.created_ts,
+            "updated_ts": self.updated_ts,
+        }
+
+    @classmethod
+    def from_record(cls, record: Mapping[str, Any], settings: WebToolsSettings) -> CrawlJob:
+        counters = {
+            name: _int((record.get("progress") or {}).get(name), 0)
+            for name in _COUNTERS
+            if name != "discovered"
+        }
+        counters["discovered"] = _int((record.get("progress") or {}).get("discovered"), 1)
+        results = list(record.get("results") or [])
+        return cls(
+            job_id=str(record["job_id"]),
+            url=str(record["url"]),
+            options=CrawlOptions.from_stored(record.get("options") or {}, settings),
+            status=str(record["status"]),
+            created_at=record.get("created_at") or _iso(float(record["created_ts"])),
+            started_at=record.get("started_at"),
+            finished_at=record.get("finished_at"),
+            created_ts=float(record["created_ts"]),
+            updated_ts=float(record["updated_ts"]),
+            results=results,
+            errors=list(record.get("errors") or []),
+            duplicate_entries=list(record.get("duplicates") or []),
+            persisted=len(results),
+            **counters,
+        )
 
     def snapshot(self) -> dict[str, Any]:
         terminal = self.status in _TERMINAL
@@ -134,6 +215,7 @@ class CrawlJob:
             "options": self.options.to_dict(),
             "progress": {
                 "discovered": self.discovered,
+                "seeded": self.seeded,
                 "pages_attempted": self.pages_attempted,
                 "fetched": self.fetched,
                 "failed": self.failed,
@@ -157,11 +239,17 @@ class CrawlManager:
         loader: PageLoader,
         settings: WebToolsSettings,
         robots: Any = None,
+        seeder: Optional[SeedLoader] = None,
+        store: Optional[CrawlStore] = None,
     ) -> None:
         self._loader = loader
         self._settings = settings
         self._robots = robots
+        self._seeder = seeder
+        self._store = store
         self._jobs: dict[str, CrawlJob] = {}
+        if store is not None:
+            self._restore()
 
     async def create(
         self,
@@ -181,6 +269,7 @@ class CrawlManager:
         if upgraded:
             job.upgraded.add(url)
         self._jobs[job.job_id] = job
+        self._persist(job)
         job.run_task = asyncio.create_task(self._run(job))
         return job.snapshot()
 
@@ -227,6 +316,7 @@ class CrawlManager:
             job.updated_ts = time.time()
         elif job.status != "cancelled":
             job.status = "cancelling"
+        self._persist(job)
         return job.snapshot()
 
     async def list_jobs(self) -> list[dict[str, Any]]:
@@ -234,8 +324,11 @@ class CrawlManager:
         return [job.snapshot() for job in self._jobs.values()]
 
     async def close(self) -> None:
+        """Stop the jobs still going: each is interrupted, kept as far as it got, not resumed."""
         tasks: list[asyncio.Task[Any]] = []
         for job in self._jobs.values():
+            if job.status not in _TERMINAL:
+                job.stopping = True
             job.cancel_event.set()
             for task in list(job.tasks):
                 task.cancel()
@@ -245,21 +338,66 @@ class CrawlManager:
                 tasks.append(job.run_task)
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        for job in self._jobs.values():
+            if job.stopping and job.status not in _TERMINAL:
+                self._interrupt(job)  # a task cancelled before it began never ended its job
+
+    def _interrupt(self, job: CrawlJob) -> None:
+        job.status = "interrupted"
+        job.finished_at = _iso(time.time())
+        job.updated_ts = time.time()
+        self._persist(job)
+
+    def _restore(self) -> None:
+        """Read the jobs the store kept; those that were going when the server ended are over.
+
+        A job that was queued or running is ``interrupted`` (its pages stay readable; it is
+        not resumed), one that was being cancelled is ``cancelled``. Pruning then holds the
+        bounds on what was left on disk.
+        """
+        assert self._store is not None
+        for record in self._store.load():
+            try:
+                job = CrawlJob.from_record(record, self._settings)
+            except (KeyError, TypeError, ValueError):
+                continue  # a row this version cannot read is left alone, and pruned in time
+            self._jobs[job.job_id] = job
+            if job.status in {"queued", "running"}:
+                self._interrupt(job)
+            elif job.status == "cancelling":
+                job.status = "cancelled"
+                job.updated_ts = time.time()
+                self._persist(job)
+        self._prune()
+
+    def _persist(self, job: CrawlJob) -> None:
+        """Write the job's state, and the results the store does not hold yet."""
+        if self._store is None:
+            return
+        self._store.save_job(job.record())
+        fresh = job.results[job.persisted :]
+        if fresh:
+            self._store.append_results(job.job_id, job.persisted, fresh)
+            job.persisted = len(job.results)
 
     async def _run(self, job: CrawlJob) -> None:
         if job.cancel_event.is_set():
-            job.status = "cancelled"
+            job.status = "interrupted" if job.stopping else "cancelled"
+            self._persist(job)
             return
 
         job.status = "running"
         job.started_at = _iso(time.time())
         job.updated_ts = time.time()
+        self._persist(job)
         queue: deque[tuple[str, int]] = deque([(job.url, 0)])
         # One entry per host and path: http and https are the same page.
         seen_urls = {_identity(job.url)}
         seen_hashes: dict[str, str] = {}
 
         try:
+            queue.extend(await self._seeds(job, seen_urls))
+            job.queue_size = len(queue)
             while queue and job.pages_attempted < job.options.max_pages:
                 if job.cancel_event.is_set():
                     break
@@ -320,13 +458,14 @@ class CrawlManager:
 
                 job.queue_size = len(queue)
                 job.updated_ts = time.time()
+                self._persist(job)
 
             if job.cancel_event.is_set():
-                job.status = "cancelled"
+                job.status = "interrupted" if job.stopping else "cancelled"
             else:
                 job.status = "completed"
         except asyncio.CancelledError:
-            job.status = "cancelled"
+            job.status = "interrupted" if job.stopping else "cancelled"
         except Exception as exc:  # noqa: BLE001 - job must not crash the process
             job.status = "failed"
             self._record_error(job, job.url, "internal_error", type(exc).__name__)
@@ -334,6 +473,54 @@ class CrawlManager:
             job.queue_size = len(queue)
             job.finished_at = _iso(time.time())
             job.updated_ts = time.time()
+            self._persist(job)
+
+    async def _seeds(self, job: CrawlJob, seen_urls: set[str]) -> list[tuple[str, int]]:
+        """The sitemaps' pages as the first of the frontier, when the job asked for them.
+
+        They are the start page's equals (depth 0, so their links are followed as ever),
+        in the sitemap's order, kept in scope, through the filters and behind robots.txt,
+        and they count against ``max_pages`` like any page: no more are queued than the
+        crawl could read. A sitemap that cannot be read is an error of the job, not its end.
+        """
+        if not job.options.use_sitemap or self._seeder is None:
+            return []
+        try:
+            urls, errors = await self._seeder(job.url, job.options)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the links still lead the crawl
+            self._record_error(job, job.url, "sitemap_failed", type(exc).__name__)
+            return []
+        for error in errors:
+            if str(error.get("url") or "").endswith("/robots.txt"):
+                continue  # a site without robots.txt is a site without Sitemap lines
+            self._record_error(
+                job,
+                str(error.get("url") or job.url),
+                str(error.get("code") or "sitemap_error"),
+                str(error.get("message") or ""),
+            )
+        seeds: list[tuple[str, int]] = []
+        room = max(job.options.max_pages - 1, 0)
+        for url in urls:
+            if len(seeds) >= room:
+                break
+            key = _identity(url)
+            if key in seen_urls or not self._in_scope(url, job.url, job.options):
+                continue
+            if (
+                job.options.respect_robots
+                and self._robots is not None
+                and not await self._robots.allowed(url)
+            ):
+                job.skipped += 1
+                continue
+            seen_urls.add(key)
+            seeds.append((self._target(job, url), 0))
+        job.seeded = len(seeds)
+        job.discovered += len(seeds)
+        return seeds
 
     async def _process(
         self,
@@ -429,7 +616,7 @@ class CrawlManager:
             and now - job.updated_ts > self._settings.crawl_job_ttl_seconds
         ]
         for job_id in expired:
-            self._jobs.pop(job_id, None)
+            self._forget(job_id)
 
         if len(self._jobs) < self._settings.max_crawl_jobs:
             return
@@ -439,7 +626,13 @@ class CrawlManager:
         )
         while terminal and len(self._jobs) >= self._settings.max_crawl_jobs:
             job = terminal.pop(0)
-            self._jobs.pop(job.job_id, None)
+            self._forget(job.job_id)
+
+    def _forget(self, job_id: str) -> None:
+        """Drop a job from memory and from the store: the bounds hold on disk too."""
+        self._jobs.pop(job_id, None)
+        if self._store is not None:
+            self._store.delete_job(job_id)
 
 
 def _iso(timestamp: float) -> str:

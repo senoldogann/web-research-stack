@@ -1,0 +1,649 @@
+{
+  "generated_at": "2026-10-22T16:37:13+00:00",
+  "provider": "duckduckgo",
+  "depth": "discover",
+  "limit": 8,
+  "k": 5,
+  "fixture": "/Users/dogan/Library/Application Support/Dot/workspace/web-research-integration/benchmarks/search_relevance_queries.json",
+  "summary": {
+    "queries": 10,
+    "answered": 10,
+    "failed": 0,
+    "mean_ndcg_at_5": 0.8374,
+    "mean_mrr": 0.85,
+    "official_hit_at_3": 1.0,
+    "freshness_hit_at_5": 1.0,
+    "mean_unique_domains_at_5": 4.1
+  },
+  "results": [
+    {
+      "query": "python asyncio best practices",
+      "metrics": {
+        "ndcg_at_5": 0.9469,
+        "mrr": 1.0,
+        "relevant_at_5": 3,
+        "official_hit_at_3": true,
+        "freshness_hit_at_5": null,
+        "unique_domains_at_5": 4
+      },
+      "warnings": [],
+      "cache_hit": false,
+      "candidate_count": 36,
+      "wall_ms": 6521.94,
+      "top": [
+        {
+          "title": "Developing with asyncio — Python 3.15.0 documentation",
+          "url": "https://docs.python.org/3.15/library/asyncio-dev.html",
+          "domain": "docs.python.org",
+          "source_type": "official",
+          "year": null,
+          "recency": "unknown",
+          "score": 0.785798
+        },
+        {
+          "title": "Asyncio best practices - Async-SIG - Discussions on Python.org",
+          "url": "https://discuss.python.org/t/asyncio-best-practices/12576",
+          "domain": "discuss.python.org",
+          "source_type": "official",
+          "year": null,
+          "recency": "unknown",
+          "score": 0.711355
+        },
+        {
+          "title": "Mastering Python Async Patterns: A Complete Guide to asyncio in 2026",
+          "url": "https://dev.to/shehzan/mastering-python-async-patterns-a-complete-guide-to-asyncio-in-2026-10o6",
+          "domain": "dev.to",
+          "source_type": "community",
+          "year": 2026,
+          "recency": "current",
+          "score": 0.60494
+        },
+        {
+          "title": "Modern Python Best Practices: The 2026 Definitive Guide",
+          "url": "https://onehorizon.ai/blog/modern-python-best-practices-the-2026-definitive-guide",
+          "domain": "onehorizon.ai",
+          "source_type": "other",
+          "year": 2026,
+          "recency": "current",
+          "score": 0.595561
+        },
+        {
+          "title": "asyncio — Asynchronous I/O — Python 3.15.0 documentation",
+          "url": "https://docs.python.org/3/library/asyncio.html",
+          "domain": "docs.python.org",
+          "source_type": "official",
+          "year": null,
+          "recency": "unknown",
+          "score": 0.646717
+        }
+      ]
+    },
+    {
+      "query": "python httpx async client timeout",
+      "metrics": {
+        "ndcg_at_5": 0.6241,
+        "mrr": 0.5,
+        "relevant_at_5": 2,
+        "official_hit_at_3": true,
+        "freshness_hit_at_5": null,
+        "unique_domains_at_5": 4
+      },
+      "warnings": [
+        "provider_fallback"
+      ],
+      "cache_hit": false,
+      "candidate_count": 13,
+      "wall_ms": 7884.45,
+      "top": [
+        {
+          "title": "python - Httpx requests timing out when it shouldn't",
+          "url": "https://stackoverflow.com/questions/78287675/httpx-requests-timing-out-when-it-shouldnt",
+          "domain": "stackoverflow.com",
+          "source_type": "community",
+          "year": null,
+          "recency": "unknown",
+          "score": 0.77028
+        },
+        {
+          "title": "Exceptions",
+          "url": "https://www.python-httpx.org/exceptions",
+          "domain": "python-httpx.org",
+          "source_type": "official",
+          "year": null,
+          "recency": "unknown",
+          "score": 0.766786
+        },
+        {
+          "title": "Does timeout=None work on httpx.AsyncClient.stream?",
+          "url": "https://github.com/encode/httpx/discussions/2055",
+          "domain": "github.com",
+          "source_type": "code",
+          "year": 2022,
+          "recency": "recent",
+          "score": 0.689714
+        },
+        {
+          "title": "How to Use httpx for Async HTTP Requests",
+          "url": "https://oneuptime.com/blog/post/2026-02-03-python-httpx-async-requests/view",
+          "domain": "oneuptime.com",
+          "source_type": "other",
+          "year": 2026,
+          "recency": "current",
+          "score": 0.632066
+        },
+        {
+          "title": "Timeouts",
+          "url": "https://www.python-httpx.org/advanced/timeouts",
+          "domain": "python-httpx.org",
+          "source_type": "official",
+          "year": null,
+          "recency": "unknown",
+          "score": 0.623074
+        }
+      ]
+    },
+    {
+      "query": "rust tokio select cancellation",
+      "metrics": {
+        "ndcg_at_5": 1.0,
+        "mrr": 1.0,
+        "relevant_at_5": 1,
+        "official_hit_at_3": true,
+        "freshness_hit_at_5": null,
+        "unique_domains_at_5": 5
+      },
+      "warnings": [],
+      "cache_hit": false,
+      "candidate_count": 35,
+      "wall_ms": 6759.69,
+      "top": [
+        {
+          "title": "select in tokio - Rust - Docs.rs",
+          "url": "https://docs.rs/tokio/latest/tokio/macro.select.html",
+          "domain": "docs.rs",
+          "source_type": "official",
+          "year": null,
+          "recency": "unknown",
+          "score": 0.934345
+        },
+        {
+          "title": "Cancellation Safety - Async Rust & Tokio Internals",
+          "url": "https://its-saeed.github.io/learn-by-building/async/24-cancellation.html",
+          "domain": "its-saeed.github.io",
+          "source_type": "code",
+          "year": null,
+          "recency": "unknown",
+          "score": 0.701268
+        },
+        {
+          "title": "select in tokio - Rust - University of California, San Diego",
+          "url": "https://cseweb.ucsd.edu/classes/sp22/cse223B-a/tribbler/tokio/macro.select.html",
+          "domain": "cseweb.ucsd.edu",
+          "source_type": "academic",
+          "year": null,
+          "recency": "unknown",
+          "score": 0.618576
+        },
+        {
+          "title": "Cancellation Safety in different Rust AsyncRuntimes",
+          "url": "https://bshn.rs/blog/2026-04-01-cancellation-safety-in-async-rust-runtimes",
+          "domain": "bshn.rs",
+          "source_type": "other",
+          "year": 2026,
+          "recency": "current",
+          "score": 0.589916
+        },
+        {
+          "title": "Chapter 34: select!, Cancellation, and Timeouts - The Rust Mastery Handbook",
+          "url": "https://lavkushry.github.io/The-Rust-Mastery-Handbook/part-05/chapter-34-select-cancellation-and-timeouts.html",
+          "domain": "lavkushry.github.io",
+          "source_type": "code",
+          "year": null,
+          "recency": "unknown",
+          "score": 0.636893
+        }
+      ]
+    },
+    {
+      "query": "postgresql full text search tsvector",
+      "metrics": {
+        "ndcg_at_5": 0.8529,
+        "mrr": 1.0,
+        "relevant_at_5": 3,
+        "official_hit_at_3": true,
+        "freshness_hit_at_5": null,
+        "unique_domains_at_5": 3
+      },
+      "warnings": [],
+      "cache_hit": false,
+      "candidate_count": 27,
+      "wall_ms": 5173.64,
+      "top": [
+        {
+          "title": "PostgreSQL: Documentation: 18: 8.11. Text Search Types",
+          "url": "https://www.postgresql.org/docs/current/datatype-textsearch.html",
+          "domain": "postgresql.org",
+          "source_type": "official",
+          "year": null,
+          "recency": "unknown",
+          "score": 0.599738
+        },
+        {
+          "title": "Full-text search in PostgreSQL with tsvector and tsquery",
+          "url": "https://stackharbor.com/en/knowledge-base/pg-full-text-search-tsvector",
+          "domain": "stackharbor.com",
+          "source_type": "other",
+          "year": 2026,
+          "recency": "current",
+          "score": 0.520044
+        },
+        {
+          "title": "How to Implement Full-Text Search in PostgreSQL",
+          "url": "https://oneuptime.com/blog/post/2026-01-21-postgresql-full-text-search/view",
+          "domain": "oneuptime.com",
+          "source_type": "other",
+          "year": 2026,
+          "recency": "current",
+          "score": 0.506934
+        },
+        {
+          "title": "PostgreSQL: Documentation: 14: 12.3. Controlling Text Search",
+          "url": "https://www.postgresql.org/docs/14/textsearch-controls.html",
+          "domain": "postgresql.org",
+          "source_type": "official",
+          "year": null,
+          "recency": "unknown",
+          "score": 0.506032
+        },
+        {
+          "title": "9.13. Text Search Functions and Operators - PostgreSQL",
+          "url": "https://www.postgresql.org/docs/current/functions-textsearch.html",
+          "domain": "postgresql.org",
+          "source_type": "official",
+          "year": null,
+          "recency": "unknown",
+          "score": 0.486556
+        }
+      ]
+    },
+    {
+      "query": "react useEffect cleanup",
+      "metrics": {
+        "ndcg_at_5": 1.0,
+        "mrr": 1.0,
+        "relevant_at_5": 1,
+        "official_hit_at_3": true,
+        "freshness_hit_at_5": null,
+        "unique_domains_at_5": 5
+      },
+      "warnings": [
+        "provider_fallback"
+      ],
+      "cache_hit": false,
+      "candidate_count": 16,
+      "wall_ms": 5073.15,
+      "top": [
+        {
+          "title": "useEffect",
+          "url": "https://react.dev/reference/react/useEffect",
+          "domain": "react.dev",
+          "source_type": "official",
+          "year": null,
+          "recency": "unknown",
+          "score": 0.91796
+        },
+        {
+          "title": "Understanding React's useEffect cleanup function",
+          "url": "https://blog.logrocket.com/understanding-react-useeffect-cleanup-function",
+          "domain": "blog.logrocket.com",
+          "source_type": "other",
+          "year": 2024,
+          "recency": "recent",
+          "score": 0.749307
+        },
+        {
+          "title": "Why is the cleanup function from `useEffect` called on ...",
+          "url": "https://stackoverflow.com/questions/57023074/why-is-the-cleanup-function-from-useeffect-called-on-every-render",
+          "domain": "stackoverflow.com",
+          "source_type": "community",
+          "year": null,
+          "recency": "unknown",
+          "score": 0.566839
+        },
+        {
+          "title": "Why is useEffect cleanup important in React even if ...",
+          "url": "https://github.com/orgs/community/discussions/189179",
+          "domain": "github.com",
+          "source_type": "code",
+          "year": 2026,
+          "recency": "current",
+          "score": 0.518738
+        },
+        {
+          "title": "The useEffect cleanup and the two circumstances it's called.",
+          "url": "https://reacttraining.com/blog/useEffect-cleanup",
+          "domain": "reacttraining.com",
+          "source_type": "other",
+          "year": 2023,
+          "recency": "recent",
+          "score": 0.571221
+        }
+      ]
+    },
+    {
+      "query": "latest python release",
+      "metrics": {
+        "ndcg_at_5": 0.9829,
+        "mrr": 1.0,
+        "relevant_at_5": 4,
+        "official_hit_at_3": true,
+        "freshness_hit_at_5": true,
+        "unique_domains_at_5": 3
+      },
+      "warnings": [
+        "provider_fallback"
+      ],
+      "cache_hit": false,
+      "candidate_count": 32,
+      "wall_ms": 6408.35,
+      "top": [
+        {
+          "title": "Python Release Python 3.15.1 | Python.org",
+          "url": "https://www.python.org/downloads/latest/python3.15",
+          "domain": "python.org",
+          "source_type": "official",
+          "year": 2026,
+          "recency": "current",
+          "score": 0.962717
+        },
+        {
+          "title": "Python Release Python 3.11.17 | Python.org",
+          "url": "https://www.python.org/downloads/latest/python3.11",
+          "domain": "python.org",
+          "source_type": "official",
+          "year": 2026,
+          "recency": "current",
+          "score": 0.921312
+        },
+        {
+          "title": "Python Release Python 3.15.0 | Python.org",
+          "url": "https://www.python.org/downloads/latest",
+          "domain": "python.org",
+          "source_type": "official",
+          "year": null,
+          "recency": "unknown",
+          "score": 0.908129
+        },
+        {
+          "title": "Latest Python Releases, Changelog & Updates - ReleaseBytes",
+          "url": "https://releasebytes.com/python",
+          "domain": "releasebytes.com",
+          "source_type": "other",
+          "year": null,
+          "recency": "unknown",
+          "score": 0.753629
+        },
+        {
+          "title": "Status of Python versions",
+          "url": "https://devguide.python.org/versions",
+          "domain": "devguide.python.org",
+          "source_type": "official",
+          "year": null,
+          "recency": "unknown",
+          "score": 0.852288
+        }
+      ]
+    },
+    {
+      "query": "Türkiye yapay zeka eylem planı 2026",
+      "metrics": {
+        "ndcg_at_5": 0.0,
+        "mrr": 0.0,
+        "relevant_at_5": 0,
+        "official_hit_at_3": true,
+        "freshness_hit_at_5": true,
+        "unique_domains_at_5": 5
+      },
+      "warnings": [
+        "provider_fallback"
+      ],
+      "cache_hit": false,
+      "candidate_count": 14,
+      "wall_ms": 3158.98,
+      "top": [
+        {
+          "title": "Türkiye Yapay Zekâ Eylem Planı",
+          "url": "https://www.sanayi.gov.tr/yapayzekaeylemplani",
+          "domain": "sanayi.gov.tr",
+          "source_type": "official",
+          "year": null,
+          "recency": "unknown",
+          "score": 0.889621
+        },
+        {
+          "title": "Türkiye Yapay Zekâ Eylem Planı",
+          "url": "https://tr.wikipedia.org/wiki/T%C3%BCrkiye_Yapay_Zek%C3%A2_Eylem_Plan%C4%B1",
+          "domain": "tr.wikipedia.org",
+          "source_type": "reference",
+          "year": 2026,
+          "recency": "current",
+          "score": 0.805956
+        },
+        {
+          "title": "Türkiye 2026 Yılı Yapay Zeka Eylem Planı Yayımlandı",
+          "url": "https://www.lexology.com/library/detail.aspx?g=2bc38c45-7a9b-487e-ad0a-a1181296c679",
+          "domain": "lexology.com",
+          "source_type": "other",
+          "year": 2026,
+          "recency": "current",
+          "score": 0.743908
+        },
+        {
+          "title": "Türkiye Yapay Zeka Eylem Planı (2026-2030) · YZTD",
+          "url": "https://yztd.org.tr/tr/yayinlar/turkiye-yapay-zeka-eylem-plani",
+          "domain": "yztd.org.tr",
+          "source_type": "other",
+          "year": 2026,
+          "recency": "current",
+          "score": 0.672211
+        },
+        {
+          "title": "Türkiye Yapay Zekâ Eylem Planı (2026-2030)",
+          "url": "https://www.alomaliye.com/2026/08/18/turkiye-yapay-zeka-eylem-plani-2026-2030?srsltid=AYCX9vLNdsUwcIATjGUPH4ybd1oSfvAYpDfqvhGZnQSgVNTC3O5gSe-B",
+          "domain": "alomaliye.com",
+          "source_type": "other",
+          "year": 2026,
+          "recency": "current",
+          "score": 0.637686
+        }
+      ]
+    },
+    {
+      "query": "sqlite fts5 bm25",
+      "metrics": {
+        "ndcg_at_5": 1.0,
+        "mrr": 1.0,
+        "relevant_at_5": 1,
+        "official_hit_at_3": true,
+        "freshness_hit_at_5": null,
+        "unique_domains_at_5": 5
+      },
+      "warnings": [],
+      "cache_hit": false,
+      "candidate_count": 31,
+      "wall_ms": 7485.5,
+      "top": [
+        {
+          "title": "SQLite FTS5 Extension",
+          "url": "https://sqlite.org/fts5.html",
+          "domain": "sqlite.org",
+          "source_type": "official",
+          "year": null,
+          "recency": "unknown",
+          "score": 0.879478
+        },
+        {
+          "title": "GitHub - midclique/sqlite-bm25-search: Fast local file search using ...",
+          "url": "https://github.com/midclique/sqlite-bm25-search",
+          "domain": "github.com",
+          "source_type": "code",
+          "year": null,
+          "recency": "unknown",
+          "score": 0.747014
+        },
+        {
+          "title": "SQLite FTS5: Full-Text Search, BM25 Relevance & Snippets | VD Docs",
+          "url": "https://docs.vishnudigital.com/tutorials/sql/sqlite/advanced/full-text-search",
+          "domain": "docs.vishnudigital.com",
+          "source_type": "other",
+          "year": null,
+          "recency": "unknown",
+          "score": 0.682304
+        },
+        {
+          "title": "Full-Text Search in SQLite with FTS5 — Mako",
+          "url": "https://mako.ai/guides/sqlite/full-text-search",
+          "domain": "mako.ai",
+          "source_type": "other",
+          "year": null,
+          "recency": "unknown",
+          "score": 0.630535
+        },
+        {
+          "title": "SQLite FTS5 全文检索深度解析 | 侯瑞哲的博客",
+          "url": "https://ruizhehou.github.io/2026/05/02/SQLite-FTS5%E5%85%A8%E6%96%87%E6%A3%80%E7%B4%A2",
+          "domain": "ruizhehou.github.io",
+          "source_type": "code",
+          "year": 2026,
+          "recency": "current",
+          "score": 0.62681
+        }
+      ]
+    },
+    {
+      "query": "MDN AbortController",
+      "metrics": {
+        "ndcg_at_5": 0.9675,
+        "mrr": 1.0,
+        "relevant_at_5": 3,
+        "official_hit_at_3": true,
+        "freshness_hit_at_5": null,
+        "unique_domains_at_5": 3
+      },
+      "warnings": [],
+      "cache_hit": false,
+      "candidate_count": 39,
+      "wall_ms": 6290.92,
+      "top": [
+        {
+          "title": "AbortController - Web APIs | MDN",
+          "url": "https://developer.mozilla.org/en-US/docs/Web/API/AbortController",
+          "domain": "developer.mozilla.org",
+          "source_type": "official",
+          "year": null,
+          "recency": "unknown",
+          "score": 0.966307
+        },
+        {
+          "title": "AbortController: abort () method - Web APIs | MDN",
+          "url": "https://developer.mozilla.org/en-US/docs/Web/API/AbortController/abort",
+          "domain": "developer.mozilla.org",
+          "source_type": "official",
+          "year": null,
+          "recency": "unknown",
+          "score": 0.933431
+        },
+        {
+          "title": "Microsoft Edge 154 web platform release notes (Sep. 24, 2026)",
+          "url": "https://learn.microsoft.com/en-us/microsoft-edge/web-platform/release-notes/154",
+          "domain": "learn.microsoft.com",
+          "source_type": "official",
+          "year": 2026,
+          "recency": "current",
+          "score": 0.802959
+        },
+        {
+          "title": "AbortController: AbortController() constructor - Web APIs | MDN",
+          "url": "https://developer.mozilla.org/en-US/docs/Web/API/AbortController/AbortController",
+          "domain": "developer.mozilla.org",
+          "source_type": "official",
+          "year": null,
+          "recency": "unknown",
+          "score": 0.797041
+        },
+        {
+          "title": "AbortController - Web API | MDN - MDN 文档",
+          "url": "https://mdn.org.cn/en-US/docs/Web/API/AbortController",
+          "domain": "mdn.org.cn",
+          "source_type": "reference",
+          "year": null,
+          "recency": "unknown",
+          "score": 0.621316
+        }
+      ]
+    },
+    {
+      "query": "OpenSearch reciprocal rank fusion",
+      "metrics": {
+        "ndcg_at_5": 1.0,
+        "mrr": 1.0,
+        "relevant_at_5": 3,
+        "official_hit_at_3": true,
+        "freshness_hit_at_5": null,
+        "unique_domains_at_5": 4
+      },
+      "warnings": [],
+      "cache_hit": false,
+      "candidate_count": 27,
+      "wall_ms": 6570.34,
+      "top": [
+        {
+          "title": "Reciprocal rank fusion | OpenSearch Documentation",
+          "url": "https://docs.opensearch.org/latest/vector-search/ai-search/hybrid-search/rrf",
+          "domain": "docs.opensearch.org",
+          "source_type": "official",
+          "year": null,
+          "recency": "unknown",
+          "score": 0.974615
+        },
+        {
+          "title": "Introducing reciprocal rank fusion for hybrid search - OpenSearch",
+          "url": "https://opensearch.org/blog/introducing-reciprocal-rank-fusion-hybrid-search",
+          "domain": "opensearch.org",
+          "source_type": "official",
+          "year": null,
+          "recency": "unknown",
+          "score": 0.947019
+        },
+        {
+          "title": "Score ranker processor | OpenSearch Documentation",
+          "url": "https://docs.opensearch.org/latest/search-plugins/search-pipelines/score-ranker-processor",
+          "domain": "docs.opensearch.org",
+          "source_type": "official",
+          "year": null,
+          "recency": "unknown",
+          "score": 0.904346
+        },
+        {
+          "title": "Reciprocal Rank Fusion: the one-line algorithm behind hybrid search",
+          "url": "https://blog.serghei.pl/posts/reciprocal-rank-fusion-explained",
+          "domain": "blog.serghei.pl",
+          "source_type": "other",
+          "year": null,
+          "recency": "unknown",
+          "score": 0.718526
+        },
+        {
+          "title": "What Is RRF (Reciprocal Rank Fusion)? A Deep Dive into Hybrid Search ...",
+          "url": "https://yuhi-sa.github.io/en/posts/20260720_rrf/1",
+          "domain": "yuhi-sa.github.io",
+          "source_type": "code",
+          "year": null,
+          "recency": "unknown",
+          "score": 0.660851
+        }
+      ]
+    }
+  ],
+  "failures": []
+}

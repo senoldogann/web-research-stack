@@ -31,7 +31,7 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Optional
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -68,7 +68,9 @@ class RefusingDuckDuckGo:
 
     name = "duckduckgo"
 
-    async def search(self, query: str, limit: int) -> list[SearchResult]:
+    async def search(
+        self, query: str, limit: int, *, date_filter: Optional[str] = None
+    ) -> list[SearchResult]:
         raise WebToolError("search_failed", "DuckDuckGo refused the search", detail="bot_detected")
 
 

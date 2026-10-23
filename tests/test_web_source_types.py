@@ -23,7 +23,7 @@ from web_scraper.web_tools.search import SearchResult
         ("https://www.eduskunta.fi/EN/Pages/default.aspx", "official"),
         ("https://www.oamk.fi/en/", "official"),
         ("https://www.oulu.fi/en/university", "academic"),
-        ("https://yle.fi/a/74-20150000", "official"),
+        ("https://yle.fi/a/74-20150000", "news"),
         ("https://eur-lex.europa.eu/eli/reg/2024/1689/oj", "official"),
         ("https://digital-strategy.ec.europa.eu/en/policies/regulatory-framework-ai", "official"),
         ("https://commission.europa.eu/news/ai-act-enters-force-2024-08-01_en", "official"),

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
 import pytest
 
 from web_scraper.api_runtime import InMemoryTTLCache
 from web_scraper.web_tools.discovery import (
+    MIN_RESULT_RELEVANCE,
     MIN_RESULT_SCORE,
     DiscoveryCandidate,
     has_relevant_result,
@@ -36,11 +39,7 @@ class StaticSearch:
         self.only = only
 
     async def search(
-        self,
-        query: str,
-        limit: int,
-        *,
-        date_filter: str | None = None,
+        self, query: str, limit: int, *, date_filter: Optional[str] = None
     ) -> list[SearchResult]:
         if self.only and query != self.only:
             return []
@@ -114,8 +113,10 @@ def test_low_scoring_relevant_result_is_kept_when_nothing_scores_higher() -> Non
 
     results = rank_candidates(query, [weak], 5, year_now=2026)
 
+    # Alone it scores under the floor of a listed result, and it is listed all the same: BM25 is
+    # not scaled to the best match of the pool (here itself), or it would always reach it.
     assert [item["url"] for item in results] == [weak.result.url]
-    assert 0 < results[0]["relevance"] < 1
+    assert 0 < results[0]["relevance"] < MIN_RESULT_RELEVANCE
     assert results[0]["score"] < MIN_RESULT_SCORE
 
 

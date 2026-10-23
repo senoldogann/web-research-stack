@@ -1,10 +1,19 @@
-"""DuckDuckGo Search integration - privacy-friendly, less bot protection."""
+"""DuckDuckGo Search integration - privacy-friendly, less bot protection.
+
+Two endpoints over plain HTTP, the html one and the lite one. Both answer HTTP 202 with a
+duck-picking challenge to a request that does not look like their own form's: a live probe
+(2026-10-23) of ``q`` and ``kl`` alone, as a GET to the html endpoint and as a POST to the
+lite one, was refused, while a POST of the fields the form itself sends (``s``, ``o``,
+``api``, ``vqd``, ``bing_market``) was answered with results, in one request. So a search is
+one POST of those fields, from one long-lived client that keeps its cookies and sends the
+headers of the browser it impersonates, none of them overridden.
+"""
 
 import asyncio
-import random
 import re
-from typing import Dict, List, Optional, Tuple
-from urllib.parse import quote_plus, unquote, urlparse
+from datetime import date
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import unquote, urlparse
 
 from bs4 import BeautifulSoup
 from curl_cffi import requests
@@ -17,17 +26,63 @@ class DuckDuckGoBlocked(RuntimeError):
     """DuckDuckGo answered with its bot-detection response."""
 
 
-class DuckDuckGoSearcher:
-    """Search DuckDuckGo and extract top results."""
+def accept_language(language: str) -> str:
+    """An Accept-Language for a language tag: ``fi`` is ``fi,en;q=0.5``."""
+    base = language.split("-")[0]
+    parts = [language]
+    if base != language:
+        parts.append(f"{base};q=0.9")
+    if base != "en":
+        parts.append("en;q=0.5")
+    return ",".join(parts)
 
-    BASE_URL = "https://html.duckduckgo.com/html"
-    USER_AGENTS = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.2; rv:122.0) Gecko/20100101 Firefox/122.0",
-    ]
+
+class SharedSession:
+    """The one browser-like HTTP client a search provider's calls in the process go through.
+
+    A client made for each search sent a new TLS fingerprint, no cookies and a fresh
+    connection every time, and asked the JavaScript page for a token first. This one is made
+    once per event loop, impersonates one Chrome, and keeps the provider's cookies. Each
+    provider has its own (DuckDuckGo's two endpoints share one).
+    """
+
+    def __init__(self, timeout: Optional[float] = None) -> None:
+        self._timeout = timeout
+        self._session: Any = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+
+    async def get(self) -> Any:
+        loop = asyncio.get_running_loop()
+        if self._session is None or self._loop is not loop:
+            self._session = requests.AsyncSession(
+                timeout=self._timeout or config.duckduckgo_request_timeout_seconds,
+                impersonate=HeaderFactory.stable_impersonate_target(),
+            )
+            self._loop = loop
+        return self._session
+
+    async def close(self) -> None:
+        session, self._session, self._loop = self._session, None, None
+        if session is not None:
+            try:
+                await session.close()
+            except Exception:  # noqa: BLE001 - a client of a finished loop cannot be closed
+                pass
+
+
+_SESSION = SharedSession()
+
+
+async def close_duckduckgo_session() -> None:
+    """Close the shared client (at the end of the process)."""
+    await _SESSION.close()
+
+
+class DuckDuckGoSearcher:
+    """Search DuckDuckGo's html endpoint and extract top results."""
+
+    BASE_URL = "https://html.duckduckgo.com/html/"
+    ORIGIN = "https://html.duckduckgo.com"
 
     # Date filter parameters for DuckDuckGo
     # df = date filter: d=day, w=week, m=month, y=year
@@ -44,18 +99,48 @@ class DuckDuckGoSearcher:
         *,
         region: str = "wt-wt",
         language: str = "en-US,en;q=0.9",
+        client: Any = None,
     ) -> None:
         self.region = region or "wt-wt"
         self.language = language or "en-US,en;q=0.9"
+        # A client with ``post`` (tests give one); by default the process's shared session.
+        self._client = client
 
-    def _build_headers(self) -> Dict[str, str]:
-        headers = HeaderFactory.get_headers()
-        headers["User-Agent"] = random.choice(self.USER_AGENTS)  # noqa: S311
-        headers["accept-language"] = self.language
+    _accept_language = staticmethod(accept_language)
+
+    def _build_headers(self, language: Optional[str] = None) -> Dict[str, str]:
+        # The impersonated browser sends its own user agent, client hints and accept
+        # headers, and they agree with its TLS fingerprint; overriding any of them with a
+        # random one made the request incoherent. Only the locale is ours: the server's
+        # setting, or the language a call asked for.
+        return {"accept-language": self._accept_language(language) if language else self.language}
+
+    def _post_headers(self, language: Optional[str] = None) -> Dict[str, str]:
+        """What a browser adds to the submit of the endpoint's own form."""
+        headers = self._build_headers(language)
+        headers["origin"] = self.ORIGIN
+        headers["referer"] = self.ORIGIN + "/"
+        headers["sec-fetch-site"] = "same-origin"
         return headers
 
     def _normalise_query(self, query: str) -> str:
         return " ".join((query or "").split())[: self.MAX_QUERY_LENGTH]
+
+    def _date_filter(
+        self,
+        date_filter: Optional[str],
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
+    ) -> Optional[str]:
+        """The ``df`` value: a range (``2026-10-01..2026-10-20``) beats day, week, month or year.
+
+        A range open on one side ends today or starts in 1990: the form takes both.
+        """
+        if date_from or date_to:
+            start = date_from.isoformat() if date_from else "1990-01-01"
+            end = date_to.isoformat() if date_to else date.today().isoformat()
+            return f"{start}..{end}"
+        return self.DATE_FILTERS.get(date_filter or "")
 
     def _build_params(
         self,
@@ -63,15 +148,24 @@ class DuckDuckGoSearcher:
         date_filter: Optional[str] = None,
         *,
         vqd: Optional[str] = None,
+        region: Optional[str] = None,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
     ) -> Dict[str, str]:
+        """The fields of the endpoint's own form: a request without them is a bot's."""
+        region = region or self.region
         params = {
             "q": self._normalise_query(query),
-            "kl": self.region,
+            "s": "0",
+            "o": "json",
+            "api": "d.js",
+            "vqd": vqd or "",
+            "kl": region,
+            "bing_market": region,
         }
-        if vqd:
-            params["vqd"] = vqd
-        if date_filter in self.DATE_FILTERS:
-            params["df"] = self.DATE_FILTERS[date_filter]
+        df = self._date_filter(date_filter, date_from, date_to)
+        if df:
+            params["df"] = df
         return params
 
     async def search(
@@ -79,6 +173,11 @@ class DuckDuckGoSearcher:
         query: str,
         num_results: int = 10,
         date_filter: Optional[str] = None,
+        *,
+        region: Optional[str] = None,
+        language: Optional[str] = None,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
     ) -> List[Dict]:
         """
         Search DuckDuckGo and return top results.
@@ -88,6 +187,9 @@ class DuckDuckGoSearcher:
             num_results: Number of results to return
             date_filter: Optional date filter - "day", "week", "month", or "year"
                          Use "year" for current topic queries to get fresh results
+            region: A ``kl`` region (``fi-fi``); the searcher's own when None
+            language: A language tag (``fi``), sent as the Accept-Language of the call
+            date_from, date_to: A date range; it replaces ``date_filter``
 
         Returns:
             List of result dictionaries with title, url, snippet
@@ -96,58 +198,46 @@ class DuckDuckGoSearcher:
         if not query:
             return []
 
-        headers = self._build_headers()
-        results = []
-        async with requests.AsyncSession(
-            timeout=config.duckduckgo_request_timeout_seconds,
-            impersonate=HeaderFactory.get_impersonate_target(),
-        ) as client:
-            # Step 1: Get initial VQD token to bypass bot protection
-            resp = await client.get(
-                f"https://duckduckgo.com/?q={quote_plus(query)}", headers=headers
-            )
-            vqd_match = re.search(r"vqd=([\d-]+)", resp.text)
-            params = self._build_params(
-                query,
-                date_filter,
-                vqd=vqd_match.group(1) if vqd_match else None,
-            )
+        client = self._client or await _SESSION.get()
+        headers = self._post_headers(language)
+        region = region or self.region
+        df = self._date_filter(date_filter, date_from, date_to)
+        params = self._build_params(
+            query, date_filter, region=region, date_from=date_from, date_to=date_to
+        )
+        results: List[Dict] = []
 
-            # Step 2: Extract results via pagination loop
-            while len(results) < num_results:
-                response = await client.get(
-                    self.BASE_URL,
-                    params=params,
-                    headers=headers,
-                )
+        # One POST of the form per page; the next page's form comes with the answer.
+        while len(results) < num_results:
+            response = await client.post(self.BASE_URL, data=params, headers=headers)
 
-                # If bot detected, HTML endpoint returns 202 instead of 200
-                if response.status_code == 202:
-                    raise DuckDuckGoBlocked("DuckDuckGo returned a bot-detection page")
+            # If bot detected, the endpoint returns 202 instead of 200
+            if response.status_code == 202:
+                raise DuckDuckGoBlocked("DuckDuckGo returned a bot-detection page")
 
-                response.raise_for_status()
+            response.raise_for_status()
 
-                page_results, next_params = self._parse_results(response.text)
+            page_results, next_params = self._parse_results(response.text)
 
-                if not page_results:
-                    break
+            if not page_results:
+                break
 
-                # avoid duplicates, add new results
-                seen_urls = {r["url"] for r in results}
-                for res in page_results:
-                    if res["url"] not in seen_urls:
-                        results.append(res)
-                        seen_urls.add(res["url"])
+            # avoid duplicates, add new results
+            seen_urls = {r["url"] for r in results}
+            for res in page_results:
+                if res["url"] not in seen_urls:
+                    results.append(res)
+                    seen_urls.add(res["url"])
 
-                if not next_params or len(results) >= num_results:
-                    break
+            if not next_params or len(results) >= num_results:
+                break
 
-                params = dict(next_params)
-                params["q"] = query
-                params["kl"] = self.region
-                if date_filter and date_filter in self.DATE_FILTERS:
-                    params["df"] = self.DATE_FILTERS[date_filter]
-                await asyncio.sleep(config.duckduckgo_request_delay_seconds)
+            params = dict(next_params)
+            params["q"] = query
+            params["kl"] = region
+            if df:
+                params["df"] = df
+            await asyncio.sleep(config.duckduckgo_request_delay_seconds)
 
         return results[:num_results]
 
@@ -281,6 +371,57 @@ class DuckDuckGoSearcher:
             return domain.split(".")[0]
         except Exception:
             return "unknown"
+
+
+class DuckDuckGoLiteSearcher(DuckDuckGoSearcher):
+    """DuckDuckGo's lite endpoint: its own form, and a table of results instead of divs.
+
+    A provider of its own beside the html one: the same service, another page, so a refusal
+    of the one is not always the other's.
+    """
+
+    BASE_URL = "https://lite.duckduckgo.com/lite/"
+    ORIGIN = "https://lite.duckduckgo.com"
+
+    def _parse_results(self, html: str) -> Tuple[List[Dict], Optional[Dict]]:
+        """Read the lite table: a row with the link, then one with its snippet.
+
+        Sponsored results (rows of class ``result-sponsored``, links through
+        duckduckgo.com/y.js) are left out.
+        """
+        soup = BeautifulSoup(html, "lxml")
+        results: List[Dict] = []
+        current: Optional[Dict] = None
+
+        for row in soup.find_all("tr"):
+            if row.find("tr") is not None:  # a row that only holds a table
+                continue
+            if "result-sponsored" in (row.get("class") or []):
+                current = None
+                continue
+            link = row.find("a", class_="result-link")
+            if link is not None:
+                current = self._extract_link(link)
+                if current is not None:
+                    results.append(current)
+                continue
+            snippet = row.find("td", class_="result-snippet")
+            if snippet is not None and current is not None and not current["snippet"]:
+                text = re.sub(r"\s+", " ", snippet.get_text("", strip=False)).strip()
+                current["snippet"] = text[:300]
+
+        return results, self._extract_next_page_payload(soup)
+
+    def _extract_link(self, link) -> Optional[Dict]:
+        title = re.sub(r"\s+", " ", link.get_text("", strip=False)).strip()
+        url = link.get("href", "")
+        if url.startswith("//"):
+            url = f"https:{url}"
+        if "duckduckgo.com/l/?" in url or "duckduckgo.com/y.js" in url:
+            url = self._decode_ddg_url(url)
+        if not title or not url.startswith("http") or "duckduckgo.com" in url:
+            return None
+        return {"title": title, "url": url, "snippet": "", "source": self._get_source_name(url)}
 
 
 async def get_best_sources_ddg(

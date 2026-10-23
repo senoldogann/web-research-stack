@@ -12,6 +12,19 @@ class UnsafeTargetError(ValueError):
     """Raised when a scraper target is not safe to fetch."""
 
 
+class HostnameResolutionError(UnsafeTargetError):
+    """Raised when a target's hostname does not resolve.
+
+    The target is unreachable rather than unsafe, so callers that classify errors
+    report it apart; it stays an ``UnsafeTargetError`` so that every caller still
+    refuses it.
+    """
+
+    def __init__(self, hostname: str) -> None:
+        super().__init__(f"Could not resolve host {hostname}")
+        self.hostname = hostname
+
+
 def _normalize_hostname(hostname: str) -> str:
     """Normalize hostnames to a stable ASCII representation."""
     ascii_host = hostname.encode("idna").decode("ascii")
@@ -85,10 +98,10 @@ def validate_outbound_url(url: str, allow_private_networks: bool = False) -> str
     try:
         resolved_addresses = resolve_hostname(hostname, port)
     except socket.gaierror as exc:
-        raise UnsafeTargetError("Blocked unsafe target: hostname resolution failed") from exc
+        raise HostnameResolutionError(hostname) from exc
 
     if not resolved_addresses:
-        raise UnsafeTargetError("Blocked unsafe target: hostname resolution returned no addresses")
+        raise HostnameResolutionError(hostname)
 
     for ip_text in resolved_addresses:
         if not is_public_ip_address(ip_text):

@@ -707,3 +707,21 @@ headless browser met as well.
   the field's provenance says `truncated`, and so does the answer's
   `truncated`. The request schema now describes a field object (`selector`,
   `fallback_selectors`, `attribute`, `all`, `max_items`, `type`, `required`).
+
+### Angles run together after the base
+
+- `discover` and `deep` asked their angles one after another, with a 150 ms
+  pause between them. The base angle still goes first (a refusal it meets
+  starts the provider's cooldown before the others ask); the angles after it
+  now start together, `SEARCH_ANGLE_DELAY_MS` apart, and each waits for the
+  provider's gate, so `SEARCH_PROVIDER_CONCURRENCY` and the jitter still decide
+  how many calls reach a provider at once. Their outcomes are merged in angle
+  order whichever answers first, so `queries`, the `angle_*_ms` timings and the
+  ranking are the same as before for the same answers.
+- With the default concurrency of 1 the calls still reach DuckDuckGo one at a
+  time (it refuses overlapping ones), so a healthy search takes as long as
+  before: `AI news October 2026` at `deep` took 4.66 s before and 4.68 s after,
+  measured back to back on 2026-10-23. A concurrency of 2 or more lets the
+  angles after the base overlap. What made searches take 12–45 s was a refusal
+  sending angles to the headless Google fallback (43 s for one base angle in
+  the same measurement); the next section bounds that.

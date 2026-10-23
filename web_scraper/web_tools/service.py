@@ -30,6 +30,7 @@ from web_scraper.web_tools.discovery import (
     DEPTHS,
     MIN_RESULT_RELEVANCE,
     DiscoveryCandidate,
+    SearchAngle,
     annotate_candidates,
     build_facets,
     build_search_angles,
@@ -244,17 +245,20 @@ class WebToolsService:
         responded: list[str] = []
         fallback_answered = False
 
-        for index, angle in enumerate(angles):
-            if index and self.settings.search_angle_delay_ms > 0:
-                await asyncio.sleep(self.settings.search_angle_delay_ms / 1000)
-            angle_started = time.perf_counter()
-            outcome = await self._search_angle(
-                provider_name,
-                angle.query,
-                angle_limit,
-                angle.date_filter,
+        # The base goes first: a refusal it meets starts the provider's cooldown
+        # before the other angles ask. Those then run together, each through the
+        # provider's gate (search_provider_concurrency calls at a time, with its
+        # jitter), and are merged in angle order whichever answers first.
+        delay = self.settings.search_angle_delay_ms / 1000
+        answered = [await self._timed_angle(provider_name, angles[0], angle_limit)]
+        answered += await asyncio.gather(
+            *(
+                self._timed_angle(provider_name, angle, angle_limit, stagger=delay * position)
+                for position, angle in enumerate(angles[1:], start=1)
             )
-            angle_ms = (time.perf_counter() - angle_started) * 1000
+        )
+
+        for angle, (outcome, angle_ms) in zip(angles, answered):
             angle_timings[angle.name] = round(angle_ms, 2)
             self.metrics.observe(
                 "search_angle",
@@ -387,6 +391,21 @@ class WebToolsService:
             ttl_seconds=self.settings.search_cache_ttl_seconds,
         )
         return payload
+
+    async def _timed_angle(
+        self,
+        provider: str,
+        angle: SearchAngle,
+        limit: int,
+        *,
+        stagger: float = 0.0,
+    ) -> tuple[_AngleOutcome, float]:
+        """One angle's outcome and its milliseconds, queueing for the gate included."""
+        if stagger > 0:
+            await asyncio.sleep(stagger)
+        started = time.perf_counter()
+        outcome = await self._search_angle(provider, angle.query, limit, angle.date_filter)
+        return outcome, (time.perf_counter() - started) * 1000
 
     async def _search_angle(
         self,

@@ -19,6 +19,8 @@ from web_scraper.web_tools.settings import (
     SCRAPE_BATCH_MIN_TOTAL_CHARS,
     SCRAPE_BATCH_MIN_URLS,
     SCRAPE_MAX_LINKS_CEILING,
+    SEARCH_READ_CHARS_MAX,
+    SEARCH_READ_MAX,
 )
 
 
@@ -263,6 +265,25 @@ class WebSearchRequest(BaseModel):
         description="ISO date; a result dated before it is dropped, undated ones stay",
     )
     date_to: Optional[date] = Field(default=None, description="ISO date, likewise after it")
+    read: int = Field(
+        default=0,
+        ge=0,
+        le=SEARCH_READ_MAX,
+        description=(
+            "Also read the top N results (0 to 5) in this call: each gets content, its "
+            "Markdown, or content_error. Reading costs seconds"
+        ),
+    )
+    read_chars: Optional[int] = Field(
+        default=None,
+        ge=MIN_MARKDOWN_CHARS,
+        le=SEARCH_READ_CHARS_MAX,
+        description="With read: the most Markdown characters of each page (4,000 by default)",
+    )
+    archive: bool = Field(
+        default=False,
+        description="With read: read the Internet Archive's copy of a page the site walls off",
+    )
 
     @field_validator("query")
     @classmethod
@@ -296,7 +317,27 @@ class WebSearchRequest(BaseModel):
         return self
 
 
+def _describe_read_fields(schema: Dict[str, Any]) -> None:
+    """The fields ``read`` adds to the results it reads, only there: not declared, so a result
+    that was not read carries no empty ones."""
+    schema.setdefault("properties", {}).update(
+        {
+            "content": {"type": "string", "description": "With read: the page's Markdown"},
+            "content_truncated": {
+                "type": "boolean",
+                "description": "With read: the page has more than content holds",
+            },
+            "content_error": {
+                "type": "object",
+                "description": "With read: why the page was not read (code, message, hint)",
+            },
+        }
+    )
+
+
 class WebSearchResult(BaseModel):
+    model_config = ConfigDict(extra="allow", json_schema_extra=_describe_read_fields)
+
     title: str
     url: str
     snippet: str = ""

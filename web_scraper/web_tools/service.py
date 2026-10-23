@@ -18,7 +18,12 @@ from web_scraper.web_tools.browser import (
     BrowserUnavailableError,
     HeadlessBrowserManager,
 )
-from web_scraper.web_tools.budget import fit_extract_payload, fit_scrape_batch, trim_metadata
+from web_scraper.web_tools.budget import (
+    fit_extract_payload,
+    fit_scrape_batch,
+    fit_search_read,
+    trim_metadata,
+)
 from web_scraper.web_tools.content import (
     ParsedPage,
     detect_interstitial,
@@ -71,6 +76,9 @@ from web_scraper.web_tools.settings import (
     SCRAPE_BATCH_MIN_URLS,
     SCRAPE_BATCH_PER_HOST,
     SCRAPE_MAX_LINKS_CEILING,
+    SEARCH_READ_CHARS_DEFAULT,
+    SEARCH_READ_CHARS_MAX,
+    SEARCH_READ_MAX,
     WebToolsSettings,
 )
 from web_scraper.web_tools.urls import (
@@ -221,6 +229,9 @@ class WebToolsService:
         exclude_sites: Optional[Sequence[str]] = None,
         date_from: Optional[date | str] = None,
         date_to: Optional[date | str] = None,
+        read: int = 0,
+        read_chars: Optional[int] = None,
+        archive: bool = False,
     ) -> dict[str, Any]:
         cleaned = (query or "").strip()
         if not cleaned:
@@ -254,6 +265,7 @@ class WebToolsService:
         options, site_list, excluded_list = self._search_parameters(
             region, language, sites, exclude_sites, date_from, date_to
         )
+        reading = self._read_plan(read, read_chars)
         operators = _site_operators(site_list, excluded_list)
         if len(operators) > self.settings.max_query_length // 2:
             raise WebToolError(
@@ -272,7 +284,9 @@ class WebToolsService:
         cached = await self.cache.get(cache_key)
         if cached is not None:
             self.metrics.count("cache_hits_total", operation="search")
-            return _from_cache(cached, started)
+            answer = _from_cache(cached, started)
+            await self._read_results(answer, reading, archive)
+            return answer
 
         # Every angle carries the operators and the parameters; the operators take room
         # from the query, never from the limit the provider has.
@@ -441,12 +455,71 @@ class WebToolsService:
             "timings": timings,
             "cache_hit": False,
         }
+        # The search is cached as it is, without the reading: what is read is the pages' own
+        # cache entries, and a search that reads no page never gets one's content.
         await self.cache.set(
             cache_key,
             _for_cache(payload),
             ttl_seconds=self.settings.search_cache_ttl_seconds,
         )
+        await self._read_results(payload, reading, archive)
         return payload
+
+    @staticmethod
+    def _read_plan(read: int, read_chars: Optional[int]) -> tuple[int, int]:
+        """How many results a search reads, and how many characters of each."""
+        if isinstance(read, bool) or not 0 <= int(read) <= SEARCH_READ_MAX:
+            raise WebToolError(
+                "invalid_request", f"read must be 0 to {SEARCH_READ_MAX}", detail=f"got {read}"
+            )
+        if read_chars is None:
+            return int(read), SEARCH_READ_CHARS_DEFAULT
+        if not MIN_MARKDOWN_CHARS <= int(read_chars) <= SEARCH_READ_CHARS_MAX:
+            raise WebToolError(
+                "invalid_request",
+                f"read_chars must be {MIN_MARKDOWN_CHARS} to {SEARCH_READ_CHARS_MAX}",
+                detail=f"got {read_chars}",
+            )
+        return int(read), int(read_chars)
+
+    async def _read_results(
+        self, answer: dict[str, Any], reading: tuple[int, int], archive: bool
+    ) -> None:
+        """Read the top results of a search answer, in place: ``content`` or ``content_error``.
+
+        The pages are read together, as a batch scrape reads them, and each result is
+        replaced by a new one, so the answer the search cache holds stays without content.
+        The whole answer is held to ``search_read_max_total_chars``. A walled page is read
+        from the Internet Archive only when ``archive`` was asked for. ``read_ms`` says what
+        reading took.
+        """
+        count, chars = reading
+        top = answer["results"][:count]
+        if not top:
+            return
+        started = time.perf_counter()
+        pages = await self._read_pages(
+            [item["url"] for item in top],
+            max_chars=chars,
+            archive=archive,
+            links=False,
+            max_links=None,
+        )
+        read: list[dict[str, Any]] = []
+        for item, page in zip(top, pages):
+            if "error" in page:
+                read.append({**item, "content_error": page["error"]})
+            else:
+                text = page["markdown"]
+                read.append({**item, "content": text, "content_truncated": len(text) >= chars})
+        read_ms = (time.perf_counter() - started) * 1000
+        timings = dict(answer["timings"])
+        timings["read_ms"] = round(read_ms, 2)
+        timings["total_ms"] = round(timings.get("total_ms", 0.0) + read_ms, 2)
+        answer["results"] = read + answer["results"][count:]
+        answer["timings"] = timings
+        fit_search_read(answer, self.settings.search_read_max_total_chars)
+        self.metrics.observe("search_read", read_ms)
 
     async def _angles_after_base(
         self,
@@ -812,6 +885,29 @@ class WebToolsService:
             )
         cap = self._batch_total(max_total_chars)
         started = time.perf_counter()
+        pages = await self._read_pages(
+            targets, max_chars=max_chars, archive=archive, links=links, max_links=max_links
+        )
+        total_ms = round((time.perf_counter() - started) * 1000, 2)
+        answer: dict[str, Any] = {"pages": pages, "timings": {"total_ms": total_ms}}
+        fit_scrape_batch(answer, cap)
+        self.metrics.count("scrape_batches_total")
+        return answer
+
+    async def _read_pages(
+        self,
+        targets: Sequence[str],
+        *,
+        max_chars: Optional[int],
+        archive: bool,
+        links: bool,
+        max_links: Optional[int],
+    ) -> list[dict[str, Any]]:
+        """Scrape pages together, in the order given: each answer, or ``{"url", "error"}``.
+
+        At most ``scrape_batch_concurrency`` at a time and two from one host. Every page
+        answer is a new dict, so what a caller does to it never reaches the cache.
+        """
         overall = asyncio.Semaphore(self.settings.scrape_batch_concurrency)
         per_host: dict[str, asyncio.Semaphore] = {}
 
@@ -840,12 +936,7 @@ class WebToolsService:
                     return {"url": url, "error": failure.to_dict()}
             return {**page, "markdown_truncated": False}
 
-        pages = list(await asyncio.gather(*(read(url) for url in targets)))
-        total_ms = round((time.perf_counter() - started) * 1000, 2)
-        answer: dict[str, Any] = {"pages": pages, "timings": {"total_ms": total_ms}}
-        fit_scrape_batch(answer, cap)
-        self.metrics.count("scrape_batches_total")
-        return answer
+        return list(await asyncio.gather(*(read(url) for url in targets)))
 
     def _host_of(self, url: str) -> str:
         try:

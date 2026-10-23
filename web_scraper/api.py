@@ -1290,6 +1290,9 @@ def create_app(settings: Optional[Config] = None) -> FastAPI:
                     },
                     exclude_none=True,
                 ),
+                **payload.model_dump(
+                    include={"read", "read_chars", "archive"}, exclude_defaults=True
+                ),
             )
         return WebSearchResponse(**result)
 

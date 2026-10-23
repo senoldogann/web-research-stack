@@ -27,6 +27,12 @@ SCRAPE_BATCH_PER_HOST = 2
 SCRAPE_BATCH_MIN_TOTAL_CHARS = 5_000
 SCRAPE_BATCH_MAX_TOTAL_CHARS = 500_000
 
+# web_search with ``read``: how many of the top results one call reads, how much of each
+# (the default and the ceiling), all of it inside the bound on the whole answer.
+SEARCH_READ_MAX = 5
+SEARCH_READ_CHARS_DEFAULT = 4_000
+SEARCH_READ_CHARS_MAX = 20_000
+
 # web_extract's bounds: the values one ``all`` field may return, and the size of
 # a whole answer in characters (its compact JSON).
 EXTRACT_MAX_ITEMS_CEILING = 1_000
@@ -135,6 +141,7 @@ class WebToolsSettings:
     scrape_max_links: int = 50
     scrape_batch_concurrency: int = 4
     scrape_batch_max_total_chars: int = 60_000
+    search_read_max_total_chars: int = 60_000
     default_map_limit: int = 500
     max_map_limit: int = 5_000
     max_sitemaps: int = 25
@@ -213,6 +220,10 @@ class WebToolsSettings:
         self.scrape_batch_concurrency = max(self.scrape_batch_concurrency, 1)
         self.scrape_batch_max_total_chars = min(
             max(self.scrape_batch_max_total_chars, SCRAPE_BATCH_MIN_TOTAL_CHARS),
+            SCRAPE_BATCH_MAX_TOTAL_CHARS,
+        )
+        self.search_read_max_total_chars = min(
+            max(self.search_read_max_total_chars, SCRAPE_BATCH_MIN_TOTAL_CHARS),
             SCRAPE_BATCH_MAX_TOTAL_CHARS,
         )
         self.default_map_limit = max(self.default_map_limit, 1)
@@ -299,6 +310,7 @@ class WebToolsSettings:
             scrape_max_links=_int("WEB_TOOLS_SCRAPE_MAX_LINKS", 50),
             scrape_batch_concurrency=_int("WEB_TOOLS_SCRAPE_BATCH_CONCURRENCY", 4),
             scrape_batch_max_total_chars=_int("WEB_TOOLS_SCRAPE_BATCH_MAX_TOTAL_CHARS", 60_000),
+            search_read_max_total_chars=_int("WEB_TOOLS_SEARCH_READ_MAX_TOTAL_CHARS", 60_000),
             default_map_limit=_int("WEB_TOOLS_DEFAULT_MAP_LIMIT", 500),
             max_map_limit=_int("WEB_TOOLS_MAX_MAP_LIMIT", 5_000),
             max_sitemaps=_int("WEB_TOOLS_MAX_SITEMAPS", 25),

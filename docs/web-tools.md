@@ -159,6 +159,7 @@ Copy `.env.example` to `.env` and set what you need. The important web tool knob
 | `SCRAPE_MAX_LINKS` | `50` | Links `web_scrape` lists by default, from the page content; a request's `max_links` (0 to 200) replaces it |
 | `SCRAPE_BATCH_CONCURRENCY` | `4` | Pages one `web_scrape` call with `urls` reads at a time (and at most 2 from one host) |
 | `SCRAPE_BATCH_MAX_TOTAL_CHARS` | `60000` | Cap on a whole batch answer, in characters; a request's `max_total_chars` (5,000 to 500,000) replaces it |
+| `SEARCH_READ_MAX_TOTAL_CHARS` | `60000` | Cap on a whole `web_search` answer that read pages (`read`), the content included |
 | `ARCHIVE_BUDGET_SECONDS` | `20` | Time the walk through the archive's copies may take (`archive: true`) |
 | `FETCH_TIMEOUT_SECONDS` | `20` | Per-request timeout |
 | `FETCH_RETRIES` | `1` | Retries for transient failures only |
@@ -1101,4 +1102,31 @@ less.
 - The REST 422 body no longer turns into a 500 when a validator raised
   `ValueError` (the exception object was left in `ctx.error`): `details[].ctx.error` is
   now its message.
+
+### Search that can read its top results
+
+- Search gave links and snippets, not the articles, so an agent searched and
+  then scraped each result by hand. `web_search` takes `read` (0 to 5, default
+  0): the top N results, in the order the answer has them, are read in the same
+  call with the batch scrape of "Several pages in one call".
+- Each result read carries `content`, its Markdown cut to `read_chars` (4,000 by
+  default, 500 to 20,000) with `content_truncated` (`true` when the page has more),
+  or `content_error`, the error envelope (code, message, url, status_code, detail
+  and, for a walled page, its `hint`). The results that were not read carry
+  neither, and with `read: 0`, the default, the answer is exactly what it was
+  (no `content` field, no `read_ms`).
+- Reading costs seconds: `timings.read_ms` says how many, and `total_ms` includes
+  it. The pages are read together (4 at a time, 2 per host) through the scrape
+  cache, so a page read a minute ago is not fetched again.
+- The whole answer stays under `SEARCH_READ_MAX_TOTAL_CHARS` (60,000 characters of
+  compact JSON): the contents over one shared length are cut to it, each ending in
+  `…` with `content_truncated: true`, so a long page loses most and a short one
+  nothing.
+- A walled page is not retried from the Internet Archive unless asked: the request
+  takes `archive` as `web_scrape` does, and a walled page's `content_error` carries
+  the hint to ask for it.
+- The search itself is cached as before, without the reading (the key does not hold
+  `read`): a search repeated with another `read` asks the provider once and each
+  page is read once; a search with `read: 0` never gets the content another asked
+  for.
 

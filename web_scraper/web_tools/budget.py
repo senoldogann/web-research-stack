@@ -61,6 +61,51 @@ def fit_extract_payload(payload: dict[str, Any], max_chars: int) -> bool:
 _MIN_PAGE_MARKDOWN = 200
 
 
+def _share_cut(
+    answer: dict[str, Any],
+    holders: list[dict[str, Any]],
+    key: str,
+    flag: str,
+    max_chars: int,
+    floor: int,
+) -> bool:
+    """Cut the texts under *key* to one shared length until the *answer* fits; whether any was.
+
+    A text longer than the shared length ends in an ellipsis and its holder gets *flag*; a
+    shorter one is left alone, so a long page loses most and a short one nothing.
+    """
+    cut = False
+    for _ in range(6):
+        excess = json_size(answer) - max_chars
+        if excess <= 0:
+            return cut
+        level = _shared_level(
+            [len(holder[key]) for holder in holders],
+            excess + len(holders) * len(ELLIPSIS),
+            floor,
+        )
+        if level is None:
+            return cut
+        for holder in holders:
+            if len(holder[key]) > level:
+                holder[key] = holder[key][:level].rstrip() + ELLIPSIS
+                holder[flag] = True
+                cut = True
+    return cut
+
+
+def fit_search_read(answer: dict[str, Any], max_chars: int) -> bool:
+    """Cut the ``content`` of the results a search read until the whole answer fits *max_chars*.
+
+    The results are replaced by key, never changed inside, as in ``fit_scrape_batch``.
+    """
+    holders = [item for item in answer["results"] if "content" in item]
+    cut = False
+    for floor in (_MIN_PAGE_MARKDOWN, 0):
+        cut = _share_cut(answer, holders, "content", "content_truncated", max_chars, floor) or cut
+    return cut
+
+
 def fit_scrape_batch(answer: dict[str, Any], max_chars: int) -> bool:
     """Cut a batch answer's pages until the whole fits *max_chars*; whether anything was cut.
 
@@ -71,35 +116,20 @@ def fit_scrape_batch(answer: dict[str, Any], max_chars: int) -> bool:
     changed inside: the cached answers it came from stay whole.
     """
     pages = [page for page in answer["pages"] if "markdown" in page]
-    cut = False
 
     def over() -> int:
         return json_size(answer) - max_chars
 
-    for floor in (_MIN_PAGE_MARKDOWN, 0):
-        for _ in range(6):
-            excess = over()
-            if excess <= 0:
-                return cut
-            level = _shared_level(
-                [len(page["markdown"]) for page in pages],
-                excess + len(pages) * len(ELLIPSIS),
-                floor,
-            )
-            if level is None:
-                break
+    cut = _share_cut(answer, pages, "markdown", "markdown_truncated", max_chars, _MIN_PAGE_MARKDOWN)
+    if over() > 0:
+        for key, flag in (("links", "links_truncated"), ("metadata", "metadata_truncated")):
             for page in pages:
-                if len(page["markdown"]) > level:
-                    page["markdown"] = page["markdown"][:level].rstrip() + ELLIPSIS
-                    page["markdown_truncated"] = True
+                if page.get(key) and over() > 0:
+                    page[key] = [] if key == "links" else {}
+                    page[flag] = True
                     cut = True
-        if floor == _MIN_PAGE_MARKDOWN and over() > 0:
-            for key, flag in (("links", "links_truncated"), ("metadata", "metadata_truncated")):
-                for page in pages:
-                    if page.get(key) and over() > 0:
-                        page[key] = [] if key == "links" else {}
-                        page[flag] = True
-                        cut = True
+    if over() > 0:
+        cut = _share_cut(answer, pages, "markdown", "markdown_truncated", max_chars, 0) or cut
     return cut
 
 

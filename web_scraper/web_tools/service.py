@@ -69,6 +69,7 @@ from web_scraper.web_tools.settings import (
     EXTRACT_MAX_CHARS_CEILING,
     EXTRACT_MAX_CHARS_FLOOR,
     EXTRACT_MAX_ITEMS_CEILING,
+    EXTRACT_OFFSET_CEILING,
     MIN_MARKDOWN_CHARS,
     SCRAPE_BATCH_MAX_TOTAL_CHARS,
     SCRAPE_BATCH_MAX_URLS,
@@ -1678,6 +1679,16 @@ class WebToolsService:
                     "invalid_request",
                     f"Schema field {field_name!r}: max_items must be 1 to "
                     f"{EXTRACT_MAX_ITEMS_CEILING}",
+                )
+            offset = spec.get("offset")
+            if offset is not None and (
+                isinstance(offset, bool)
+                or not isinstance(offset, int)
+                or not 0 <= offset <= EXTRACT_OFFSET_CEILING
+            ):
+                raise WebToolError(
+                    "invalid_request",
+                    f"Schema field {field_name!r}: offset must be 0 to {EXTRACT_OFFSET_CEILING}",
                 )
             validated[str(field_name)] = dict(spec)
         return validated

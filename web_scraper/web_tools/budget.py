@@ -41,6 +41,8 @@ def fit_extract_payload(payload: dict[str, Any], max_chars: int) -> bool:
             entry["truncated"] = True
             if isinstance(data[name], list) and "returned" in entry:
                 entry["returned"] = len(data[name])
+                if "offset" in entry:
+                    entry["next_offset"] = entry["offset"] + len(data[name])
         cut = True
 
     for floor in (_MIN_EVIDENCE, 0):

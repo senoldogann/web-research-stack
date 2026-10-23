@@ -610,6 +610,22 @@ def _moment_of(element: Tag) -> str:
     return ""
 
 
+def _record_page(entry: dict[str, Any], total: int, returned: int, offset: int) -> None:
+    """The paging of an ``all`` field in its provenance.
+
+    ``total`` matches, ``returned`` of them from ``offset`` on; ``truncated`` and the
+    ``next_offset`` to ask for only when matches are left after this page.
+    """
+    entry.update(
+        total=total,
+        returned=returned,
+        offset=offset,
+        truncated=offset + returned < total,
+    )
+    if offset + returned < total:
+        entry["next_offset"] = offset + returned
+
+
 def extract_structured(
     html: str,
     base_url: str,
@@ -654,6 +670,7 @@ def extract_structured(
 
             wants_all = bool(spec.get("all", False))
             limit = int(spec.get("max_items") or max_items) if wants_all else 1
+            skip = int(spec.get("offset") or 0) if wants_all else 0
             selected = elements if wants_all else elements[:1]
             values: list[Any] = []
             evidence: list[str] = []
@@ -674,11 +691,14 @@ def extract_structured(
                 if coerced in (None, ""):
                     continue
                 total += 1
+                if total <= skip:
+                    continue  # before the page asked for
                 if len(values) < limit:
                     values.append(coerced)
                     evidence.append(element_text(element) or _clean_text(str(raw_value)))
 
-            if values:
+            # An offset past the last match is an empty page of a field that exists.
+            if values or (wants_all and total):
                 data[field_name] = values if wants_all else values[0]
                 provenance[field_name] = {
                     "method": "selector",
@@ -687,12 +707,8 @@ def extract_structured(
                     "source_url": base_url,
                 }
                 if wants_all:
-                    provenance[field_name].update(
-                        total=total,
-                        returned=len(values),
-                        truncated=total > len(values),
-                    )
-                    truncated = truncated or total > len(values)
+                    _record_page(provenance[field_name], total, len(values), skip)
+                    truncated = truncated or skip + len(values) < total
                 found = True
                 break
 
@@ -709,14 +725,15 @@ def extract_structured(
                 kind = "date"
             if wants_all:
                 limit = int(spec.get("max_items") or max_items)
+                skip = int(spec.get("offset") or 0)
                 every = [_coerce(value, kind) for value in named.values]
                 every = [value for value in every if value not in (None, "")]
-                value: Any = every[:limit]
+                value: Any = every[skip : skip + limit]
             elif kind == "string":
                 value = _coerce(", ".join(named.values), kind)
             else:
                 value = _coerce(named.values[0], kind)
-            if value not in (None, "", []):
+            if value not in (None, "") and (value != [] or (wants_all and every)):
                 data[field_name] = value
                 provenance[field_name] = {
                     "method": named.method,
@@ -725,12 +742,8 @@ def extract_structured(
                     "source_url": base_url,
                 }
                 if wants_all:
-                    provenance[field_name].update(
-                        total=len(every),
-                        returned=len(value),
-                        truncated=len(every) > len(value),
-                    )
-                    truncated = truncated or len(every) > len(value)
+                    _record_page(provenance[field_name], len(every), len(value), skip)
+                    truncated = truncated or skip + len(value) < len(every)
                 continue
 
         data[field_name] = None

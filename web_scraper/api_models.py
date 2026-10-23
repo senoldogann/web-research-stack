@@ -13,6 +13,7 @@ from web_scraper.web_tools.settings import (
     EXTRACT_MAX_CHARS_CEILING,
     EXTRACT_MAX_CHARS_FLOOR,
     EXTRACT_MAX_ITEMS_CEILING,
+    EXTRACT_OFFSET_CEILING,
     MIN_MARKDOWN_CHARS,
     SCRAPE_BATCH_MAX_TOTAL_CHARS,
     SCRAPE_BATCH_MAX_URLS,
@@ -657,6 +658,15 @@ class WebExtractField(BaseModel):
         description=(
             "With all: the most values returned (100 by default); the field's provenance "
             "holds total, returned, and truncated"
+        ),
+    )
+    offset: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=EXTRACT_OFFSET_CEILING,
+        description=(
+            "With all: skip the first N matches, to page past max_items; the field's "
+            "provenance holds offset, and next_offset when values were left out"
         ),
     )
     type: str = Field(

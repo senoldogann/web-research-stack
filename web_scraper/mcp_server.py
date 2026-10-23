@@ -274,9 +274,10 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
                     "tags and HTML conventions, and dates come back in ISO 8601. Each field "
                     "reports how it was found, its evidence, and its source URL; missing "
                     "required fields are reported, never invented. A field with all: true "
-                    "returns up to max_items matches (100 by default; provenance gives total, "
-                    "returned, and truncated), and the whole answer stays under max_chars "
-                    "(20,000 by default), its truncated flag set when anything was cut."
+                    "returns up to max_items matches (100 by default); offset skips the first N "
+                    "to page on (provenance gives total, returned, offset, truncated, and "
+                    "next_offset when values were left out). The whole answer stays under "
+                    "max_chars (20,000 by default), its truncated flag set when anything was cut."
                 ),
                 "inputSchema": WebExtractRequest.model_json_schema(by_alias=True),
                 "annotations": _annotations(

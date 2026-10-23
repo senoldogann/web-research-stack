@@ -36,6 +36,8 @@ SEARCH_READ_CHARS_MAX = 20_000
 # web_extract's bounds: the values one ``all`` field may return, and the size of
 # a whole answer in characters (its compact JSON).
 EXTRACT_MAX_ITEMS_CEILING = 1_000
+# How far into a field's matches an ``all`` field may start (``offset``).
+EXTRACT_OFFSET_CEILING = 1_000_000
 EXTRACT_MAX_CHARS_FLOOR = 1_000
 EXTRACT_MAX_CHARS_CEILING = 200_000
 

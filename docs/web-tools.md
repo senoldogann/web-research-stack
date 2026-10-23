@@ -1130,3 +1130,23 @@ less.
   page is read once; a search with `read: 0` never gets the content another asked
   for.
 
+### Extract: paging past the cap
+
+- A field with `all: true` returns at most `max_items` values (100 by default, 1 to
+  1,000) per field; the request schema carries it under
+  `$defs.WebExtractField.properties` and the tool description names it, for a client
+  that does not follow `$ref`. What was missing was a way to read the rest.
+- `offset` (0 to 1,000,000), per field, with `all: true`, skips the first N matches
+  (the non-empty values, in document order); `max_items` is the page's size. The
+  field's provenance holds `offset` (0 when none was asked) and, when matches are
+  left after the page, `truncated: true` and `next_offset`, the offset to ask for
+  next. The last page has no `next_offset` and `truncated: false`. An offset past
+  the last match answers an empty list for a field that exists, not a missing field.
+  A field that is not `all` ignores it.
+- The character cap (`max_chars`) still bounds each answer: when it cuts values from
+  the end of a page, `returned` and `next_offset` follow what was kept, so paging on
+  from `next_offset` loses nothing. A list of 250 items is read in three pages:
+  `offset` 0, 100, 200 returned 100, 100 and 50, the first two with `next_offset`
+  100 and 200 (`tests/test_web_extract_paging.py`). Fields read by their name
+  (`keywords`, a JSON-LD list) page the same way.
+

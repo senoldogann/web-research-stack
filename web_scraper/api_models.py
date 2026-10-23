@@ -364,6 +364,10 @@ class WebScrapeResponse(BaseModel):
         description="True when the page has links that links leaves out (page chrome or cap)",
     )
     metadata: Dict[str, Any]
+    metadata_truncated: bool = Field(
+        default=False,
+        description="True when the page's meta tags or JSON-LD were cut to 10,000 characters",
+    )
     content_hash: str
     fetched_with: str
     cache_hit: bool = False

@@ -832,3 +832,19 @@ headless browser met as well.
   archive's crawler too, so a caller should read that date. archive.org
   answered HTTP 429 for a while that morning (curl's requests too); that
   failure is told apart from no copy.
+
+### Bounded metadata
+
+- A scrape's `metadata` carried every meta tag and up to 20 JSON-LD items
+  whole, so a page could make its answer as large as it liked: an
+  `articleBody` repeats the text the Markdown already holds, and a catalogue
+  page embeds its products. The Markdown and the links were bounded; this was
+  not, and one scrape answered 912,000 characters on one line. `metadata` now
+  keeps at most 500 characters of any text and 20 items of any list, the meta
+  tags while they fill 5,000 characters and the JSON-LD items while the whole
+  fits 10,000, in that shape; `metadata_truncated` says when anything was
+  cut. `web_extract` still reads the page's whole JSON-LD.
+- Measured live: an AP News article's metadata went from 8,660 characters to
+  7,605 and its answer from 26,603 to 25,575; a page of ordinary size keeps
+  its metadata as it was (`metadata_truncated: false`), and the bound is for
+  the pages that embed far more.

@@ -18,7 +18,7 @@ from web_scraper.web_tools.browser import (
     BrowserUnavailableError,
     HeadlessBrowserManager,
 )
-from web_scraper.web_tools.budget import fit_extract_payload
+from web_scraper.web_tools.budget import fit_extract_payload, trim_metadata
 from web_scraper.web_tools.content import (
     ParsedPage,
     detect_interstitial,
@@ -1218,6 +1218,7 @@ class WebToolsService:
         # capped; map and crawl still see every link.
         content_links = [link for link in document.page.links if not link.chrome]
         shown = content_links[: self.settings.scrape_max_links]
+        metadata, metadata_cut = trim_metadata(document.page.metadata)
         payload: dict[str, Any] = {
             "url": document.final_url,
             "requested_url": requested,
@@ -1229,7 +1230,8 @@ class WebToolsService:
             "content_type": document.content_type,
             "links": [{"url": link.url, "text": link.text, "kind": link.kind} for link in shown],
             "links_truncated": len(shown) < len(document.page.links),
-            "metadata": document.page.metadata,
+            "metadata": metadata,
+            "metadata_truncated": metadata_cut,
             "content_hash": content_hash(document.page.markdown),
             "fetched_with": document.fetched_with,
             "cache_hit": False,

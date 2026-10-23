@@ -58,6 +58,59 @@ def fit_extract_payload(payload: dict[str, Any], max_chars: int) -> bool:
     return cut
 
 
+# A scrape's metadata: the page's meta tags and JSON-LD, which a page can make
+# as large as it likes (an articleBody repeating the text, a catalogue of
+# products), bounded as the Markdown is.
+METADATA_MAX_CHARS = 10_000
+_METADATA_TEXT_CHARS = 500
+_METADATA_LIST_ITEMS = 20
+
+
+def trim_metadata(
+    metadata: dict[str, Any], max_chars: int = METADATA_MAX_CHARS
+) -> tuple[dict[str, Any], bool]:
+    """A page's metadata within *max_chars*, and whether anything was cut.
+
+    Every text keeps at most 500 characters and every list 20 items; meta tags
+    are kept while they fill half the budget, then JSON-LD items while the
+    whole fits. What is kept keeps its shape.
+    """
+    cut = False
+
+    def shorten(value: Any) -> Any:
+        nonlocal cut
+        if isinstance(value, str) and len(value) > _METADATA_TEXT_CHARS:
+            cut = True
+            return value[:_METADATA_TEXT_CHARS].rstrip() + ELLIPSIS
+        if isinstance(value, list):
+            if len(value) > _METADATA_LIST_ITEMS:
+                cut = True
+            return [shorten(item) for item in value[:_METADATA_LIST_ITEMS]]
+        if isinstance(value, dict):
+            return {key: shorten(item) for key, item in value.items()}
+        return value
+
+    trimmed: dict[str, Any] = {}
+    for key, value in metadata.items():
+        if key == "json_ld":
+            continue
+        kept = shorten(value)
+        if json_size(trimmed) + json_size({key: kept}) > max_chars // 2:
+            cut = True
+            continue
+        trimmed[key] = kept
+    items: list[Any] = []
+    for item in metadata.get("json_ld") or []:
+        kept = shorten(item)
+        if json_size(trimmed) + json_size(items) + json_size(kept) > max_chars:
+            cut = True
+            break
+        items.append(kept)
+    if "json_ld" in metadata:
+        trimmed["json_ld"] = items
+    return trimmed, cut
+
+
 def _shrinkable(value: Any) -> bool:
     if isinstance(value, list):
         return len(value) > 1 or (len(value) == 1 and _shrinkable(value[0]))

@@ -726,6 +726,13 @@ class WebExtractResponse(BaseModel):
     errors: List[Dict[str, Any]]
     fetched_with: str
     timings: Dict[str, float]
+    cache_hit: bool = Field(
+        default=False,
+        description="True when the page was read from the short-lived page cache, not fetched",
+    )
+    cached_timings: Optional[Dict[str, float]] = Field(
+        default=None, description="On a cache hit: what fetching the page cost when it was fetched"
+    )
     warnings: List[str] = Field(default_factory=list)
     truncated: bool = Field(
         default=False,

@@ -50,6 +50,7 @@ from web_scraper.web_tools.discovery import (
 from web_scraper.web_tools.errors import WebToolError
 from web_scraper.web_tools.fetcher import FetchError, FetchResult, HostGate, SafeFetcher
 from web_scraper.web_tools.metrics import LatencyTracker, WebToolsMetrics
+from web_scraper.web_tools.pagecache import CachedDocument, PageCache
 from web_scraper.web_tools.pdf import PDF_CONTENT_TYPE, PdfError, extract_pdf
 from web_scraper.web_tools.providers import ProviderGate, ProviderHealth
 from web_scraper.web_tools.robots import RobotsPolicy
@@ -106,6 +107,10 @@ class LoadedDocument:
     warnings: list[str] = field(default_factory=list)
     timings: dict[str, float] = field(default_factory=dict)
     pages: Optional[int] = None
+    # Read from the page cache, not fetched: ``timings`` are then this call's own, and
+    # ``cached_timings`` what the fetch cost when it was made.
+    cache_hit: bool = False
+    cached_timings: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -135,6 +140,7 @@ class WebToolsService:
         cache: Optional[InMemoryTTLCache] = None,
         latency: Optional[LatencyTracker] = None,
         metrics_registry: Optional[MetricsRegistry] = None,
+        page_cache: Optional[PageCache] = None,
     ) -> None:
         self.settings = settings
         self.fetcher = fetcher
@@ -143,6 +149,11 @@ class WebToolsService:
         self.cache = cache or InMemoryTTLCache(
             ttl_seconds=settings.cache_ttl_seconds,
             max_entries=settings.cache_max_entries,
+        )
+        self._pages = page_cache or PageCache(
+            ttl_seconds=settings.page_cache_ttl_seconds,
+            max_entries=settings.page_cache_max_entries,
+            max_bytes=settings.page_cache_max_bytes,
         )
         self.metrics = WebToolsMetrics(
             latency or LatencyTracker(),
@@ -994,7 +1005,7 @@ class WebToolsService:
             taken = _taken_at(stamp)
             try:
                 document = await asyncio.wait_for(
-                    self._load_page(snapshot, max_chars=limit, browser=False),
+                    self._load_page(snapshot, max_chars=limit, browser=False, cache=False),
                     timeout=_remaining(deadline),
                 )
             except asyncio.TimeoutError:
@@ -1076,7 +1087,7 @@ class WebToolsService:
         timings = dict(document.timings)
         timings["extract_ms"] = round(extract_ms, 2)
         timings["total_ms"] = round(total_ms, 2)
-        payload = {
+        payload: dict[str, Any] = {
             "url": document.final_url,
             "requested_url": requested,
             "title": document.page.title,
@@ -1087,10 +1098,13 @@ class WebToolsService:
             "provenance": structured.provenance,
             "errors": structured.errors,
             "fetched_with": document.fetched_with,
+            "cache_hit": document.cache_hit,
             "timings": timings,
             "warnings": list(document.warnings),
             "truncated": False,
         }
+        if document.cache_hit:
+            payload["cached_timings"] = dict(document.cached_timings)
         cut = fit_extract_payload(payload, budget)
         payload["truncated"] = structured.truncated or cut
         return payload
@@ -1269,6 +1283,7 @@ class WebToolsService:
         return {
             "latency": self.metrics.tracker.snapshot(),
             "cache": cache,
+            "page_cache": self._pages.snapshot(),
             "browser": self.browser.snapshot() if self.browser is not None else {"enabled": False},
             "search_providers": {
                 name: {
@@ -1299,7 +1314,7 @@ class WebToolsService:
 
     async def _crawl_page(self, url: str) -> dict[str, Any]:
         limit = self.settings.crawl_content_limit_chars
-        document = await self._load_page(url, max_chars=limit)
+        document = await self._load_page(url, max_chars=limit, cache=False)
         final_url = document.final_url
         page = document.page
         secure = upgrade_to_https(final_url)
@@ -1331,7 +1346,81 @@ class WebToolsService:
             "links": [link.url for link in page.links],
         }
 
-    async def _load_page(self, url: str, *, max_chars: int, browser: bool = True) -> LoadedDocument:
+    async def _load_page(
+        self, url: str, *, max_chars: int, browser: bool = True, cache: bool = True
+    ) -> LoadedDocument:
+        """Read a page, from the page cache when it was fetched a moment ago.
+
+        The cache holds the fetched document (see ``PageCache``), so each call parses it with
+        its own cap. A page is stored only when it read well: errors, challenge pages (they
+        are errors), PDFs, a page with nothing to read, a failed browser render and anything
+        read with ``cache=False`` (archived copies, crawled pages) never are.
+        """
+        key = self._page_key(url) if cache else None
+        if key is not None:
+            started = time.perf_counter()
+            stored = self._pages.get(key)
+            if stored is not None:
+                self.metrics.count("page_cache_hits_total")
+                return self._document_from_cache(stored, max_chars, started)
+        document = await self._fetch_document(url, max_chars=max_chars, browser=browser)
+        if key is not None and _storable(document):
+            self._pages.put(
+                key,
+                CachedDocument(
+                    final_url=document.final_url,
+                    status_code=document.status_code,
+                    content_type=document.content_type,
+                    html=document.html,
+                    fetched_with=document.fetched_with,
+                    warnings=tuple(document.warnings),
+                    timings=dict(document.timings),
+                ),
+            )
+        return document
+
+    @staticmethod
+    def _page_key(url: str) -> Optional[str]:
+        try:
+            return canonicalize_url(url)
+        except UnsafeUrlError:
+            return None
+
+    def _document_from_cache(
+        self, stored: CachedDocument, max_chars: int, started: float
+    ) -> LoadedDocument:
+        """A stored document read again: parsed for this call, its timings this call's own."""
+        parsing = time.perf_counter()
+        page = extract_page(
+            stored.html,
+            stored.final_url,
+            max_links=self.settings.max_links,
+            max_chars=max_chars,
+        )
+        extract_ms = (time.perf_counter() - parsing) * 1000
+        self.metrics.observe("extraction", extract_ms, mode="cached")
+        return LoadedDocument(
+            final_url=stored.final_url,
+            status_code=stored.status_code,
+            content_type=stored.content_type,
+            html=stored.html,
+            page=page,
+            fetched_with=stored.fetched_with,
+            warnings=list(stored.warnings),
+            timings={
+                "network_ms": 0.0,
+                "http_ms": 0.0,
+                "extract_ms": round(extract_ms, 2),
+                "browser_ms": 0.0,
+                "total_ms": round((time.perf_counter() - started) * 1000, 2),
+            },
+            cache_hit=True,
+            cached_timings=dict(stored.timings),
+        )
+
+    async def _fetch_document(
+        self, url: str, *, max_chars: int, browser: bool = True
+    ) -> LoadedDocument:
         """Fetch and read a page; ``browser=False`` never opens a headless browser for it."""
         started = time.perf_counter()
         try:
@@ -1830,6 +1919,19 @@ def _archive_unreachable_hint(code: str, status_code: Optional[int]) -> str:
     return (
         f"The Internet Archive did not answer ({code}{status}); try archive: true "
         "again later, or find the story elsewhere with web_search."
+    )
+
+
+def _storable(document: LoadedDocument) -> bool:
+    """Whether a document read well enough for the page cache to keep it."""
+    return (
+        document.pages is None  # not a PDF
+        and document.fetched_with in {"http", "browser"}  # not an archived copy
+        and bool(document.html)
+        and not any(
+            warning == "empty_content" or warning.startswith("browser_render_failed")
+            for warning in document.warnings
+        )
     )
 
 

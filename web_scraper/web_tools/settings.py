@@ -129,6 +129,10 @@ class WebToolsSettings:
 
     cache_ttl_seconds: int = 900
     cache_max_entries: int = 256
+    # The fetched documents scrape and extract share (0 seconds turns it off), bounded.
+    page_cache_ttl_seconds: int = 300
+    page_cache_max_entries: int = 64
+    page_cache_max_bytes: int = 20_000_000
 
     browser_enabled: bool = True
     browser_preference: str = "auto"
@@ -207,6 +211,9 @@ class WebToolsSettings:
         self.host_min_interval_ms = max(self.host_min_interval_ms, 0)
         self.cache_ttl_seconds = max(self.cache_ttl_seconds, 1)
         self.cache_max_entries = max(self.cache_max_entries, 1)
+        self.page_cache_ttl_seconds = max(self.page_cache_ttl_seconds, 0)
+        self.page_cache_max_entries = max(self.page_cache_max_entries, 1)
+        self.page_cache_max_bytes = max(self.page_cache_max_bytes, 1_000)
 
         preference = (self.browser_preference or "auto").strip().lower()
         self.browser_preference = preference if preference in _BROWSER_PREFERENCES else "auto"
@@ -300,6 +307,9 @@ class WebToolsSettings:
             host_min_interval_ms=_int("WEB_TOOLS_HOST_MIN_INTERVAL_MS", 200),
             cache_ttl_seconds=_int("WEB_TOOLS_CACHE_TTL_SECONDS", 900),
             cache_max_entries=_int("WEB_TOOLS_CACHE_MAX_ENTRIES", 256),
+            page_cache_ttl_seconds=_int("WEB_TOOLS_PAGE_CACHE_TTL_SECONDS", 300),
+            page_cache_max_entries=_int("WEB_TOOLS_PAGE_CACHE_MAX_ENTRIES", 64),
+            page_cache_max_bytes=_int("WEB_TOOLS_PAGE_CACHE_MAX_BYTES", 20_000_000),
             browser_enabled=_bool("WEB_TOOLS_BROWSER_ENABLED", True),
             browser_preference=os.getenv("WEB_TOOLS_BROWSER_PREFERENCE", "auto"),
             browser_timeout_seconds=_float("WEB_TOOLS_BROWSER_TIMEOUT_SECONDS", 30.0),

@@ -228,7 +228,7 @@ class TestCache:
         assert "read_ms" not in plain["timings"]
 
     @pytest.mark.asyncio
-    async def test_read_chars_and_archive_are_part_of_how_a_page_is_read(self) -> None:
+    async def test_another_read_chars_is_another_reading_of_the_one_fetched_page(self) -> None:
         service, fetcher, _ = _build({url: _article(url, 10_000) for url in URLS})
 
         long = await service.search(QUERY, depth="fast", read=1, read_chars=8000)
@@ -236,7 +236,7 @@ class TestCache:
 
         assert len(long["results"][0]["content"]) == 8000
         assert len(short["results"][0]["content"]) == 1000
-        assert len(fetcher.calls) == 2  # another cap is another read of the page
+        assert len(fetcher.calls) == 1  # the page cache holds the page, each read cuts its own
 
 
 class TestTools:

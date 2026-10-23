@@ -170,6 +170,8 @@ Copy `.env.example` to `.env` and set what you need. The important web tool knob
 | `HOST_MIN_INTERVAL_MS` | `200` | Minimum delay between starts per host |
 | `CACHE_TTL_SECONDS` | `900` | Scrape cache TTL |
 | `CACHE_MAX_ENTRIES` | `256` | Scrape cache capacity |
+| `PAGE_CACHE_TTL_SECONDS` | `300` | How long a fetched page is kept for scrape and extract; `0` turns the page cache off |
+| `PAGE_CACHE_MAX_ENTRIES` / `PAGE_CACHE_MAX_BYTES` | `64` / `20000000` | The page cache's bounds, in pages and in bytes of HTML |
 | `BROWSER_ENABLED` | `true` | Enable the headless worker |
 | `BROWSER_PREFERENCE` | `auto` | `auto`, `chrome`, `chromium`, or `camoufox` |
 | `BROWSER_POST_LOAD_WAIT_MS` | `500` | Settle time after DOM content loaded |
@@ -465,7 +467,8 @@ pick up the new schema.
   client-rendered page whose shell contains more than `BROWSER_RENDER_MIN_CHARS`
   of boilerplate may stay on the HTTP path. Raise or lower that threshold only
   with a benchmark.
-- `web_extract` fetches the page fresh; it does not use the scrape cache.
+- `web_extract` does not use the scrape cache (it holds scrape answers) but shares the
+  page cache with `web_scrape`: a page fetched in the last 5 minutes is not fetched again.
 - Crawl jobs and the scrape/search caches live in one process and are lost on
   restart. REST and MCP have separate caches. Provider cooldown state is also
   per process.
@@ -1172,4 +1175,27 @@ less.
   not its end, and a site with no robots.txt is not an error of it.
 - Covered by `tests/test_web_crawl_sitemap.py`: a fake site whose sitemap lists pages
   no link reaches, scope, filters, robots, `max_pages`, an index, and a missing sitemap.
+
+### One fetch for scrape and extract of the same page
+
+- The scrape cache holds the scrape's *answer*, keyed by URL, `max_chars`, links and
+  `archive`; `web_extract` used none, so scraping a page and extracting from it
+  fetched it twice (and so did two scrapes with different caps). A short-lived page
+  cache now sits at the fetch layer (`web_scraper/web_tools/pagecache.py`): it holds
+  the fetched document, the HTML as the tools last read it (rendered by the browser
+  when the page needed it), keyed by the page's canonical URL, and each call parses
+  it as it needs, with its own `max_chars`, links and selectors.
+- It lives `PAGE_CACHE_TTL_SECONDS` (300; 0 turns it off) and is bounded in documents
+  (`PAGE_CACHE_MAX_ENTRIES`, 64) and in bytes of HTML (`PAGE_CACHE_MAX_BYTES`, 20 MB):
+  the oldest unused goes first, and a page that alone is over the byte bound is not
+  kept. `GET /api/v1/web/stats` lists its entries, bytes, hits and misses.
+- Never kept: an error of any kind; a challenge page (a captcha, a login wall, an
+  `access_blocked` page are errors, so the next call tries again); an archived copy
+  (`archive: true`); a PDF; a page with nothing to read (`empty_content`) or whose
+  browser render failed; a page read by a crawl.
+- `web_extract`'s answer says `cache_hit`, `true` when the page came from the page
+  cache. Its timings do not pretend to fetch: `network_ms`, `http_ms` and `browser_ms` are
+  0, `extract_ms` and `total_ms` are this call's, and `cached_timings` holds what the
+  fetch cost when it was made. The same holds for a scrape's `timings` when the page was
+  stored (its `cache_hit` still means the scrape *answer* came from the scrape cache).
 

@@ -109,7 +109,12 @@ async def _search(service: WebToolsService, arguments: dict[str, Any]) -> dict[s
 
 async def _scrape(service: WebToolsService, arguments: dict[str, Any]) -> dict[str, Any]:
     request = WebScrapeRequest.model_validate(arguments)
-    return await service.scrape(request.url, max_chars=request.max_chars, archive=request.archive)
+    return await service.scrape(
+        request.url,
+        max_chars=request.max_chars,
+        archive=request.archive,
+        **request.model_dump(include={"links", "max_links"}, exclude_defaults=True),
+    )
 
 
 async def _map(service: WebToolsService, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -209,10 +214,11 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
                 "name": "web_scrape",
                 "description": (
                     "Fetch one public URL HTTP-first and return clean Markdown, title, "
-                    "description, canonical URL, status, up to 50 links from the page content "
-                    "(menus, headers, footers, and sidebars left out; links_truncated says "
-                    "more exist, web_map lists them all), metadata, content hash, and stage "
-                    "timings. A shared headless browser is used only for JavaScript "
+                    "description, canonical URL, status, links from the page content (50 by "
+                    "default, max_links 0 to 200, links: false for none; menus, headers, "
+                    "footers, and sidebars left out; links_truncated says more exist, web_map "
+                    "lists them all), metadata, content hash, and stage timings. max_chars "
+                    "bounds the Markdown only, max_links the links. A shared headless browser is used only for JavaScript "
                     "shells or access interstitials; CAPTCHA and login walls fail fast, their "
                     "error's hint saying what to try next: archive: true reads the Internet "
                     "Archive's newest copy that is not itself a wall of a page the site walls "

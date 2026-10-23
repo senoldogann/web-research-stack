@@ -156,7 +156,7 @@ Copy `.env.example` to `.env` and set what you need. The important web tool knob
 | `SEARCH_FALLBACK_TIMEOUT_SECONDS` | `60` | Timeout of a fallback call (a cold headless browser) |
 | `SEARCH_PROVIDER_COOLDOWN_SECONDS` | `5` | First cooldown after a failed provider call |
 | `SEARCH_PROVIDER_MAX_COOLDOWN_SECONDS` | `300` | Cap for the doubling cooldown |
-| `SCRAPE_MAX_LINKS` | `50` | Links `web_scrape` lists, from the page content |
+| `SCRAPE_MAX_LINKS` | `50` | Links `web_scrape` lists by default, from the page content; a request's `max_links` (0 to 200) replaces it |
 | `ARCHIVE_BUDGET_SECONDS` | `20` | Time the walk through the archive's copies may take (`archive: true`) |
 | `FETCH_TIMEOUT_SECONDS` | `20` | Per-request timeout |
 | `FETCH_RETRIES` | `1` | Retries for transient failures only |
@@ -1013,4 +1013,17 @@ and `depth`; with none of them a search is what it was, and the server's
 - A bad value is refused: HTTP 422 on REST, `invalid_arguments` on MCP,
   `invalid_request` from the service (`region` such as `finland`, more than five
   domains, a `date_from` after `date_to`).
+
+### Scrape output: links on request
+
+- `web_scrape` takes `links` (true by default) and `max_links` (0 to 200, 50 by
+  default, the server's `SCRAPE_MAX_LINKS`; held to `MAX_LINKS`, 500).
+  `links: false` returns none, and `links_truncated` is then `false`: nothing
+  was left out, the caller asked for none. `max_links: 0` with links on returns
+  none and `links_truncated` says the page has some.
+- Each limit bounds one thing: `max_chars` the Markdown only, `max_links` the
+  links. A page's menus, headers, footers and sidebars are still left out of
+  the list and still count towards `links_truncated`; `web_map` lists every link.
+- The scrape cache key holds the choice, so a scrape without links and one with
+  200 are separate entries.
 

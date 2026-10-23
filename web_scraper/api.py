@@ -1284,6 +1284,7 @@ def create_app(settings: Optional[Config] = None) -> FastAPI:
                 payload.url,
                 max_chars=payload.max_chars,
                 archive=payload.archive,
+                **payload.model_dump(include={"links", "max_links"}, exclude_defaults=True),
             )
         return WebScrapeResponse(**result)
 

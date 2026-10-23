@@ -14,6 +14,7 @@ from web_scraper.web_tools.settings import (
     EXTRACT_MAX_CHARS_FLOOR,
     EXTRACT_MAX_ITEMS_CEILING,
     MIN_MARKDOWN_CHARS,
+    SCRAPE_MAX_LINKS_CEILING,
 )
 
 
@@ -377,7 +378,21 @@ class WebScrapeRequest(BaseModel):
         le=200_000,
         description=(
             f"Markdown character cap, at least {MIN_MARKDOWN_CHARS}; the server's own cap "
-            "(WEB_TOOLS_MARKDOWN_MAX_CHARS, 50,000 by default) applies above it"
+            "(WEB_TOOLS_MARKDOWN_MAX_CHARS, 50,000 by default) applies above it. It bounds "
+            "the Markdown only; max_links bounds the links"
+        ),
+    )
+    links: bool = Field(
+        default=True,
+        description="false returns no links at all, and links_truncated is then false",
+    )
+    max_links: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=SCRAPE_MAX_LINKS_CEILING,
+        description=(
+            "The most links returned, 0 to 200 (50 by default, WEB_TOOLS_SCRAPE_MAX_LINKS); "
+            "links_truncated says more exist. max_chars does not bound them"
         ),
     )
     archive: bool = Field(

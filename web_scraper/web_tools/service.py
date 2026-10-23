@@ -65,6 +65,7 @@ from web_scraper.web_tools.settings import (
     EXTRACT_MAX_CHARS_FLOOR,
     EXTRACT_MAX_ITEMS_CEILING,
     MIN_MARKDOWN_CHARS,
+    SCRAPE_MAX_LINKS_CEILING,
     WebToolsSettings,
 )
 from web_scraper.web_tools.urls import (
@@ -738,11 +739,18 @@ class WebToolsService:
         *,
         max_chars: Optional[int] = None,
         archive: bool = False,
+        links: bool = True,
+        max_links: Optional[int] = None,
     ) -> dict[str, Any]:
         requested = self._canonical(url)
         fetch_target = self._request_url(url)
         limit = self._markdown_limit(max_chars)
-        cache_key = f"scrape:{requested}:{limit}" + (":archive" if archive else "")
+        link_cap = self._links_limit(max_links)
+        cache_key = (
+            f"scrape:{requested}:{limit}"
+            + (":archive" if archive else "")
+            + (f":links{link_cap}" if links else ":nolinks")
+        )
 
         started = time.perf_counter()
         cached = await self.cache.get(cache_key)
@@ -761,7 +769,7 @@ class WebToolsService:
                 exc.hint = _ARCHIVE_HINT
                 raise
             document, archived, skipped = await self._archived_copy(fetch_target, limit, exc)
-        payload = self._page_payload(document, requested)
+        payload = self._page_payload(document, requested, links=links, max_links=link_cap)
         if archived is not None:
             payload["archived_at"], payload["archive_url"] = archived
             payload["archive_skipped"] = skipped
@@ -1382,11 +1390,20 @@ class WebToolsService:
             timings=timings,
         )
 
-    def _page_payload(self, document: LoadedDocument, requested: str) -> dict[str, Any]:
+    def _page_payload(
+        self,
+        document: LoadedDocument,
+        requested: str,
+        *,
+        links: bool = True,
+        max_links: Optional[int] = None,
+    ) -> dict[str, Any]:
         # The page's own links, without menus, banners, footers, and sidebars,
-        # capped; map and crawl still see every link.
+        # capped; map and crawl still see every link. ``links=False`` returns none,
+        # and says nothing was left out: the caller asked for none.
         content_links = [link for link in document.page.links if not link.chrome]
-        shown = content_links[: self.settings.scrape_max_links]
+        cap = self.settings.scrape_max_links if max_links is None else max_links
+        shown = content_links[:cap] if links else []
         metadata, metadata_cut = trim_metadata(document.page.metadata)
         payload: dict[str, Any] = {
             "url": document.final_url,
@@ -1398,7 +1415,7 @@ class WebToolsService:
             "status_code": document.status_code,
             "content_type": document.content_type,
             "links": [{"url": link.url, "text": link.text, "kind": link.kind} for link in shown],
-            "links_truncated": len(shown) < len(document.page.links),
+            "links_truncated": links and len(shown) < len(document.page.links),
             "metadata": metadata,
             "metadata_truncated": metadata_cut,
             "content_hash": content_hash(document.page.markdown),
@@ -1410,6 +1427,18 @@ class WebToolsService:
         if document.pages is not None:
             payload["pages"] = document.pages
         return payload
+
+    def _links_limit(self, value: Optional[int]) -> int:
+        """How many links a scrape lists: the setting, or the request's own, held to both ceilings."""
+        if value is None:
+            return self.settings.scrape_max_links
+        if not 0 <= int(value) <= SCRAPE_MAX_LINKS_CEILING:
+            raise WebToolError(
+                "invalid_request",
+                f"max_links must be 0 to {SCRAPE_MAX_LINKS_CEILING}",
+                detail=f"got {int(value)}",
+            )
+        return min(int(value), self.settings.max_links)
 
     def _markdown_limit(self, value: Optional[int]) -> int:
         if value is None:

@@ -15,6 +15,10 @@ _BROWSER_PREFERENCES = {"auto", "chrome", "chromium", "camoufox"}
 # the service refuses a smaller one, so no layer silently raises a caller's cap.
 MIN_MARKDOWN_CHARS = 500
 
+# The most links one web_scrape request may ask for (``max_links``); the server's
+# ``scrape_max_links`` is the default, and ``max_links`` its own ceiling.
+SCRAPE_MAX_LINKS_CEILING = 200
+
 # web_extract's bounds: the values one ``all`` field may return, and the size of
 # a whole answer in characters (its compact JSON).
 EXTRACT_MAX_ITEMS_CEILING = 1_000

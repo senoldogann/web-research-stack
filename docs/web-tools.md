@@ -676,3 +676,11 @@ headless browser met as well.
 - `total` counts every URL that matched the scope and filters before `limit`
   cut the list; `returned` counts `urls`, and `truncated` is `true` when the
   limit left some out. Before, `total` was the length of the cut list.
+
+### Cache hits time themselves
+
+- A `web_scrape` or `web_search` answered from the cache reported the timings
+  of the call that filled it (a repeated scrape said `total_ms: 903` and took
+  under a millisecond). Its `timings` now hold only `cache_lookup_ms` and the
+  real `total_ms`; the stored call's timings move to `cached_timings`, and
+  `cached_at` says when it was made (UTC), so a caller can judge its age.

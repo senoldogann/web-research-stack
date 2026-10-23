@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Mapping, Optional
 from urllib.parse import urlsplit
 
@@ -216,18 +217,12 @@ class WebToolsService:
             f"{self.settings.search_region}:{self.settings.search_language}:"
             f"{cleaned.casefold()}"
         )
-        cache_started = time.perf_counter()
+        started = time.perf_counter()
         cached = await self.cache.get(cache_key)
         if cached is not None:
-            cache_ms = (time.perf_counter() - cache_started) * 1000
             self.metrics.count("cache_hits_total", operation="search")
-            payload = dict(cached)
-            payload["timings"] = dict(cached["timings"])
-            payload["timings"]["cache_lookup_ms"] = round(cache_ms, 2)
-            payload["cache_hit"] = True
-            return payload
+            return _from_cache(cached, started)
 
-        started = time.perf_counter()
         angles = build_search_angles(
             cleaned,
             resolved_depth,
@@ -381,7 +376,7 @@ class WebToolsService:
         }
         await self.cache.set(
             cache_key,
-            payload,
+            _for_cache(payload),
             ttl_seconds=self.settings.search_cache_ttl_seconds,
         )
         return payload
@@ -535,25 +530,19 @@ class WebToolsService:
         limit = self._markdown_limit(max_chars)
         cache_key = f"scrape:{requested}:{limit}"
 
-        cache_started = time.perf_counter()
+        started = time.perf_counter()
         cached = await self.cache.get(cache_key)
         if cached is not None:
-            cache_ms = (time.perf_counter() - cache_started) * 1000
             self.metrics.count("cache_hits_total", operation="scrape")
-            payload = dict(cached)
-            payload["timings"] = dict(cached["timings"])
-            payload["timings"]["cache_lookup_ms"] = round(cache_ms, 2)
-            payload["cache_hit"] = True
-            return payload
+            return _from_cache(cached, started)
 
-        started = time.perf_counter()
         document = await self._load_page(fetch_target, max_chars=limit)
         payload = self._page_payload(document, requested)
         total_ms = (time.perf_counter() - started) * 1000
         payload["timings"]["total_ms"] = round(total_ms, 2)
         self.metrics.observe("total", total_ms, operation="scrape")
         self.metrics.count("scrapes_total", mode=payload["fetched_with"])
-        await self.cache.set(cache_key, payload)
+        await self.cache.set(cache_key, _for_cache(payload))
         return payload
 
     async def extract(self, url: str, schema: Mapping[str, Any]) -> dict[str, Any]:
@@ -1163,6 +1152,28 @@ class WebToolsService:
             "status_code": None,
             "detail": None,
         }
+
+
+def _for_cache(payload: dict[str, Any]) -> dict[str, Any]:
+    """The payload as the cache keeps it: stamped with when it was made."""
+    stored = dict(payload)
+    stored["cached_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return stored
+
+
+def _from_cache(cached: Mapping[str, Any], started: float) -> dict[str, Any]:
+    """A cached payload with this call's own timings.
+
+    The stages of the call that filled the cache (its network, search and
+    ranking time) move under ``cached_timings``; ``timings`` holds the lookup
+    and this call's real total, so a cache hit never reports the old cost.
+    """
+    payload = dict(cached)
+    elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+    payload["cached_timings"] = dict(cached.get("timings") or {})
+    payload["timings"] = {"cache_lookup_ms": elapsed_ms, "total_ms": elapsed_ms}
+    payload["cache_hit"] = True
+    return payload
 
 
 def _origin(url: str) -> str:

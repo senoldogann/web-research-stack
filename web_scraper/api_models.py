@@ -285,6 +285,9 @@ class WebSearchResponse(BaseModel):
     queries: List[WebSearchQuery] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
     cache_hit: bool = False
+    # On a cache hit: the timings of the call that filled the cache, and when.
+    cached_timings: Optional[Dict[str, float]] = None
+    cached_at: Optional[str] = None
     timings: Dict[str, float]
 
 
@@ -324,6 +327,9 @@ class WebScrapeResponse(BaseModel):
     content_hash: str
     fetched_with: str
     cache_hit: bool = False
+    # On a cache hit: the timings of the call that filled the cache, and when.
+    cached_timings: Optional[Dict[str, float]] = None
+    cached_at: Optional[str] = None
     warnings: List[str] = Field(default_factory=list)
     timings: Dict[str, float]
     pages: Optional[int] = Field(default=None, description="Page count of a PDF document")

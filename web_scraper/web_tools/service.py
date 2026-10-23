@@ -13,6 +13,7 @@ from typing import Any, Mapping, Optional, Sequence
 from urllib.parse import urlencode, urlsplit
 
 from web_scraper.api_runtime import InMemoryTTLCache, MetricsRegistry
+from web_scraper.web_tools.archive_fetcher import build_archive_fetcher
 from web_scraper.web_tools.browser import (
     BrowserPage,
     BrowserRenderError,
@@ -143,9 +144,13 @@ class WebToolsService:
         latency: Optional[LatencyTracker] = None,
         metrics_registry: Optional[MetricsRegistry] = None,
         page_cache: Optional[PageCache] = None,
+        archive_fetcher: Optional[Any] = None,
     ) -> None:
         self.settings = settings
         self.fetcher = fetcher
+        # What reads web.archive.org (the CDX list and the replays); without one, the fetcher
+        # does, as a service made by hand with a fake always did.
+        self._archive = archive_fetcher
         self.browser = browser
         self.search_adapters = dict(search_adapters or {})
         self.cache = cache or InMemoryTTLCache(
@@ -215,6 +220,7 @@ class WebToolsService:
             cache=cache,
             latency=latency,
             metrics_registry=metrics_registry,
+            archive_fetcher=build_archive_fetcher(settings),
         )
 
     async def close(self) -> None:
@@ -224,9 +230,10 @@ class WebToolsService:
             close_adapter = getattr(adapter, "aclose", None)
             if close_adapter is not None:
                 await close_adapter()
-        close_fetcher = getattr(self.fetcher, "aclose", None)
-        if close_fetcher is not None:
-            await close_fetcher()
+        for reader in (self.fetcher, self._archive):
+            close_reader = getattr(reader, "aclose", None)
+            if close_reader is not None:
+                await close_reader()
         if self.browser is not None:
             await self.browser.stop()
 
@@ -991,9 +998,10 @@ class WebToolsService:
         all the way down, an archive that is busy (HTTP 429) or too slow.
         """
         deadline = time.monotonic() + self.settings.archive_budget_seconds
+        reader = self._archive or self.fetcher
         try:
             answer = await asyncio.wait_for(
-                self.fetcher.fetch(_cdx_url(url)), timeout=_remaining(deadline)
+                reader.fetch(_cdx_url(url)), timeout=_remaining(deadline)
             )
             copies = _cdx_copies(answer.html)
         except asyncio.TimeoutError:
@@ -1009,7 +1017,9 @@ class WebToolsService:
             taken = _taken_at(stamp)
             try:
                 document = await asyncio.wait_for(
-                    self._load_page(snapshot, max_chars=limit, browser=False, cache=False),
+                    self._load_page(
+                        snapshot, max_chars=limit, browser=False, cache=False, fetcher=reader
+                    ),
                     timeout=_remaining(deadline),
                 )
             except asyncio.TimeoutError:
@@ -1357,7 +1367,13 @@ class WebToolsService:
         }
 
     async def _load_page(
-        self, url: str, *, max_chars: int, browser: bool = True, cache: bool = True
+        self,
+        url: str,
+        *,
+        max_chars: int,
+        browser: bool = True,
+        cache: bool = True,
+        fetcher: Optional[Any] = None,
     ) -> LoadedDocument:
         """Read a page, from the page cache when it was fetched a moment ago.
 
@@ -1373,7 +1389,9 @@ class WebToolsService:
             if stored is not None:
                 self.metrics.count("page_cache_hits_total")
                 return self._document_from_cache(stored, max_chars, started)
-        document = await self._fetch_document(url, max_chars=max_chars, browser=browser)
+        document = await self._fetch_document(
+            url, max_chars=max_chars, browser=browser, fetcher=fetcher
+        )
         if key is not None and _storable(document):
             self._pages.put(
                 key,
@@ -1429,12 +1447,20 @@ class WebToolsService:
         )
 
     async def _fetch_document(
-        self, url: str, *, max_chars: int, browser: bool = True
+        self,
+        url: str,
+        *,
+        max_chars: int,
+        browser: bool = True,
+        fetcher: Optional[Any] = None,
     ) -> LoadedDocument:
-        """Fetch and read a page; ``browser=False`` never opens a headless browser for it."""
+        """Fetch and read a page; ``browser=False`` never opens a headless browser for it.
+
+        *fetcher* is what fetches it when it is not ``self.fetcher`` (web.archive.org's own).
+        """
         started = time.perf_counter()
         try:
-            fetched = await self.fetcher.fetch(url)
+            fetched = await (fetcher or self.fetcher).fetch(url)
         except FetchError as exc:
             if (
                 browser

@@ -1287,10 +1287,41 @@ About 30 calls in all, one search at a time, 8 s or more apart.
   header the fetcher could change, so the walk ends with its hint (`The Internet Archive
   answered HTTP 429 ... try archive: true again later`) and the skip to a good copy could not be
   shown live from this Mac (the tests cover it with fake transports and the real
-  interstitial check). Reading replays with `curl_cffi` (already a dependency) would be the
-  way round it; it is left out because the fetcher's guards are not to be touched here.
+  interstitial check). Reading replays through `curl_cffi` was the way round it, done next:
+  see "Wayback replays are read like a browser" below.
 - **News search with `read`.** `AI regulation news this week` at `discover` with
   `read: 2`: Reuters (`news`) first; its content was a `content_error` (`blocked`, captcha,
   with the archive hint), `news.un.org` came back as 1,500 characters
   (`content_truncated: true`), `timings.read_ms` 2.1 s, the whole answer 7.4 KB.
+
+### Wayback replays are read like a browser
+
+- The live check above found `web.archive.org` answering the `httpx` client HTTP 429 on a
+  replay whatever the headers, while curl got 200, so `archive: true` read no copy in practice
+  (the CDX list answered; the replay did not). The CDX list and the replays of
+  `web.archive.org`, and of no other host, are now read through a `curl_cffi` session that
+  impersonates one Chrome (the newest the installed `curl_cffi` knows), as the DuckDuckGo
+  searcher does (`web_scraper/web_tools/archive_fetcher.py`).
+- It is the same `SafeFetcher` with another transport, so every limit is the fetcher's own: the
+  byte cap (`MAX_RESPONSE_BYTES`, the download is stopped and closed when it is passed), the
+  timeout (`FETCH_TIMEOUT_SECONDS`), the retry of a transient failure (`FETCH_RETRIES`), the
+  redirect count, and the checks for a captcha, a login wall and a refusal, so an archived
+  captcha is still skipped into `archive_skipped`. A redirect is followed only within
+  `web.archive.org`; one out of it is refused like any other target.
+- The host is fixed in code: only `https://web.archive.org` on its own port, with no
+  credentials, is read this way (`web.archive.org.evil.example` and `archive.org` are not it),
+  and the fetcher's public-address check still runs on it. Nothing else goes through the
+  impersonated session. The page itself is still fetched by the ordinary fetcher.
+- Headers: the impersonated browser sends its own, coherent with its TLS fingerprint; the
+  fetcher's user agent and `Accept` headers are not sent to the archive. The body arrives
+  decoded, and a `Content-Encoding` that described the wire is left out of the answer so it
+  is not decoded twice.
+- Measured live (2026-10-23, three calls): Reuters' AI section answered 401/captcha and was
+  read from the archive, copy of 2025-09-25, 2,324 characters (the CDX list in 1.0 s, the
+  replay of 537 KB in 1.4 s, where `httpx` was answered 429); the New York Times'
+  technology section answered 403 and was read from its copy of 2026-08-28 (11,211
+  characters, the replay of 957 KB in 2.6 s); WSJ's AI section answered 200 and needed no
+  archive. `archive_skipped` was empty in both reads: the newest copy the CDX lists with
+  status 200 was itself readable. `tests/test_web_archive_transport.py` holds the limits with
+  a fake session.
 

@@ -196,21 +196,21 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
                     "an official or primary-source angle; depth=fast sends one query. Ranking "
                     "uses field-weighted BM25, weighted cross-angle consensus, source authority, "
                     "inferred recency, and near-duplicate/domain diversity. Explicit freshness "
-                    "queries get provider date filters; responses are cached per query. Optional "
-                    "region, language, sites, exclude_sites and date_from/date_to narrow a search "
-                    "(a result dated outside the range is dropped, an undated one stays). read "
-                    "(0 to 5, default 0) also reads that many top results in the same call: "
-                    "content, or content_error, on each; it costs seconds. A "
-                    "refused or timed-out provider call goes on to DuckDuckGo lite, then Google, and "
-                    "provider names who answered. With nothing relevant, results is empty and warnings "
-                    "holds no_relevant_results; low_relevance_results says every result holds "
-                    "under half of the query's words. Results carry source_type (official, academic, news, press_release, social, reference, code, community, other; a news query ranks outlets first), year, recency "
-                    "(by year: current is this year or last), date (day or month, from the "
-                    "address, snippet or title, with date_source and age_days), freshness "
-                    "(this_week ... undated, by that date first), kind (article, listing, front, "
-                    "page; a news query ranks articles before listings and front pages), "
-                    "angles, relevance, bm25, score, and cache_hit, with coverage facets. Search "
-                    "discovers URLs only; use web_scrape to read a result."
+                    "queries get provider date filters; responses are cached per query. region, "
+                    "language, sites, exclude_sites, date_from and date_to narrow a search. read "
+                    "N (0 to 5) also reads the top N results: content or content_error on each; "
+                    "it costs seconds. A refused or timed-out call goes on to DuckDuckGo lite, "
+                    "then Google; provider names who answered. With nothing relevant, results is "
+                    "empty and warnings holds no_relevant_results; low_relevance_results says "
+                    "every result holds under half of the query's words. Results carry "
+                    "source_type (official, academic, news, press_release, social, reference, "
+                    "code, community, other), year, recency (by year: current is this year or "
+                    "last), date (day or month, from the address, snippet or title, with "
+                    "date_source and age_days), freshness (this_week ... undated, by that date "
+                    "first), kind (article, listing, front, page; a news query ranks articles "
+                    "before listings and front pages), angles, relevance, bm25, score, and "
+                    "cache_hit, with coverage facets. Search discovers URLs only; use "
+                    "web_scrape to read a result."
                 ),
                 "inputSchema": WebSearchRequest.model_json_schema(),
                 "annotations": _annotations(
@@ -225,20 +225,18 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
                 "description": (
                     "Fetch one public URL HTTP-first and return clean Markdown, title, "
                     "description, canonical URL, status, links from the page content (50 by "
-                    "default, max_links 0 to 200, links: false for none; menus, headers, "
+                    "default; max_links 0 to 200, links: false for none; menus, headers, "
                     "footers, and sidebars left out; links_truncated says more exist, web_map "
                     "lists them all), metadata, content hash, and stage timings. max_chars "
-                    "bounds the Markdown only, max_links the links. urls (2 to 10) in place of "
-                    "url reads several pages in one call: pages, in order, each its answer or "
-                    "{url, error}; max_total_chars (60,000) bounds the whole answer, each "
-                    "page's Markdown cut to fit and marked markdown_truncated. A shared headless browser is used only for JavaScript "
-                    "shells or access interstitials; CAPTCHA and login walls fail fast, their "
-                    "error's hint saying what to try next: archive: true reads the Internet "
-                    "Archive's newest copy that is not itself a wall of a page the site walls "
-                    "off or no longer serves, marked fetched_with archive with archived_at (that "
-                    "copy's date), archive_skipped and an archived_copy warning. A PDF "
-                    "comes back as Markdown text with content_type application/pdf and its "
-                    "page count in pages."
+                    "bounds the Markdown only. urls (2 to 10) instead of url reads pages in "
+                    "one call: pages, in order, each an answer or {url, error}; max_total_chars "
+                    "(60,000) bounds the whole answer. A shared headless browser is used only "
+                    "for JavaScript shells or access interstitials; CAPTCHA and login walls "
+                    "fail fast, their error's hint saying what to try next: archive: true reads "
+                    "the Internet Archive's newest copy that is not itself a wall "
+                    "(fetched_with archive, archived_at, archive_skipped). A PDF comes back as "
+                    "Markdown text with content_type application/pdf and its page count in "
+                    "pages."
                 ),
                 "inputSchema": WebScrapeRequest.model_json_schema(),
                 "annotations": _annotations(
@@ -338,8 +336,25 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
     ]
 
 
+def _lean(node: Any, names: bool = False) -> Any:
+    """A JSON schema without its ``title`` labels, which only repeat a property's name.
+
+    Dot sends every tool's schema with each model request, so what says nothing is left out.
+    ``names`` marks a mapping of property names, whose keys are kept whatever they are.
+    """
+    if isinstance(node, dict):
+        return {
+            key: _lean(value, key in {"properties", "$defs"})
+            for key, value in node.items()
+            if names or key != "title"
+        }
+    if isinstance(node, list):
+        return [_lean(item) for item in node]
+    return node
+
+
 def _tools() -> list[dict[str, Any]]:
-    return [spec for spec, _ in _tool_specs()]
+    return [{**spec, "inputSchema": _lean(spec["inputSchema"])} for spec, _ in _tool_specs()]
 
 
 def _text_result(payload: dict[str, Any]) -> dict[str, Any]:

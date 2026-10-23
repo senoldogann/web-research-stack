@@ -248,42 +248,39 @@ class WebSearchRequest(BaseModel):
 
     region: Optional[str] = Field(
         default=None,
-        description="DuckDuckGo region kl and Google country gl: fi-fi, us-en, wt-wt (none)",
+        description="Region: fi-fi, us-en, wt-wt (none). DuckDuckGo kl, Google gl",
     )
     language: Optional[str] = Field(
-        default=None, description="Language tag, e.g. fi or en: Google hl, DuckDuckGo's locale"
+        default=None, description="Language tag (fi, en): Google hl, DuckDuckGo's locale"
     )
     sites: Optional[List[str]] = Field(
         default=None,
         max_length=5,
-        description="Up to 5 domains: site: operators, and only their results (subdomains too)",
+        description="Up to 5 domains: only their results (subdomains too)",
     )
     exclude_sites: Optional[List[str]] = Field(
-        default=None, max_length=5, description="Up to 5 domains kept out, likewise"
+        default=None, max_length=5, description="Up to 5 domains kept out"
     )
     date_from: Optional[date] = Field(
         default=None,
-        description="ISO date; a result dated before it is dropped, undated ones stay",
+        description="ISO date: results dated before it are dropped, undated stay",
     )
-    date_to: Optional[date] = Field(default=None, description="ISO date, likewise after it")
+    date_to: Optional[date] = Field(default=None, description="ISO date: later ones dropped")
     read: int = Field(
         default=0,
         ge=0,
         le=SEARCH_READ_MAX,
-        description=(
-            "Also read the top N results (0 to 5) in this call: each gets content, its "
-            "Markdown, or content_error. Reading costs seconds"
-        ),
+        description="Also read the top N results: content or content_error each. Costs seconds",
     )
     read_chars: Optional[int] = Field(
         default=None,
         ge=MIN_MARKDOWN_CHARS,
         le=SEARCH_READ_CHARS_MAX,
-        description="With read: the most Markdown characters of each page (4,000 by default)",
+        description="With read: characters of Markdown per page (4,000)",
     )
     archive: bool = Field(
         default=False,
-        description="With read: read the Internet Archive's copy of a page the site walls off",
+        description="With read: use the Internet Archive for walled pages",
     )
 
     @field_validator("query")
@@ -448,25 +445,19 @@ class WebScrapeRequest(BaseModel):
         default=None,
         min_length=3,
         max_length=2048,
-        description="The page to read; exactly one of url and urls",
+        description="The page; exactly one of url and urls",
     )
     urls: Optional[List[str]] = Field(
         default=None,
         min_length=SCRAPE_BATCH_MIN_URLS,
         max_length=SCRAPE_BATCH_MAX_URLS,
-        description=(
-            "2 to 10 pages read in one call, in place of url: the answer is pages, in this "
-            "order, each that page's answer or {url, error}; one failing never fails the rest"
-        ),
+        description="2 to 10 pages in one call, instead of url: pages in this order, each an answer or {url, error}",
     )
     max_total_chars: Optional[int] = Field(
         default=None,
         ge=SCRAPE_BATCH_MIN_TOTAL_CHARS,
         le=SCRAPE_BATCH_MAX_TOTAL_CHARS,
-        description=(
-            "With urls: the whole answer stays under this many characters (60,000 by "
-            "default); each page's Markdown is cut to fit and marked markdown_truncated"
-        ),
+        description="With urls: cap on the whole answer (60,000); Markdown is cut to fit",
     )
     max_chars: Optional[int] = Field(
         default=None,
@@ -480,23 +471,19 @@ class WebScrapeRequest(BaseModel):
     )
     links: bool = Field(
         default=True,
-        description="false returns no links at all, and links_truncated is then false",
+        description="false returns no links",
     )
     max_links: Optional[int] = Field(
         default=None,
         ge=0,
         le=SCRAPE_MAX_LINKS_CEILING,
-        description=(
-            "The most links returned, 0 to 200 (50 by default, WEB_TOOLS_SCRAPE_MAX_LINKS); "
-            "links_truncated says more exist. max_chars does not bound them"
-        ),
+        description="Most links returned, 0 to 200 (50); links_truncated says more exist",
     )
     archive: bool = Field(
         default=False,
         description=(
-            "When the site walls the page off (a captcha, a refusal) or no longer serves it, "
-            "read the Internet Archive's newest copy that is not itself a wall instead, marked "
-            "as such; it may be days or months old"
+            "A walled or gone page: read the Internet Archive's newest copy that is not itself "
+            "a wall, marked as such (may be days or months old)"
         ),
     )
 
@@ -664,10 +651,7 @@ class WebExtractField(BaseModel):
         default=None,
         ge=0,
         le=EXTRACT_OFFSET_CEILING,
-        description=(
-            "With all: skip the first N matches, to page past max_items; the field's "
-            "provenance holds offset, and next_offset when values were left out"
-        ),
+        description="With all: skip the first N matches; provenance has next_offset to page on",
     )
     type: str = Field(
         default="string",
@@ -751,10 +735,7 @@ class WebCrawlOptions(BaseModel):
     respect_robots: Optional[bool] = None
     use_sitemap: Optional[bool] = Field(
         default=None,
-        description=(
-            "Seed the crawl from the site's sitemaps (robots.txt, /sitemap.xml, indexes): pages "
-            "no link reaches. Seeds stay in scope and filters, and count against max_pages"
-        ),
+        description="Also start from the site's sitemaps (pages no link reaches); counts as pages",
     )
 
 

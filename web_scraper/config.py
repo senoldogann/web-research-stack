@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-import dotenv
+from web_scraper.local_env import load_local_env
 
 
 def _parse_bool(value: Optional[str], default: bool) -> bool:
@@ -299,7 +299,7 @@ class Config:
     @classmethod
     def from_env(cls) -> Config:
         """Load configuration from environment variables."""
-        dotenv.load_dotenv()
+        load_local_env()
 
         return cls(
             timeout=_safe_float(os.getenv("SCRAPER_TIMEOUT"), 30.0),

@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Optional
 
-import dotenv
+from web_scraper.local_env import load_local_env
 
 _BROWSER_PREFERENCES = {"auto", "chrome", "chromium", "camoufox"}
 
@@ -287,7 +287,7 @@ class WebToolsSettings:
     @classmethod
     def from_env(cls) -> WebToolsSettings:
         """Build settings from WEB_TOOLS_* environment variables."""
-        dotenv.load_dotenv()
+        load_local_env()
         return cls(
             search_provider=os.getenv("WEB_TOOLS_SEARCH_PROVIDER", "duckduckgo"),
             search_timeout_seconds=_float("WEB_TOOLS_SEARCH_TIMEOUT_SECONDS", 30.0),

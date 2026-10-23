@@ -190,6 +190,12 @@ routes. Existing general and scrape research limits are unchanged.
 
 ## Dot Desktop integration
 
+The package is published as `dotagent-web-research` (`pip install dotagent-web-research`,
+`uv tool install dotagent-web-research`) and installs a `web-research-mcp` command that
+starts this server over stdio. Dot's package depends on it, so a fresh Dot install brings
+it, and its table is `command = "web-research-mcp"`. From a checkout (the owner's), the
+launcher below does the same.
+
 Dot starts local MCP servers itself over stdio. Add one table to
 `~/Library/Application Support/Dot/config.toml` (this repository does **not**
 modify Dot's live config):

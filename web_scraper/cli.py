@@ -1,17 +1,14 @@
 """Command-line interface for the web scraper."""
 
 import json
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Optional
 
 import click
 
-try:
-    _version = version("web-scraper")
-except PackageNotFoundError:
-    _version = "dev"
-
+# The package's own version: the distribution's name (dotagent-web-research) is not the import
+# package's, and a checkout that is not installed has no distribution to ask.
+from web_scraper import __version__ as _version
 from web_scraper.async_scrapers import WebScraperAsync
 from web_scraper.config import config
 from web_scraper.scrapers import WebScraper

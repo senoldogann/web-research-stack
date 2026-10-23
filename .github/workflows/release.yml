@@ -1,0 +1,62 @@
+name: Release
+
+# A tag v<version> builds the package and publishes it to PyPI as dotagent-web-research, with
+# trusted publishing: no token is stored. pypi.org is told once, by the owner, to trust this
+# repository, this workflow (release.yml) and the environment "pypi" for that project.
+#
+#   git tag v1.2.0 && git push origin v1.2.0
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build the wheel and the sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: The tag is the package's version
+        run: |
+          version="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' web_scraper/__init__.py)"
+          test -n "${version}" || { echo "no __version__ in web_scraper/__init__.py"; exit 1; }
+          test "v${version}" = "${GITHUB_REF_NAME}" || {
+            echo "The tag ${GITHUB_REF_NAME} is not v${version}, the version of web_scraper"
+            exit 1
+          }
+          grep -q "^version = \"${version}\"$" pyproject.toml || {
+            echo "pyproject.toml does not say version ${version}"
+            exit 1
+          }
+      - name: Build
+        run: |
+          python -m pip install build twine
+          python -m build
+          python -m twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/dotagent-web-research
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

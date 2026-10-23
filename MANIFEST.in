@@ -1,0 +1,5 @@
+include LICENSE README.md
+# The tests an sdist carries need what they read: their fixtures and two recorded benchmarks.
+graft tests
+include benchmarks/search_relevance_queries.json benchmarks/web_search_relevance.json
+global-exclude __pycache__ *.py[cod] .DS_Store

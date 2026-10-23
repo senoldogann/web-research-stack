@@ -1,26 +1,29 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=77.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "web-scraper"
+# The name on PyPI: "web-scraper" and "web-research-mcp" are taken there by others. The import
+# package stays web_scraper, and so does the "web-scraper" command.
+name = "dotagent-web-research"
 version = "1.2.0"
-description = "A powerful web scraper with CLI and API support"
+description = "MCP server for web search and reading (search, scrape, map, extract, crawl) that Dot, an always-on agent for macOS, uses"
 readme = "README.md"
 requires-python = ">=3.9"
-license = {text = "MIT"}
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     {name = "Senol Dogan", email = "senoldogan@users.noreply.github.com"}
 ]
-keywords = ["web-scraping", "scraper", "http", "beautifulsoup", "fastapi"]
+keywords = ["mcp", "model-context-protocol", "web-search", "web-scraping", "crawler", "dot", "agent"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
     "httpx>=0.26.0",
@@ -62,6 +65,8 @@ redis = [
 ]
 
 [project.scripts]
+# The MCP server Dot starts over stdio; web-scraper is the CLI and the REST server.
+web-research-mcp = "web_scraper.mcp_server:main"
 web-scraper = "web_scraper.cli:main"
 
 [project.urls]

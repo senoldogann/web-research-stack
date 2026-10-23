@@ -8,7 +8,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Sequence
 from urllib.parse import urlencode, urlsplit
 
 from web_scraper.api_runtime import InMemoryTTLCache, MetricsRegistry
@@ -47,6 +47,7 @@ from web_scraper.web_tools.pdf import PDF_CONTENT_TYPE, PdfError, extract_pdf
 from web_scraper.web_tools.providers import ProviderGate, ProviderHealth
 from web_scraper.web_tools.robots import RobotsPolicy
 from web_scraper.web_tools.search import (
+    DuckDuckGoLiteSearchAdapter,
     DuckDuckGoSearchAdapter,
     GoogleSearchAdapter,
     SearchAdapter,
@@ -164,6 +165,10 @@ class WebToolsService:
                 region=settings.search_region,
                 language=settings.search_language,
             ),
+            "duckduckgo_lite": DuckDuckGoLiteSearchAdapter(
+                region=settings.search_region,
+                language=settings.search_language,
+            ),
             "google": GoogleSearchAdapter(),
         }
         return cls(
@@ -179,6 +184,10 @@ class WebToolsService:
     async def close(self) -> None:
         if self._crawl is not None:
             await self._crawl.close()
+        for adapter in self.search_adapters.values():
+            close_adapter = getattr(adapter, "aclose", None)
+            if close_adapter is not None:
+                await close_adapter()
         close_fetcher = getattr(self.fetcher, "aclose", None)
         if close_fetcher is not None:
             await close_fetcher()
@@ -253,7 +262,8 @@ class WebToolsService:
         # provider's gate (search_provider_concurrency calls at a time, with its
         # jitter), within the angle budget, and are merged in angle order
         # whichever answers first.
-        answered = [await self._timed_angle(provider_name, angles[0], angle_limit)]
+        fast = resolved_depth == "fast"
+        answered = [await self._timed_angle(provider_name, angles[0], angle_limit, fast=fast)]
         answered += await self._angles_after_base(provider_name, angles[1:], angle_limit)
 
         for angle, (outcome, angle_ms) in zip(angles, answered):
@@ -445,12 +455,15 @@ class WebToolsService:
         limit: int,
         *,
         stagger: float = 0.0,
+        fast: bool = False,
     ) -> tuple[_AngleOutcome, float]:
         """One angle's outcome and its milliseconds, queueing for the gate included."""
         if stagger > 0:
             await asyncio.sleep(stagger)
         started = time.perf_counter()
-        outcome = await self._search_angle(provider, angle.query, limit, angle.date_filter)
+        outcome = await self._search_angle(
+            provider, angle.query, limit, angle.date_filter, fast=fast
+        )
         return outcome, (time.perf_counter() - started) * 1000
 
     async def _search_angle(
@@ -459,56 +472,85 @@ class WebToolsService:
         query: str,
         limit: int,
         date_filter: Optional[str] = None,
+        *,
+        fast: bool = False,
     ) -> _AngleOutcome:
-        """Ask the primary provider; on any failure, ask the fallback once.
+        """Ask the primary provider; on any failure, walk the fallback chain.
 
-        A primary that is cooling down after a recent failure is skipped in
-        favour of the fallback. If that fallback fails too, the primary is
-        still asked: a cooldown only steers calls, it never fails a search.
+        The chain is ``search_fallback_providers`` (the primary and a name without an
+        adapter left out): each fallback is asked in turn, through its own gate and with
+        its own cooldown, until one answers. A provider that is cooling down after a
+        recent failure is skipped without a call, the primary too when a fallback is
+        healthy. If every fallback fails, the primary is still asked when it was skipped:
+        a cooldown only steers calls, it never fails a search. The angle's ``fallback``
+        record says who was asked, in order, and why each was left.
         """
-        fallback = self._fallback_for(primary)
-        if fallback is None:
+        chain = self._fallback_chain(primary, fast=fast)
+        if not chain:
             try:
                 results = await self._call_provider(primary, query, limit, date_filter)
             except WebToolError as exc:
                 return _AngleOutcome(primary, error=exc)
             return _AngleOutcome(primary, results)
 
+        tried: list[dict[str, Any]] = []
         primary_error: Optional[WebToolError] = None
         try:
-            results = await self._call_provider(
-                primary, query, limit, date_filter, yield_to=fallback
-            )
+            results = await self._call_provider(primary, query, limit, date_filter, yield_to=chain)
         except _ProviderCoolingDown:
             reason = "provider_cooldown"
+            tried.append({"provider": primary, "status": "skipped", "reason": reason})
         except WebToolError as exc:
-            if self._provider_health_for(fallback).cooling_down():
+            if all(self._provider_health_for(name).cooling_down() for name in chain):
                 return _AngleOutcome(primary, error=exc)
             primary_error, reason = exc, exc.detail or exc.code
+            tried.append({"provider": primary, "status": "failed", "reason": reason})
         else:
             return _AngleOutcome(primary, results)
 
-        record: dict[str, Any] = {"from": primary, "to": fallback, "reason": reason, "error": None}
-        self.metrics.count("search_fallbacks_total", provider=fallback)
-        try:
-            # A cold headless browser (Google) can take longer than a plain HTTP search.
-            results = await self._call_provider(
-                fallback,
-                query,
-                limit,
-                date_filter,
-                timeout=self.settings.search_fallback_timeout_seconds,
-            )
-        except WebToolError as exc:
-            record["error"] = exc.to_dict()
-            if primary_error is not None:
-                return _AngleOutcome(primary, error=primary_error, fallback=record)
+        record: dict[str, Any] = {
+            "from": primary,
+            "to": chain[0],
+            "reason": reason,
+            "error": None,
+            "tried": tried,
+        }
+        for name in chain:
+            if self._provider_health_for(name).cooling_down():
+                tried.append({"provider": name, "status": "skipped", "reason": "provider_cooldown"})
+                continue
+            record["to"] = name
+            self.metrics.count("search_fallbacks_total", provider=name)
             try:
-                results = await self._call_provider(primary, query, limit, date_filter)
-            except WebToolError as last:
-                return _AngleOutcome(primary, error=last, fallback=record)
-            return _AngleOutcome(primary, results, fallback=record)
-        return _AngleOutcome(fallback, results, fallback=record)
+                # A cold headless browser (Google) can take longer than a plain HTTP search.
+                results = await self._call_provider(
+                    name,
+                    query,
+                    limit,
+                    date_filter,
+                    timeout=self.settings.search_fallback_timeout_seconds,
+                )
+            except WebToolError as exc:
+                record["error"] = exc.to_dict()
+                tried.append(
+                    {"provider": name, "status": "failed", "reason": exc.detail or exc.code}
+                )
+                continue
+            record["error"] = None
+            tried.append({"provider": name, "status": "answered", "reason": None})
+            return _AngleOutcome(name, results, fallback=record)
+
+        if primary_error is not None:
+            return _AngleOutcome(primary, error=primary_error, fallback=record)
+        try:
+            results = await self._call_provider(primary, query, limit, date_filter)
+        except WebToolError as last:
+            tried.append(
+                {"provider": primary, "status": "failed", "reason": last.detail or last.code}
+            )
+            return _AngleOutcome(primary, error=last, fallback=record)
+        tried.append({"provider": primary, "status": "answered", "reason": None})
+        return _AngleOutcome(primary, results, fallback=record)
 
     async def _call_provider(
         self,
@@ -517,14 +559,14 @@ class WebToolsService:
         limit: int,
         date_filter: Optional[str] = None,
         *,
-        yield_to: Optional[str] = None,
+        yield_to: Sequence[str] = (),
         timeout: Optional[float] = None,
     ) -> list[SearchResult]:
         """One paced provider call; failures update only this provider's health.
 
         With ``yield_to`` set, a provider that is cooling down raises
-        ``_ProviderCoolingDown`` instead of being called, as long as the
-        provider it would yield to is not cooling down itself.
+        ``_ProviderCoolingDown`` instead of being called, as long as one of the
+        providers it would yield to is not cooling down itself.
         """
         adapter = self.search_adapters[name]
         health = self._provider_health_for(name)
@@ -532,9 +574,9 @@ class WebToolsService:
 
         def should_yield() -> bool:
             return (
-                yield_to is not None
+                bool(yield_to)
                 and health.cooling_down()
-                and not self._provider_health_for(yield_to).cooling_down()
+                and any(not self._provider_health_for(name).cooling_down() for name in yield_to)
             )
 
         if should_yield():
@@ -576,11 +618,24 @@ class WebToolsService:
         self.metrics.count("search_provider_failures_total", provider=name)
         raise failure
 
-    def _fallback_for(self, primary: str) -> Optional[str]:
-        name = self.settings.search_fallback_provider
-        if not name or name == primary or name not in self.search_adapters:
-            return None
-        return name
+    def _fallback_chain(self, primary: str, *, fast: bool = False) -> list[str]:
+        """The providers a failed primary falls to, in the order they are asked.
+
+        Those of ``search_fallback_providers`` that have an adapter, the primary left
+        out. A quick search (``fast``) asks the plain-HTTP providers before a headless
+        browser, whatever the configured order: it waits for neither a cooldown nor a
+        cold browser while an HTTP provider can answer.
+        """
+        names = [
+            name
+            for name in self.settings.search_fallback_providers
+            if name != primary and name in self.search_adapters
+        ]
+        if fast:
+            names.sort(
+                key=lambda name: bool(getattr(self.search_adapters[name], "headless", False))
+            )
+        return names
 
     def _provider_gate_for(self, name: str) -> ProviderGate:
         gate = self._provider_gates.get(name)

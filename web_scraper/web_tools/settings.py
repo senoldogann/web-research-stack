@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Iterable, Optional
 
 import dotenv
 
@@ -42,6 +43,31 @@ def _float(name: str, default: float) -> float:
         return default
 
 
+# What a search falls back to, in the order it asks: DuckDuckGo's lite page (plain HTTP)
+# before the headless browser.
+DEFAULT_FALLBACK_PROVIDERS = ("duckduckgo_lite", "google")
+
+
+def provider_names(values: Iterable[str]) -> list[str]:
+    """Provider names, trimmed, lower-cased and unique; ``none`` and ``off`` name no provider."""
+    names: list[str] = []
+    for value in values:
+        name = str(value).strip().lower()
+        if name and name not in {"none", "off"} and name not in names:
+            names.append(name)
+    return names
+
+
+def _fallback_chain_from_env() -> list[str]:
+    """``..._FALLBACK_PROVIDERS`` (a list), else the older single ``..._FALLBACK_PROVIDER``."""
+    raw: Optional[str] = os.getenv("WEB_TOOLS_SEARCH_FALLBACK_PROVIDERS")
+    if raw is None:
+        raw = os.getenv("WEB_TOOLS_SEARCH_FALLBACK_PROVIDER")
+    if raw is None:
+        return list(DEFAULT_FALLBACK_PROVIDERS)
+    return provider_names(raw.split(","))
+
+
 def _csv(name: str) -> list[str]:
     raw = os.getenv(name, "")
     return [item.strip() for item in raw.split(",") if item.strip()]
@@ -63,7 +89,9 @@ class WebToolsSettings:
     search_provider_concurrency: int = 1
     search_jitter_min_ms: int = 250
     search_jitter_max_ms: int = 500
-    search_fallback_provider: str = "google"
+    search_fallback_providers: list[str] = field(
+        default_factory=lambda: list(DEFAULT_FALLBACK_PROVIDERS)
+    )
     search_fallback_timeout_seconds: float = 60.0
     search_provider_cooldown_seconds: int = 5
     search_provider_max_cooldown_seconds: int = 300
@@ -134,8 +162,7 @@ class WebToolsSettings:
             max(self.search_jitter_max_ms, self.search_jitter_min_ms),
             10_000,
         )
-        fallback = (self.search_fallback_provider or "").strip().lower()
-        self.search_fallback_provider = "" if fallback in {"", "none", "off"} else fallback
+        self.search_fallback_providers = provider_names(self.search_fallback_providers or [])
         self.search_fallback_timeout_seconds = max(self.search_fallback_timeout_seconds, 1.0)
         self.search_provider_cooldown_seconds = max(self.search_provider_cooldown_seconds, 0)
         self.search_provider_max_cooldown_seconds = max(
@@ -212,7 +239,7 @@ class WebToolsSettings:
             search_provider_concurrency=_int("WEB_TOOLS_SEARCH_PROVIDER_CONCURRENCY", 1),
             search_jitter_min_ms=_int("WEB_TOOLS_SEARCH_JITTER_MIN_MS", 250),
             search_jitter_max_ms=_int("WEB_TOOLS_SEARCH_JITTER_MAX_MS", 500),
-            search_fallback_provider=os.getenv("WEB_TOOLS_SEARCH_FALLBACK_PROVIDER", "google"),
+            search_fallback_providers=_fallback_chain_from_env(),
             search_fallback_timeout_seconds=_float(
                 "WEB_TOOLS_SEARCH_FALLBACK_TIMEOUT_SECONDS",
                 60.0,

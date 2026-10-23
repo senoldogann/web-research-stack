@@ -143,7 +143,7 @@ Copy `.env.example` to `.env` and set what you need. The important web tool knob
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `SEARCH_PROVIDER` | `duckduckgo` | `duckduckgo` or `google` |
+| `SEARCH_PROVIDER` | `duckduckgo` | `duckduckgo`, `duckduckgo_lite` or `google` |
 | `SEARCH_DEPTH` | `discover` | Default `fast`, `discover`, or `deep` |
 | `SEARCH_ANGLE_DELAY_MS` | `150` | Pause between discovery angles (0..5000) |
 | `SEARCH_REGION` | `wt-wt` | DuckDuckGo `kl` region, e.g. `tr-tr`; `wt-wt` is neutral |
@@ -152,7 +152,7 @@ Copy `.env.example` to `.env` and set what you need. The important web tool knob
 | `SEARCH_TIMEOUT_SECONDS` | `30` | Per-call provider timeout |
 | `SEARCH_PROVIDER_CONCURRENCY` | `1` | Calls one provider takes at a time |
 | `SEARCH_JITTER_MIN_MS` / `SEARCH_JITTER_MAX_MS` | `250` / `500` | Random gap between a provider's calls |
-| `SEARCH_FALLBACK_PROVIDER` | `google` | Asked once when a call fails; `none` turns it off |
+| `SEARCH_FALLBACK_PROVIDERS` | `duckduckgo_lite,google` | The chain a failed call goes down, in order; `none` turns it off. The older single `SEARCH_FALLBACK_PROVIDER` is read when this is unset |
 | `SEARCH_FALLBACK_TIMEOUT_SECONDS` | `60` | Timeout of a fallback call (a cold headless browser) |
 | `SEARCH_PROVIDER_COOLDOWN_SECONDS` | `5` | First cooldown after a failed provider call |
 | `SEARCH_PROVIDER_MAX_COOLDOWN_SECONDS` | `300` | Cap for the doubling cooldown |
@@ -572,8 +572,9 @@ headless browser met as well.
   `SEARCH_FALLBACK_TIMEOUT_SECONDS` (60): the headless Google browser's first
   search took 36 s in testing.
 - A failed call (`bot_detected`, a timeout, or another provider error) is asked
-  once of the fallback provider (`SEARCH_FALLBACK_PROVIDER`, default `google`;
-  `none` turns it off). `provider` names who answered (`google`, or
+  of the fallback chain (`SEARCH_FALLBACK_PROVIDERS`; before round 3 one
+  `SEARCH_FALLBACK_PROVIDER`, default `google`), see "Search that does not fall
+  to the browser every time" below. `provider` names who answered (`google`, or
   `duckduckgo+google` when the angles were split), `requested_provider` keeps
   the requested one, the angle's entry in `queries` carries
   `fallback: {from, to, reason, error}`, and `warnings` gets `provider_fallback`.
@@ -884,3 +885,49 @@ headless browser met as well.
   `bm25` before). The recorded top results of the ten queries in
   `benchmarks/search_relevance_queries.json` all keep their results and their
   warnings stay empty (`tests/test_web_search_floor.py`).
+
+### Search that does not fall to the browser every time
+
+- A refused DuckDuckGo search went to the headless Google, which takes 6 s to
+  tens of seconds when cold (one `fast` call took 12.8 s, a `deep` one 6-7 s).
+  The fallback is now a chain, `SEARCH_FALLBACK_PROVIDERS`, `duckduckgo_lite,google`
+  by default: `duckduckgo_lite` is DuckDuckGo's lite page
+  (`https://lite.duckduckgo.com/lite/`, a table of results instead of divs) as a
+  provider of its own, over plain HTTP, and Google comes after it. Each provider
+  keeps its own gate (`SEARCH_PROVIDER_CONCURRENCY`, the jitter) and its own
+  cooldown, a name without an adapter is left out, and `provider` may name
+  `duckduckgo_lite` too.
+- A call walks the chain: the primary (skipped, with no call, while it cools down
+  and a fallback is healthy), then each fallback in order, skipping the cooling
+  ones, until one answers. If every fallback fails, the primary is still asked
+  when it was skipped: a cooldown steers calls, it never fails a search.
+- `queries[].fallback` says who was asked and why each was left: `from` (the
+  primary), `to` (who answered, or the last asked), `reason` (why the primary was
+  left: `bot_detected`, `search_timeout`, `provider_cooldown`, ...), `error` (the
+  error of `to` when it failed too) and `tried`, in order, each
+  `{"provider", "status": "answered" | "failed" | "skipped", "reason"}`.
+- `depth: fast` asks the plain-HTTP providers before a headless browser, whatever
+  the configured order, and never waits for a cooldown to end: a cooling
+  provider is skipped, and the browser is asked only after every HTTP provider
+  failed or is cooling. An adapter says it drives a browser with `headless = True`
+  (the Google one does).
+- Why DuckDuckGo called the searches bots, measured on 2026-10-23 (seven calls):
+  a lite POST of `q` and `kl` alone was answered HTTP 202 with a duck-picking
+  challenge, twice, the second time after loading the lite form page first; the
+  html endpoint's GET of `q` and `kl` alone, without the `vqd` token the old code
+  fetched from `duckduckgo.com` first, was refused the same way; the same
+  searches posted with the fields DuckDuckGo's own forms carry (`s=0`,
+  `o=json`, `api=d.js`, `vqd=`, `kl`, `bing_market`) were answered 200 with
+  results, in one request. The old client also sent a random user agent (Chrome,
+  Firefox, Windows, Linux) and `sec-ch-ua` hints of another version and system
+  over a TLS fingerprint of a third (curl_cffi's `impersonate`, drawn at random per
+  search), made a new client without cookies for every search, and asked
+  `duckduckgo.com` for a token before each one. Now a search is one POST of the
+  form fields from one long-lived client (per event loop) that impersonates one
+  Chrome, keeps DuckDuckGo's cookies and sends that browser's own headers, none
+  overridden (only `Accept-Language`, `Origin`, `Referer` and `Sec-Fetch-Site`
+  are ours, as a form submit sets them); the next page is the form DuckDuckGo
+  returns, posted back. A challenge is still `search_failed` with
+  `detail=bot_detected`. Whether this lowers the refusal rate cannot be shown
+  with a few calls: a refusal depends on the address and the pace as well.
+

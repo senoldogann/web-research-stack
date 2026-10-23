@@ -156,7 +156,7 @@ class TestProviderPacing:
 
         assert settings.search_provider_concurrency == 1
         assert (settings.search_jitter_min_ms, settings.search_jitter_max_ms) == (250, 500)
-        assert settings.search_fallback_provider == "google"
+        assert settings.search_fallback_providers == ["duckduckgo_lite", "google"]
         assert settings.search_provider_cooldown_seconds == 5
 
     def test_settings_read_pacing_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -170,7 +170,7 @@ class TestProviderPacing:
 
         assert settings.search_provider_concurrency == 2
         assert (settings.search_jitter_min_ms, settings.search_jitter_max_ms) == (100, 100)
-        assert settings.search_fallback_provider == ""
+        assert settings.search_fallback_providers == []
         assert settings.search_provider_cooldown_seconds == 7
 
 
@@ -198,6 +198,10 @@ class TestGoogleFallback:
             "to": "google",
             "reason": "bot_detected",
             "error": None,
+            "tried": [
+                {"provider": "duckduckgo", "status": "failed", "reason": "bot_detected"},
+                {"provider": "google", "status": "answered", "reason": None},
+            ],
         }
         assert google.calls == ["oulu weather"]
 

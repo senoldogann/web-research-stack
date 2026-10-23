@@ -285,7 +285,10 @@ class WebSearchQuery(BaseModel):
     error: Optional[Dict[str, Any]] = None
     fallback: Optional[Dict[str, Any]] = Field(
         default=None,
-        description="Set when the fallback provider was asked: from, to, reason, error",
+        description=(
+            "Set when a fallback provider was asked: from, to, reason, error, and tried "
+            "(each provider asked or skipped, in order, with its status and reason)"
+        ),
     )
 
 

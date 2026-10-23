@@ -146,6 +146,7 @@ Copy `.env.example` to `.env` and set what you need. The important web tool knob
 | `SEARCH_PROVIDER` | `duckduckgo` | `duckduckgo`, `duckduckgo_lite` or `google` |
 | `SEARCH_DEPTH` | `discover` | Default `fast`, `discover`, or `deep` |
 | `SEARCH_ANGLE_DELAY_MS` | `150` | Pause between discovery angles (0..5000) |
+| `SEARCH_ANGLE_BUDGET_MS` | `5000` | How long the angles after the base may take once it answered (0..120000; `0` waits for every angle); one still out is cut, see "A cut angle says so" |
 | `SEARCH_REGION` | `wt-wt` | DuckDuckGo `kl` region, e.g. `tr-tr`; `wt-wt` is neutral. A request's `region` replaces it |
 | `SEARCH_LANGUAGE` | `en-US,en;q=0.9` | `Accept-Language` value. A request's `language` replaces it |
 | `SEARCH_CACHE_TTL_SECONDS` | `300` | Search response cache TTL |
@@ -1198,4 +1199,21 @@ less.
   0, `extract_ms` and `total_ms` are this call's, and `cached_timings` holds what the
   fetch cost when it was made. The same holds for a scrape's `timings` when the page was
   stored (its `cache_hit` still means the scrape *answer* came from the scrape cache).
+
+### A cut angle says so
+
+- Once the base angle has answered, the angles after it have `SEARCH_ANGLE_BUDGET_MS`
+  (5,000 by default, 0 to 120,000, `0` waits for every angle; the base is never cut).
+  An angle still out then is cut. Its warning used to be `<angle>_query_failed`, the
+  same as a refusal, and only `queries[].error.detail == "angle_budget"` told them
+  apart. It is now `<angle>_query_cut` (`current_query_cut`, `background_query_cut`,
+  `primary_query_cut`); `<angle>_query_failed` is left to what the provider refused or
+  failed.
+- What a cut costs: that angle's results are missing from the ranking (the current-year
+  results, the history, the official documentation), so the answer is narrower than
+  a full `discover` or `deep`; the call that was in flight is dropped, and the narrower
+  answer is cached for `SEARCH_CACHE_TTL_SECONDS` like any other, so the same search
+  within five minutes is the same answer. A cut is the search's own limit: it starts no
+  cooldown for the provider and no fallback asks for it. Raise the budget (or set it to 0)
+  to wait for every angle, or use `depth: fast` for one query.
 

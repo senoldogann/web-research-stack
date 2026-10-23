@@ -359,7 +359,9 @@ class WebToolsService:
                 if first_error is None:
                     first_error = outcome.error
                 if angle.name != "base":
-                    warnings.append(f"{angle.name}_query_failed")
+                    # An angle the search's own time budget cut is no refusal of the provider.
+                    cut = outcome.error.detail == "angle_budget"
+                    warnings.append(f"{angle.name}_query_{'cut' if cut else 'failed'}")
                 continue
 
             if outcome.provider not in responded:

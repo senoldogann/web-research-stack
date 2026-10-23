@@ -123,7 +123,8 @@ async def test_an_angle_past_the_budget_is_cut_without_blaming_the_provider() ->
     assert reports["primary"]["error"]["code"] == "timeout"
     assert reports["primary"]["error"]["detail"] == "angle_budget"
     assert reports["current"]["error"] is None and reports["background"]["error"] is None
-    assert "primary_query_failed" in result["warnings"]
+    assert "primary_query_cut" in result["warnings"]
+    assert "primary_query_failed" not in result["warnings"]  # that is for a refusal
     assert result["results"]
     # A cut is the search's own limit, not a provider failure: no cooldown follows.
     assert service._provider_health_for("duckduckgo").consecutive_failures == 0

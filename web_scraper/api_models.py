@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from web_scraper.config import config
+from web_scraper.web_tools.search import normalize_domains, normalize_language, normalize_region
 from web_scraper.web_tools.settings import (
     EXTRACT_MAX_CHARS_CEILING,
     EXTRACT_MAX_CHARS_FLOOR,
@@ -237,10 +238,57 @@ class WebSearchRequest(BaseModel):
         ),
     )
 
+    region: Optional[str] = Field(
+        default=None,
+        description="DuckDuckGo region kl and Google country gl: fi-fi, us-en, wt-wt (none)",
+    )
+    language: Optional[str] = Field(
+        default=None, description="Language tag, e.g. fi or en: Google hl, DuckDuckGo's locale"
+    )
+    sites: Optional[List[str]] = Field(
+        default=None,
+        max_length=5,
+        description="Up to 5 domains: site: operators, and only their results (subdomains too)",
+    )
+    exclude_sites: Optional[List[str]] = Field(
+        default=None, max_length=5, description="Up to 5 domains kept out, likewise"
+    )
+    date_from: Optional[date] = Field(
+        default=None,
+        description="ISO date; a result dated before it is dropped, undated ones stay",
+    )
+    date_to: Optional[date] = Field(default=None, description="ISO date, likewise after it")
+
     @field_validator("query")
     @classmethod
     def strip_query(cls, value: str) -> str:
         return value.strip()
+
+    @field_validator("region")
+    @classmethod
+    def check_region(cls, value: Optional[str]) -> Optional[str]:
+        return normalize_region(value) if value is not None else None
+
+    @field_validator("language")
+    @classmethod
+    def check_language(cls, value: Optional[str]) -> Optional[str]:
+        return normalize_language(value) if value is not None else None
+
+    @field_validator("sites")
+    @classmethod
+    def check_sites(cls, value: Optional[List[str]]) -> Optional[List[str]]:
+        return normalize_domains(value, "sites") or None
+
+    @field_validator("exclude_sites")
+    @classmethod
+    def check_exclude_sites(cls, value: Optional[List[str]]) -> Optional[List[str]]:
+        return normalize_domains(value, "exclude_sites") or None
+
+    @model_validator(mode="after")
+    def check_range(self) -> WebSearchRequest:
+        if self.date_from and self.date_to and self.date_from > self.date_to:
+            raise ValueError("date_from must not be after date_to")
+        return self
 
 
 class WebSearchResult(BaseModel):

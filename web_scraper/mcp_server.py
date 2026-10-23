@@ -30,6 +30,8 @@ logger = logging.getLogger("web_scraper.mcp")
 _PROTOCOL_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
 _SERVER_NAME = "web-research"
 _TOOL_CONCURRENCY = 8
+# The search parameters a request may add; each is passed on only when it is set.
+_SEARCH_PARAMETERS = {"region", "language", "sites", "exclude_sites", "date_from", "date_to"}
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _GIT_TIMEOUT_SECONDS = 1
 
@@ -101,6 +103,7 @@ async def _search(service: WebToolsService, arguments: dict[str, Any]) -> dict[s
         limit=request.limit,
         provider=request.provider,
         depth=request.depth,
+        **request.model_dump(include=_SEARCH_PARAMETERS, exclude_none=True),
     )
 
 
@@ -180,7 +183,9 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
                     "an official or primary-source angle; depth=fast sends one query. Ranking "
                     "uses field-weighted BM25, weighted cross-angle consensus, source authority, "
                     "inferred recency, and near-duplicate/domain diversity. Explicit freshness "
-                    "queries get provider date filters; responses are cached per query. A "
+                    "queries get provider date filters; responses are cached per query. Optional "
+                    "region, language, sites, exclude_sites and date_from/date_to narrow a search "
+                    "(a result dated outside the range is dropped, an undated one stays). A "
                     "refused or timed-out provider call goes on to DuckDuckGo lite, then Google, and "
                     "provider names who answered. With nothing relevant, results is empty and warnings "
                     "holds no_relevant_results; low_relevance_results says every result holds "

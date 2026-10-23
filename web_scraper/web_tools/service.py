@@ -6,8 +6,8 @@ import asyncio
 import json
 import re
 import time
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass, field, replace
+from datetime import date, datetime, timezone
 from typing import Any, Mapping, Optional, Sequence
 from urllib.parse import urlencode, urlsplit
 
@@ -37,8 +37,10 @@ from web_scraper.web_tools.discovery import (
     annotate_candidates,
     build_facets,
     build_search_angles,
+    infer_publication_date,
     rank_candidates,
     relevant_results,
+    within_date_range,
 )
 from web_scraper.web_tools.errors import WebToolError
 from web_scraper.web_tools.fetcher import FetchError, FetchResult, HostGate, SafeFetcher
@@ -51,7 +53,12 @@ from web_scraper.web_tools.search import (
     DuckDuckGoSearchAdapter,
     GoogleSearchAdapter,
     SearchAdapter,
+    SearchOptions,
     SearchResult,
+    normalize_domains,
+    normalize_language,
+    normalize_region,
+    parse_iso_date,
 )
 from web_scraper.web_tools.settings import (
     EXTRACT_MAX_CHARS_CEILING,
@@ -69,6 +76,7 @@ from web_scraper.web_tools.urls import (
     normalize_request_url,
     upgrade_to_https,
     url_in_scope,
+    url_on_domains,
 )
 
 
@@ -201,6 +209,12 @@ class WebToolsService:
         limit: Optional[int] = None,
         provider: Optional[str] = None,
         depth: Optional[str] = None,
+        region: Optional[str] = None,
+        language: Optional[str] = None,
+        sites: Optional[Sequence[str]] = None,
+        exclude_sites: Optional[Sequence[str]] = None,
+        date_from: Optional[date | str] = None,
+        date_to: Optional[date | str] = None,
     ) -> dict[str, Any]:
         cleaned = (query or "").strip()
         if not cleaned:
@@ -231,10 +245,21 @@ class WebToolsService:
             if resolved_depth == "fast"
             else min(max(resolved_limit * 2, 8), self.settings.max_search_limit)
         )
+        options, site_list, excluded_list = self._search_parameters(
+            region, language, sites, exclude_sites, date_from, date_to
+        )
+        operators = _site_operators(site_list, excluded_list)
+        if len(operators) > self.settings.max_query_length // 2:
+            raise WebToolError(
+                "invalid_request",
+                "sites and exclude_sites are too long together",
+                detail=f"{len(operators)} characters of operators",
+            )
 
         cache_key = (
             f"search:{provider_name}:{resolved_depth}:{resolved_limit}:"
             f"{self.settings.search_region}:{self.settings.search_language}:"
+            f"{_parameters_key(options, site_list, excluded_list)}:"
             f"{cleaned.casefold()}"
         )
         started = time.perf_counter()
@@ -243,11 +268,16 @@ class WebToolsService:
             self.metrics.count("cache_hits_total", operation="search")
             return _from_cache(cached, started)
 
+        # Every angle carries the operators and the parameters; the operators take room
+        # from the query, never from the limit the provider has.
         angles = build_search_angles(
             cleaned,
             resolved_depth,
-            max_length=self.settings.max_query_length,
+            max_length=self.settings.max_query_length - (len(operators) + 1 if operators else 0),
+            explicit_range=bool(options.date_from or options.date_to),
         )
+        if operators:
+            angles = [replace(angle, query=f"{angle.query} {operators}") for angle in angles]
         candidates: dict[str, DiscoveryCandidate] = {}
         query_reports: list[dict[str, Any]] = []
         angle_timings: dict[str, float] = {}
@@ -263,8 +293,14 @@ class WebToolsService:
         # jitter), within the angle budget, and are merged in angle order
         # whichever answers first.
         fast = resolved_depth == "fast"
-        answered = [await self._timed_angle(provider_name, angles[0], angle_limit, fast=fast)]
-        answered += await self._angles_after_base(provider_name, angles[1:], angle_limit)
+        answered = [
+            await self._timed_angle(
+                provider_name, angles[0], angle_limit, fast=fast, options=options
+            )
+        ]
+        answered += await self._angles_after_base(
+            provider_name, angles[1:], angle_limit, options=options
+        )
 
         for angle, (outcome, angle_ms) in zip(angles, answered):
             angle_timings[angle.name] = round(angle_ms, 2)
@@ -329,6 +365,13 @@ class WebToolsService:
 
         if not candidates and first_error is not None:
             raise first_error
+
+        if site_list or excluded_list or options.date_from or options.date_to:
+            candidates = {
+                target: candidate
+                for target, candidate in candidates.items()
+                if _passes_filters(candidate, site_list, excluded_list, options)
+            }
 
         if any(
             report["angle"] == "base" and report["error"] is not None for report in query_reports
@@ -404,6 +447,8 @@ class WebToolsService:
         provider: str,
         angles: list[SearchAngle],
         limit: int,
+        *,
+        options: Optional[SearchOptions] = None,
     ) -> list[tuple[_AngleOutcome, float]]:
         """The angles after the base, together, each cut once the angle budget ran out.
 
@@ -417,7 +462,9 @@ class WebToolsService:
             return []
         delay = self.settings.search_angle_delay_ms / 1000
         tasks = [
-            asyncio.create_task(self._timed_angle(provider, angle, limit, stagger=delay * position))
+            asyncio.create_task(
+                self._timed_angle(provider, angle, limit, stagger=delay * position, options=options)
+            )
             for position, angle in enumerate(angles, start=1)
         ]
         budget = self.settings.search_angle_budget_ms / 1000
@@ -456,13 +503,14 @@ class WebToolsService:
         *,
         stagger: float = 0.0,
         fast: bool = False,
+        options: Optional[SearchOptions] = None,
     ) -> tuple[_AngleOutcome, float]:
         """One angle's outcome and its milliseconds, queueing for the gate included."""
         if stagger > 0:
             await asyncio.sleep(stagger)
         started = time.perf_counter()
         outcome = await self._search_angle(
-            provider, angle.query, limit, angle.date_filter, fast=fast
+            provider, angle.query, limit, angle.date_filter, fast=fast, options=options
         )
         return outcome, (time.perf_counter() - started) * 1000
 
@@ -474,6 +522,7 @@ class WebToolsService:
         date_filter: Optional[str] = None,
         *,
         fast: bool = False,
+        options: Optional[SearchOptions] = None,
     ) -> _AngleOutcome:
         """Ask the primary provider; on any failure, walk the fallback chain.
 
@@ -488,7 +537,9 @@ class WebToolsService:
         chain = self._fallback_chain(primary, fast=fast)
         if not chain:
             try:
-                results = await self._call_provider(primary, query, limit, date_filter)
+                results = await self._call_provider(
+                    primary, query, limit, date_filter, options=options
+                )
             except WebToolError as exc:
                 return _AngleOutcome(primary, error=exc)
             return _AngleOutcome(primary, results)
@@ -528,6 +579,7 @@ class WebToolsService:
                     query,
                     limit,
                     date_filter,
+                    options=options,
                     timeout=self.settings.search_fallback_timeout_seconds,
                 )
             except WebToolError as exc:
@@ -543,7 +595,7 @@ class WebToolsService:
         if primary_error is not None:
             return _AngleOutcome(primary, error=primary_error, fallback=record)
         try:
-            results = await self._call_provider(primary, query, limit, date_filter)
+            results = await self._call_provider(primary, query, limit, date_filter, options=options)
         except WebToolError as last:
             tried.append(
                 {"provider": primary, "status": "failed", "reason": last.detail or last.code}
@@ -559,6 +611,7 @@ class WebToolsService:
         limit: int,
         date_filter: Optional[str] = None,
         *,
+        options: Optional[SearchOptions] = None,
         yield_to: Sequence[str] = (),
         timeout: Optional[float] = None,
     ) -> list[SearchResult]:
@@ -586,9 +639,12 @@ class WebToolsService:
             if should_yield():
                 raise _ProviderCoolingDown(name)
             await gate.pace()
+            # An adapter is given the options only when a caller asked for some: with none, the
+            # call is what it always was.
+            extra: dict[str, Any] = {"options": options} if options else {}
             try:
                 results = await asyncio.wait_for(
-                    adapter.search(query, limit, date_filter=date_filter),
+                    adapter.search(query, limit, date_filter=date_filter, **extra),
                     timeout=timeout or self.settings.search_timeout_seconds,
                 )
             except asyncio.TimeoutError:
@@ -617,6 +673,31 @@ class WebToolsService:
         )
         self.metrics.count("search_provider_failures_total", provider=name)
         raise failure
+
+    @staticmethod
+    def _search_parameters(
+        region: Optional[str],
+        language: Optional[str],
+        sites: Optional[Sequence[str]],
+        exclude_sites: Optional[Sequence[str]],
+        date_from: Optional[date | str],
+        date_to: Optional[date | str],
+    ) -> tuple[SearchOptions, list[str], list[str]]:
+        """The caller's search parameters, checked as the request model checks them."""
+        try:
+            options = SearchOptions(
+                region=normalize_region(region) if region else None,
+                language=normalize_language(language) if language else None,
+                date_from=parse_iso_date(date_from, "date_from") if date_from else None,
+                date_to=parse_iso_date(date_to, "date_to") if date_to else None,
+            )
+            site_list = normalize_domains(sites, "sites")
+            excluded_list = normalize_domains(exclude_sites, "exclude_sites")
+        except ValueError as exc:
+            raise WebToolError("invalid_request", str(exc)) from exc
+        if options.date_from and options.date_to and options.date_from > options.date_to:
+            raise WebToolError("invalid_request", "date_from must not be after date_to")
+        return options, site_list, excluded_list
 
     def _fallback_chain(self, primary: str, *, fast: bool = False) -> list[str]:
         """The providers a failed primary falls to, in the order they are asked.
@@ -1512,6 +1593,49 @@ def _archive_unreachable_hint(code: str, status_code: Optional[int]) -> str:
         f"The Internet Archive did not answer ({code}{status}); try archive: true "
         "again later, or find the story elsewhere with web_search."
     )
+
+
+def _site_operators(sites: list[str], excluded: list[str]) -> str:
+    """``site:`` operators for the provider's query: ``(site:a.com OR site:b.com) -site:c.com``."""
+    parts: list[str] = []
+    if len(sites) == 1:
+        parts.append(f"site:{sites[0]}")
+    elif sites:
+        parts.append("(" + " OR ".join(f"site:{site}" for site in sites) + ")")
+    parts.extend(f"-site:{site}" for site in excluded)
+    return " ".join(parts)
+
+
+def _parameters_key(options: SearchOptions, sites: list[str], excluded: list[str]) -> str:
+    """The search parameters as part of a cache key; the order of the domains does not matter."""
+    return "|".join(
+        [
+            options.region or "",
+            options.language or "",
+            ",".join(sorted(sites)),
+            ",".join(sorted(excluded)),
+            options.date_from.isoformat() if options.date_from else "",
+            options.date_to.isoformat() if options.date_to else "",
+        ]
+    )
+
+
+def _passes_filters(
+    candidate: DiscoveryCandidate,
+    sites: list[str],
+    excluded: list[str],
+    options: SearchOptions,
+) -> bool:
+    """The post-filters of a search: the providers' operators are asked for, not trusted."""
+    result = candidate.result
+    if sites and not url_on_domains(result.url, sites):
+        return False
+    if excluded and url_on_domains(result.url, excluded):
+        return False
+    if options.date_from or options.date_to:
+        published, _ = infer_publication_date(result.title, result.snippet, result.url)
+        return within_date_range(published, options.date_from, options.date_to)
+    return True
 
 
 def _for_cache(payload: dict[str, Any]) -> dict[str, Any]:

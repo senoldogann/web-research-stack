@@ -1258,6 +1258,17 @@ def create_app(settings: Optional[Config] = None) -> FastAPI:
                 limit=payload.limit,
                 provider=payload.provider,
                 depth=payload.depth,
+                **payload.model_dump(
+                    include={
+                        "region",
+                        "language",
+                        "sites",
+                        "exclude_sites",
+                        "date_from",
+                        "date_to",
+                    },
+                    exclude_none=True,
+                ),
             )
         return WebSearchResponse(**result)
 

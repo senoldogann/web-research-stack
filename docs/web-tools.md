@@ -146,8 +146,8 @@ Copy `.env.example` to `.env` and set what you need. The important web tool knob
 | `SEARCH_PROVIDER` | `duckduckgo` | `duckduckgo`, `duckduckgo_lite` or `google` |
 | `SEARCH_DEPTH` | `discover` | Default `fast`, `discover`, or `deep` |
 | `SEARCH_ANGLE_DELAY_MS` | `150` | Pause between discovery angles (0..5000) |
-| `SEARCH_REGION` | `wt-wt` | DuckDuckGo `kl` region, e.g. `tr-tr`; `wt-wt` is neutral |
-| `SEARCH_LANGUAGE` | `en-US,en;q=0.9` | `Accept-Language` value |
+| `SEARCH_REGION` | `wt-wt` | DuckDuckGo `kl` region, e.g. `tr-tr`; `wt-wt` is neutral. A request's `region` replaces it |
+| `SEARCH_LANGUAGE` | `en-US,en;q=0.9` | `Accept-Language` value. A request's `language` replaces it |
 | `SEARCH_CACHE_TTL_SECONDS` | `300` | Search response cache TTL |
 | `SEARCH_TIMEOUT_SECONDS` | `30` | Per-call provider timeout |
 | `SEARCH_PROVIDER_CONCURRENCY` | `1` | Calls one provider takes at a time |
@@ -981,4 +981,36 @@ headless browser met as well.
   document that opens with an XML declaration and is not XHTML is now parsed with
   the XML parser whatever type it was sent as (an XHTML page stays a web page),
   so no warning is raised; a feed still reads, its `title` and items by selector.
+
+### Search parameters
+
+`web_search` takes six optional parameters beside `query`, `limit`, `provider`
+and `depth`; with none of them a search is what it was, and the server's
+`SEARCH_REGION` and `SEARCH_LANGUAGE` stay the defaults.
+
+| Parameter | Value | Becomes |
+|---|---|---|
+| `region` | `fi-fi`, `us-en`, `wt-wt` (country-language) | DuckDuckGo `kl` (and `bing_market`); Google `gl`, the country part, none for `wt-wt` |
+| `language` | `fi`, `en`, `pt-BR` | Google `hl`; DuckDuckGo takes its region from `kl` and gets the language as the call's `Accept-Language` (`fi,en;q=0.5`), which it may or may not honour |
+| `sites` | up to 5 domains | `site:` operators on every angle (`(site:a.com OR site:b.com)`), and a post-filter keeping only results on those domains or their subdomains |
+| `exclude_sites` | up to 5 domains | `-site:` operators, and a post-filter dropping those domains and their subdomains |
+| `date_from`, `date_to` | ISO dates, `2026-10-01` | DuckDuckGo `df=2026-10-01..2026-10-20` (an open side is closed by today, or by 1990-01-01); Google `tbs=cdr:1,cd_min:10/1/2026,cd_max:10/20/2026` |
+
+- A domain may be given as a URL (`https://docs.python.org/3/`), in capitals or
+  with `www.`: it is reduced to `docs.python.org`. `notpython.org` and
+  `python.org.evil.example` are not on `python.org`.
+- A result with a known date outside the range is dropped; one with no date is
+  kept. The date is the one a result shows (`date`, read from its address,
+  snippet or title); a month (`2026-10`) is inside when any of its days is.
+- Against an explicit range the year-based angles are not added: `discover`
+  and `deep` send no `current` (the year) and no `background` (history) angle,
+  and a freshness cue in the query ("latest") sets no relative filter; the range
+  replaces it. Every angle carries the parameters, the operators take room from
+  the query rather than from the provider's length limit, and the fallback
+  providers get the same parameters.
+- The search cache key holds all six (the order of the domains does not matter),
+  so a search with another region, site or range is a new search.
+- A bad value is refused: HTTP 422 on REST, `invalid_arguments` on MCP,
+  `invalid_request` from the service (`region` such as `finland`, more than five
+  domains, a `date_from` after `date_to`).
 

@@ -11,6 +11,7 @@ headers of the browser it impersonates, none of them overridden.
 
 import asyncio
 import re
+from datetime import date
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote, urlparse
 
@@ -92,15 +93,27 @@ class DuckDuckGoSearcher:
         # A client with ``post`` (tests give one); by default the process's shared session.
         self._client = client
 
-    def _build_headers(self) -> Dict[str, str]:
+    @staticmethod
+    def _accept_language(language: str) -> str:
+        """An Accept-Language for a language tag: ``fi`` is ``fi,en;q=0.5``."""
+        base = language.split("-")[0]
+        parts = [language]
+        if base != language:
+            parts.append(f"{base};q=0.9")
+        if base != "en":
+            parts.append("en;q=0.5")
+        return ",".join(parts)
+
+    def _build_headers(self, language: Optional[str] = None) -> Dict[str, str]:
         # The impersonated browser sends its own user agent, client hints and accept
         # headers, and they agree with its TLS fingerprint; overriding any of them with a
-        # random one made the request incoherent. Only the locale is ours.
-        return {"accept-language": self.language}
+        # random one made the request incoherent. Only the locale is ours: the server's
+        # setting, or the language a call asked for.
+        return {"accept-language": self._accept_language(language) if language else self.language}
 
-    def _post_headers(self) -> Dict[str, str]:
+    def _post_headers(self, language: Optional[str] = None) -> Dict[str, str]:
         """What a browser adds to the submit of the endpoint's own form."""
-        headers = self._build_headers()
+        headers = self._build_headers(language)
         headers["origin"] = self.ORIGIN
         headers["referer"] = self.ORIGIN + "/"
         headers["sec-fetch-site"] = "same-origin"
@@ -109,25 +122,46 @@ class DuckDuckGoSearcher:
     def _normalise_query(self, query: str) -> str:
         return " ".join((query or "").split())[: self.MAX_QUERY_LENGTH]
 
+    def _date_filter(
+        self,
+        date_filter: Optional[str],
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
+    ) -> Optional[str]:
+        """The ``df`` value: a range (``2026-10-01..2026-10-20``) beats day, week, month or year.
+
+        A range open on one side ends today or starts in 1990: the form takes both.
+        """
+        if date_from or date_to:
+            start = date_from.isoformat() if date_from else "1990-01-01"
+            end = date_to.isoformat() if date_to else date.today().isoformat()
+            return f"{start}..{end}"
+        return self.DATE_FILTERS.get(date_filter or "")
+
     def _build_params(
         self,
         query: str,
         date_filter: Optional[str] = None,
         *,
         vqd: Optional[str] = None,
+        region: Optional[str] = None,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
     ) -> Dict[str, str]:
         """The fields of the endpoint's own form: a request without them is a bot's."""
+        region = region or self.region
         params = {
             "q": self._normalise_query(query),
             "s": "0",
             "o": "json",
             "api": "d.js",
             "vqd": vqd or "",
-            "kl": self.region,
-            "bing_market": self.region,
+            "kl": region,
+            "bing_market": region,
         }
-        if date_filter in self.DATE_FILTERS:
-            params["df"] = self.DATE_FILTERS[date_filter]
+        df = self._date_filter(date_filter, date_from, date_to)
+        if df:
+            params["df"] = df
         return params
 
     async def search(
@@ -135,6 +169,11 @@ class DuckDuckGoSearcher:
         query: str,
         num_results: int = 10,
         date_filter: Optional[str] = None,
+        *,
+        region: Optional[str] = None,
+        language: Optional[str] = None,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
     ) -> List[Dict]:
         """
         Search DuckDuckGo and return top results.
@@ -144,6 +183,9 @@ class DuckDuckGoSearcher:
             num_results: Number of results to return
             date_filter: Optional date filter - "day", "week", "month", or "year"
                          Use "year" for current topic queries to get fresh results
+            region: A ``kl`` region (``fi-fi``); the searcher's own when None
+            language: A language tag (``fi``), sent as the Accept-Language of the call
+            date_from, date_to: A date range; it replaces ``date_filter``
 
         Returns:
             List of result dictionaries with title, url, snippet
@@ -153,8 +195,12 @@ class DuckDuckGoSearcher:
             return []
 
         client = self._client or await _SESSION.get()
-        headers = self._post_headers()
-        params = self._build_params(query, date_filter)
+        headers = self._post_headers(language)
+        region = region or self.region
+        df = self._date_filter(date_filter, date_from, date_to)
+        params = self._build_params(
+            query, date_filter, region=region, date_from=date_from, date_to=date_to
+        )
         results: List[Dict] = []
 
         # One POST of the form per page; the next page's form comes with the answer.
@@ -184,9 +230,9 @@ class DuckDuckGoSearcher:
 
             params = dict(next_params)
             params["q"] = query
-            params["kl"] = self.region
-            if date_filter and date_filter in self.DATE_FILTERS:
-                params["df"] = self.DATE_FILTERS[date_filter]
+            params["kl"] = region
+            if df:
+                params["df"] = df
             await asyncio.sleep(config.duckduckgo_request_delay_seconds)
 
         return results[:num_results]

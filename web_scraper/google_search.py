@@ -21,6 +21,7 @@ import socket
 import subprocess
 import tempfile
 import time
+from datetime import date
 from typing import Dict, List, Optional
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
@@ -131,8 +132,21 @@ class GoogleSearcher:
     # Public API
     # ------------------------------------------------------------------
 
-    async def search(self, query: str, num_results: int = 10) -> List[Dict]:
+    async def search(
+        self,
+        query: str,
+        num_results: int = 10,
+        *,
+        gl: Optional[str] = None,
+        hl: Optional[str] = None,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
+    ) -> List[Dict]:
         """Search Google and return top results.
+
+        ``gl`` is a country (``fi``), ``hl`` a language (``fi``) and ``date_from`` and
+        ``date_to`` a custom date range (Google's ``tbs=cdr``); each unset one is Google's
+        default for this searcher (``us``, ``en``, any time).
 
         Two browser paths, neither of which leaves a window on screen for
         longer than the start-up flash: the installed Chrome with its window
@@ -143,9 +157,20 @@ class GoogleSearcher:
         tell "Google refused" from "Google found nothing".
         """
         results: List[Dict] = []
+        # Only what the caller set: with nothing set, every path is called as it always was.
+        extra = {
+            name: value
+            for name, value in (
+                ("gl", gl),
+                ("hl", hl),
+                ("date_from", date_from),
+                ("date_to", date_to),
+            )
+            if value is not None
+        }
 
         try:
-            results = await self._search_http(query, num_results)
+            results = await self._search_http(query, num_results, **extra)
         except Exception as exc:  # network error, curl_cffi missing, bot check
             logger.debug("Google HTTP search failed for %r: %s", query, exc)
 
@@ -170,7 +195,7 @@ class GoogleSearcher:
             if results or not config.google_use_playwright:
                 break
             try:
-                results = await path(query, num_results)
+                results = await path(query, num_results, **extra)
             except GoogleSearchBlocked as exc:
                 # A refused backend must not end the search: the next may pass.
                 blocked.append(f"{backend}: {exc}")
@@ -219,11 +244,11 @@ class GoogleSearcher:
     # HTTP path
     # ------------------------------------------------------------------
 
-    async def _search_http(self, query: str, num_results: int) -> List[Dict]:
+    async def _search_http(self, query: str, num_results: int, **extra) -> List[Dict]:
         if cffi_requests is None:
             return []
 
-        url = self._build_url(query, num_results)
+        url = self._build_url(query, num_results, **extra)
         async with cffi_requests.AsyncSession(
             timeout=config.google_request_timeout_seconds, impersonate="chrome120"
         ) as client:
@@ -237,7 +262,7 @@ class GoogleSearcher:
     # Camoufox path: headless, no window
     # ------------------------------------------------------------------
 
-    async def _search_camoufox(self, query: str, num_results: int) -> List[Dict]:
+    async def _search_camoufox(self, query: str, num_results: int, **extra) -> List[Dict]:
         """Search through a headless Camoufox, a Firefox built to look ordinary.
 
         Headless Chromium is caught by Google within a request; Camoufox
@@ -248,7 +273,7 @@ class GoogleSearcher:
         if page is None:
             return []
 
-        url = self._build_url(query, num_results)
+        url = self._build_url(query, num_results, **extra)
         timeout_ms = int(config.google_playwright_timeout_seconds * 1000)
 
         async with _browser_lock():
@@ -350,7 +375,7 @@ class GoogleSearcher:
     # Chrome path: one browser, window minimised before it is seen
     # ------------------------------------------------------------------
 
-    async def _search_chrome(self, query: str, num_results: int) -> List[Dict]:
+    async def _search_chrome(self, query: str, num_results: int, **extra) -> List[Dict]:
         """Search through a Chrome whose window is minimised at once.
 
         Headless Chrome is caught within a request; a headed one gets the real
@@ -363,7 +388,7 @@ class GoogleSearcher:
         if page is None:
             return []
 
-        url = self._build_url(query, num_results)
+        url = self._build_url(query, num_results, **extra)
         timeout_ms = int(config.google_playwright_timeout_seconds * 1000)
 
         async with _browser_lock():
@@ -389,7 +414,7 @@ class GoogleSearcher:
                 raise GoogleSearchBlocked("Google served a bot check to Chrome")
         return results
 
-    async def _search_headless_chrome(self, query: str, num_results: int) -> List[Dict]:
+    async def _search_headless_chrome(self, query: str, num_results: int, **extra) -> List[Dict]:
         """One-shot headless Chrome: invisible, and usually refused by Google.
 
         Tried because the refusal is not certain on every network; a refusal is
@@ -406,7 +431,7 @@ class GoogleSearcher:
         except ImportError:
             return []
 
-        url = self._build_url(query, num_results)
+        url = self._build_url(query, num_results, **extra)
         timeout_ms = int(config.google_playwright_timeout_seconds * 1000)
         port = self._free_port()
         profile = tempfile.mkdtemp(prefix="google-headless-profile-")
@@ -699,9 +724,27 @@ class GoogleSearcher:
     # Parsing
     # ------------------------------------------------------------------
 
-    def _build_url(self, query: str, num_results: int) -> str:
+    def _build_url(
+        self,
+        query: str,
+        num_results: int,
+        *,
+        gl: Optional[str] = None,
+        hl: Optional[str] = None,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
+    ) -> str:
         encoded = quote_plus(query)
-        return f"{self.BASE_URL}?q={encoded}&num={num_results}&hl=en&gl=us"
+        url = f"{self.BASE_URL}?q={encoded}&num={num_results}&hl={hl or 'en'}&gl={gl or 'us'}"
+        if date_from or date_to:
+            # A custom range: cdr:1, then the bounds as M/D/YYYY (a missing one is open).
+            bounds = ["cdr:1"]
+            if date_from:
+                bounds.append(f"cd_min:{date_from.month}/{date_from.day}/{date_from.year}")
+            if date_to:
+                bounds.append(f"cd_max:{date_to.month}/{date_to.day}/{date_to.year}")
+            url += "&tbs=" + quote_plus(",".join(bounds))
+        return url
 
     def _parse_results(self, html: str) -> List[Dict]:
         """Parse Google results from rendered or server-rendered HTML."""

@@ -384,13 +384,17 @@ def build_search_angles(
     *,
     max_length: int = 500,
     year: Optional[int] = None,
+    explicit_range: bool = False,
 ) -> list[SearchAngle]:
     """Return the query angles for a depth.
 
     ``fast`` keeps the caller's phrasing alone. ``discover`` adds the current
     year and a historical/background angle. ``deep`` adds an official or
     primary-source angle. A suffix that would overflow ``max_length`` truncates
-    the base rather than dropping the angle.
+    the base rather than dropping the angle. Against an explicit date range
+    (``explicit_range``) the year-based angles, the current year and the
+    historical one, are not added, and the range replaces the base angle's
+    freshness cue: they would ask for what the caller ruled out.
     """
     normalized_depth = (depth or "discover").strip().lower()
     if normalized_depth not in DEPTHS:
@@ -401,19 +405,20 @@ def build_search_angles(
         raise ValueError("Query must not be empty")
 
     current_year = year or datetime.now().year
-    intent_filter = detect_date_filter(base, year=current_year)
+    intent_filter = None if explicit_range else detect_date_filter(base, year=current_year)
     angles = [SearchAngle("base", base[:max_length].rstrip(), intent_filter)]
     if normalized_depth == "fast":
         return angles
 
-    if str(current_year) not in base:
-        current = _fit_suffix(base, str(current_year), max_length)
-        if current and current.casefold() != base.casefold():
-            angles.append(SearchAngle("current", current, intent_filter or "year"))
+    if not explicit_range:
+        if str(current_year) not in base:
+            current = _fit_suffix(base, str(current_year), max_length)
+            if current and current.casefold() != base.casefold():
+                angles.append(SearchAngle("current", current, intent_filter or "year"))
 
-    background = _fit_suffix(base, "history background", max_length)
-    if background:
-        angles.append(SearchAngle("background", background))
+        background = _fit_suffix(base, "history background", max_length)
+        if background:
+            angles.append(SearchAngle("background", background))
 
     if normalized_depth == "deep":
         suffix = "official documentation" if _is_technical_query(base) else "primary sources"
@@ -804,6 +809,27 @@ def _within_window(published: Optional[str], window: Optional[str], today: date)
     found_year, found_month = (int(part) for part in published.split("-"))
     months_back = (today.year - found_year) * 12 + today.month - found_month
     return False if months_back >= 2 or (months_back == 1 and window != "month") else None
+
+
+def within_date_range(
+    published: Optional[str], date_from: Optional[date], date_to: Optional[date]
+) -> bool:
+    """Whether a result's date is inside a range; a result with no date is kept.
+
+    *published* is ``YYYY-MM-DD`` or ``YYYY-MM``; a month is inside when any of its days is.
+    A range may be open on one side.
+    """
+    if not published or (date_from is None and date_to is None):
+        return True
+    if len(published) == 10:
+        first = last = date.fromisoformat(published)
+    else:
+        year, month = (int(part) for part in published.split("-"))
+        first = date(year, month, 1)
+        last = date(year + (month == 12), month % 12 + 1, 1) - timedelta(days=1)
+    if date_from is not None and last < date_from:
+        return False
+    return date_to is None or first <= date_to
 
 
 def classify_recency(year: Optional[int], *, year_now: Optional[int] = None) -> str:

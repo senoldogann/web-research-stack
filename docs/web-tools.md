@@ -748,3 +748,6 @@ headless browser met as well.
   challenge with the XML parser: the HTML parser misread it and warned
   (`XMLParsedAsHTMLWarning`) on every `web_map`. lxml resolves internal
   entities only, so an external entity in a hostile sitemap reads no file.
+- A challenge error reads `Target returned an access_blocked interstitial`
+  (it said "a access_blocked"); `a captcha` and `an access_wall` follow the
+  same rule.

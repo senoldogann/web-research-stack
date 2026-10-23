@@ -229,13 +229,14 @@ async def test_fetcher_classifies_short_403_as_access_blocked() -> None:
 
     assert exc.value.code == "blocked"
     assert exc.value.detail == "access_blocked"
+    assert str(exc.value) == "Target returned an access_blocked interstitial"
 
 
 class _BlockedFetcher:
     async def fetch(self, url: str) -> FetchResult:
         raise FetchError(
             "blocked",
-            "Target returned a access_blocked interstitial",
+            "Target returned an access_blocked interstitial",
             url=url,
             status_code=403,
             detail="access_blocked",

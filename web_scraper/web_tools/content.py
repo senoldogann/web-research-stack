@@ -132,6 +132,12 @@ def _soup(html: str, *, xml: bool = False) -> BeautifulSoup:
     return BeautifulSoup(html or "", "xml" if xml else "lxml")
 
 
+def interstitial_message(kind: str) -> str:
+    """The message of a challenge, blocked or wall error ("an access_blocked", "a captcha")."""
+    article = "an" if kind[:1].lower() in "aeiou" else "a"
+    return f"Target returned {article} {kind} interstitial"
+
+
 def _clean_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 

@@ -16,7 +16,7 @@ from web_scraper.network_safety import (
     UnsafeTargetError,
     validate_outbound_url,
 )
-from web_scraper.web_tools.content import detect_interstitial
+from web_scraper.web_tools.content import detect_interstitial, interstitial_message
 from web_scraper.web_tools.pdf import PDF_CONTENT_TYPE, looks_like_pdf
 from web_scraper.web_tools.urls import UnsafeUrlError, normalize_request_url
 
@@ -284,7 +284,7 @@ class SafeFetcher:
                             if interstitial:
                                 raise FetchError(
                                     "blocked",
-                                    f"Target returned a {interstitial} interstitial",
+                                    interstitial_message(interstitial),
                                     url=current,
                                     status_code=status,
                                     detail=interstitial,
@@ -332,7 +332,7 @@ class SafeFetcher:
                         if interstitial:
                             raise FetchError(
                                 "blocked",
-                                f"Target returned a {interstitial} interstitial",
+                                interstitial_message(interstitial),
                                 url=current,
                                 status_code=status,
                                 detail=interstitial,

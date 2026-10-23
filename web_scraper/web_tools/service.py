@@ -22,6 +22,7 @@ from web_scraper.web_tools.content import (
     detect_interstitial,
     extract_page,
     extract_structured,
+    interstitial_message,
     needs_browser_render,
     parse_sitemap_xml,
 )
@@ -1050,7 +1051,7 @@ class WebToolsService:
         if interstitial:
             raise WebToolError(
                 "blocked",
-                f"Target returned a {interstitial} interstitial",
+                interstitial_message(interstitial),
                 url=url,
                 status_code=rendered.status_code or None,
                 detail=interstitial,
@@ -1100,7 +1101,7 @@ class WebToolsService:
         if interstitial:
             raise WebToolError(
                 "blocked",
-                f"Target returned a {interstitial} interstitial",
+                interstitial_message(interstitial),
                 url=document.final_url,
                 status_code=rendered.status_code or None,
                 detail=interstitial,

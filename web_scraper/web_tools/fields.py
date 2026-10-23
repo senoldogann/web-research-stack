@@ -223,7 +223,8 @@ def normalize_date(text: str) -> Optional[str]:
     try:
         if re.fullmatch(r"\d{4}-\d{2}-\d{2}", cleaned):
             return date.fromisoformat(cleaned).isoformat()
-        return datetime.fromisoformat(cleaned).isoformat()
+        # Before Python 3.11 fromisoformat does not read the zone "Z", which pages write most.
+        return datetime.fromisoformat(re.sub(r"[Zz]$", "+00:00", cleaned)).isoformat()
     except ValueError:
         pass
     if re.match(r"^(?:[A-Za-z]{3},\s*)?\d{1,2}\s+[A-Za-z]{3}\s+\d{4}\s+\d", cleaned):

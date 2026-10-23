@@ -670,6 +670,7 @@ class WebToolsService:
             return _from_cache(cached, started)
 
         archived: Optional[tuple[str, str]] = None
+        skipped: list[dict[str, str]] = []
         try:
             document = await self._load_page(fetch_target, max_chars=limit)
         except WebToolError as exc:
@@ -678,10 +679,11 @@ class WebToolsService:
             if not archive:
                 exc.hint = _ARCHIVE_HINT
                 raise
-            document, archived = await self._archived_copy(fetch_target, limit, exc)
+            document, archived, skipped = await self._archived_copy(fetch_target, limit, exc)
         payload = self._page_payload(document, requested)
         if archived is not None:
             payload["archived_at"], payload["archive_url"] = archived
+            payload["archive_skipped"] = skipped
         total_ms = (time.perf_counter() - started) * 1000
         payload["timings"]["total_ms"] = round(total_ms, 2)
         self.metrics.observe("total", total_ms, operation="scrape")
@@ -694,61 +696,87 @@ class WebToolsService:
         url: str,
         limit: int,
         cause: WebToolError,
-    ) -> tuple[LoadedDocument, tuple[str, str]]:
-        """The Internet Archive's latest copy of a page the site would not serve.
+    ) -> tuple[LoadedDocument, tuple[str, str], list[dict[str, str]]]:
+        """The Internet Archive's newest copy of a page the site would not serve that is readable.
 
-        Its availability API names the closest snapshot; the ``id_`` form of the
-        snapshot's address serves the page as archived, without the archive's
-        own banner. With no copy, or one that cannot be read, the site's error
-        stands, its hint saying so.
+        Its CDX index lists the last copies that answered 200, one per content digest
+        (the closest-copy API named whatever was nearest, and for a walled news site that
+        was the captcha the archive's crawler met). They are read newest first, at most
+        ``_ARCHIVE_MAX_COPIES`` of them and within ``archive_budget_seconds``; the ``id_``
+        form of a snapshot's address serves the page as archived, without the archive's
+        banner. A copy the challenge check flags (a captcha, a login wall) or with nothing
+        to read is skipped and listed, with the reason; the first readable one is the
+        answer. With none, the site's error stands, its hint saying why: no copy, walls
+        all the way down, an archive that is busy (HTTP 429) or too slow.
         """
-        # Without a timestamp the API may name a copy a year old; with today's, the newest.
-        today = datetime.now(timezone.utc).strftime("%Y%m%d")
-        lookup = "https://archive.org/wayback/available?" + urlencode(
-            {"url": url, "timestamp": today}
-        )
+        deadline = time.monotonic() + self.settings.archive_budget_seconds
         try:
-            answer = await self.fetcher.fetch(lookup)
-            closest = (json.loads(answer.html).get("archived_snapshots") or {}).get("closest") or {}
-        except FetchError as error:
-            status = f" HTTP {error.status_code}" if error.status_code else ""
-            cause.hint = (
-                f"The Internet Archive did not answer ({error.code}{status}); try archive: true "
-                "again later, or find the story elsewhere with web_search."
+            answer = await asyncio.wait_for(
+                self.fetcher.fetch(_cdx_url(url)), timeout=_remaining(deadline)
             )
+            copies = _cdx_copies(answer.html)
+        except asyncio.TimeoutError:
+            cause.hint = self._archive_budget_hint()
+            raise cause from None
+        except FetchError as error:
+            cause.hint = _archive_unreachable_hint(error.code, error.status_code)
             raise cause from error
-        except (ValueError, AttributeError):
-            closest = {}
-        stamp = str(closest.get("timestamp") or "")
-        if not closest.get("available") or not re.fullmatch(r"\d{14}", stamp):
+
+        skipped: list[dict[str, str]] = []
+        for stamp, original in copies[:_ARCHIVE_MAX_COPIES]:
+            snapshot = f"https://web.archive.org/web/{stamp}id_/{original}"
+            taken = _taken_at(stamp)
+            try:
+                document = await asyncio.wait_for(
+                    self._load_page(snapshot, max_chars=limit, browser=False),
+                    timeout=_remaining(deadline),
+                )
+            except asyncio.TimeoutError:
+                cause.hint = self._archive_budget_hint()
+                raise cause from None
+            except WebToolError as error:
+                if error.status_code == 429:
+                    cause.hint = _archive_unreachable_hint(error.code, 429)
+                    raise cause from error
+                skipped.append({"timestamp": taken, "reason": error.detail or error.code})
+                continue
+            if not document.page.markdown.strip():
+                skipped.append({"timestamp": taken, "reason": "empty_content"})
+                continue
+            if document.pages is None:
+                # The copy's links and identity are the page's own, not the archive's.
+                document.page = extract_page(
+                    document.html,
+                    url,
+                    max_links=self.settings.max_links,
+                    max_chars=limit,
+                )
+            document.final_url = url
+            document.fetched_with = "archive"
+            document.warnings.append("archived_copy")
+            self.metrics.count("archive_copies_total")
+            return document, (taken, snapshot), skipped
+
+        if not copies:
             cause.hint = (
                 "The Internet Archive holds no archived copy of this page; "
                 "find the story elsewhere with web_search."
             )
-            raise cause
-        snapshot = f"https://web.archive.org/web/{stamp}id_/{url}"
-        try:
-            document = await self._load_page(snapshot, max_chars=limit)
-        except WebToolError as error:
+        else:
+            walls = "; ".join(f"{item['timestamp'][:10]}: {item['reason']}" for item in skipped)
             cause.hint = (
-                f"The Internet Archive's copy could not be read either ({error.code}); "
+                f"The Internet Archive's newest copies of this page are walls too ({walls}); "
                 "find the story elsewhere with web_search."
             )
-            raise cause from error
-        if document.pages is None:
-            # The copy's links and identity are the page's own, not the archive's.
-            document.page = extract_page(
-                document.html,
-                url,
-                max_links=self.settings.max_links,
-                max_chars=limit,
-            )
-        document.final_url = url
-        document.fetched_with = "archive"
-        document.warnings.append("archived_copy")
-        taken = datetime.strptime(stamp, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
-        self.metrics.count("archive_copies_total")
-        return document, (taken.isoformat(), snapshot)
+        raise cause
+
+    def _archive_budget_hint(self) -> str:
+        seconds = self.settings.archive_budget_seconds
+        return (
+            f"The Internet Archive took longer than the time budget ({seconds:g} s, "
+            "WEB_TOOLS_ARCHIVE_BUDGET_SECONDS); try archive: true again later, or find the "
+            "story elsewhere with web_search."
+        )
 
     async def extract(
         self,
@@ -1015,13 +1043,15 @@ class WebToolsService:
             "links": [link.url for link in page.links],
         }
 
-    async def _load_page(self, url: str, *, max_chars: int) -> LoadedDocument:
+    async def _load_page(self, url: str, *, max_chars: int, browser: bool = True) -> LoadedDocument:
+        """Fetch and read a page; ``browser=False`` never opens a headless browser for it."""
         started = time.perf_counter()
         try:
             fetched = await self.fetcher.fetch(url)
         except FetchError as exc:
             if (
-                exc.code == "blocked"
+                browser
+                and exc.code == "blocked"
                 and exc.detail == "access_blocked"
                 and self.browser is not None
             ):
@@ -1069,10 +1099,14 @@ class WebToolsService:
             },
         )
 
-        if self.browser is not None and needs_browser_render(
-            fetched.html,
-            page.markdown,
-            min_chars=self.settings.browser_render_min_chars,
+        if (
+            browser
+            and self.browser is not None
+            and needs_browser_render(
+                fetched.html,
+                page.markdown,
+                min_chars=self.settings.browser_render_min_chars,
+            )
         ):
             browser_started = time.perf_counter()
             try:
@@ -1412,6 +1446,72 @@ _ARCHIVE_HINT = (
     "Ask web_scrape again with archive: true for the Internet Archive's latest copy "
     "(it may be days old), or find the same story elsewhere with web_search."
 )
+
+
+# The Internet Archive: how many of the newest copies of a walled page are read, and how many
+# the CDX index is asked for (it collapses repeats of one digest, so they differ in content).
+_ARCHIVE_MAX_COPIES = 4
+_ARCHIVE_COPIES_ASKED = 8
+
+
+def _cdx_url(url: str) -> str:
+    """The CDX query for the last copies of ``url`` that answered 200, one per digest."""
+    query = urlencode(
+        [
+            ("url", url),
+            ("output", "json"),
+            ("filter", "statuscode:200"),
+            ("collapse", "digest"),
+            ("limit", f"-{_ARCHIVE_COPIES_ASKED}"),
+            ("fl", "timestamp,original,statuscode,digest"),
+        ],
+        safe=":/,",
+    )
+    return "https://web.archive.org/cdx/search/cdx?" + query
+
+
+def _cdx_copies(body: str) -> list[tuple[str, str]]:
+    """``(timestamp, original)`` of each copy a CDX answer lists, the newest first.
+
+    The answer is a header row and then the copies, the oldest first; nothing found is an
+    empty body or a header alone.
+    """
+    if not (body or "").strip():
+        return []
+    try:
+        rows = json.loads(body)
+    except ValueError:
+        return []
+    copies = [
+        (str(row[0]), str(row[1]))
+        for row in (rows[1:] if isinstance(rows, list) else [])
+        if isinstance(row, list)
+        and len(row) >= 2
+        and re.fullmatch(r"\d{14}", str(row[0]))
+        and str(row[1]).startswith(("http://", "https://"))
+    ]
+    return copies[::-1]
+
+
+def _taken_at(stamp: str) -> str:
+    return datetime.strptime(stamp, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc).isoformat()
+
+
+def _remaining(deadline: float) -> float:
+    return max(deadline - time.monotonic(), 0.01)
+
+
+def _archive_unreachable_hint(code: str, status_code: Optional[int]) -> str:
+    if status_code == 429:
+        return (
+            "The Internet Archive answered HTTP 429 (too many requests); try archive: true "
+            "again later, or find the story elsewhere with web_search."
+        )
+    status = f" HTTP {status_code}" if status_code else ""
+    return (
+        f"The Internet Archive did not answer ({code}{status}); try archive: true "
+        "again later, or find the story elsewhere with web_search."
+    )
 
 
 def _for_cache(payload: dict[str, Any]) -> dict[str, Any]:

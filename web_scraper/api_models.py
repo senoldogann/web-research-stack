@@ -336,7 +336,8 @@ class WebScrapeRequest(BaseModel):
         default=False,
         description=(
             "When the site walls the page off (a captcha, a refusal) or no longer serves it, "
-            "read the Internet Archive's latest copy instead, marked as such; it may be days old"
+            "read the Internet Archive's newest copy that is not itself a wall instead, marked "
+            "as such; it may be days or months old"
         ),
     )
 
@@ -350,6 +351,11 @@ class WebLink(BaseModel):
     url: str
     text: str = ""
     kind: str = ""
+
+
+class WebArchiveSkipped(BaseModel):
+    timestamp: str = Field(description="When the Internet Archive took the copy, UTC")
+    reason: str = Field(description="Why it was not read: captcha, access_wall, empty_content, ...")
 
 
 class WebScrapeResponse(BaseModel):
@@ -381,6 +387,13 @@ class WebScrapeResponse(BaseModel):
         default=None, description="When the Internet Archive took the copy read with archive"
     )
     archive_url: Optional[str] = None
+    archive_skipped: Optional[List[WebArchiveSkipped]] = Field(
+        default=None,
+        description=(
+            "With archive, the newer copies that were not read (a captcha or a login wall the "
+            "archive's crawler met, an empty page), newest first"
+        ),
+    )
     warnings: List[str] = Field(default_factory=list)
     timings: Dict[str, float]
     pages: Optional[int] = Field(default=None, description="Page count of a PDF document")

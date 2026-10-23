@@ -138,6 +138,9 @@ class WebToolsSettings:
     max_crawl_jobs: int = 32
     max_crawl_errors: int = 100
 
+    # How long the walk through the Internet Archive's copies of a walled page may take.
+    archive_budget_seconds: float = 20.0
+
     max_extract_fields: int = 50
     extract_max_items: int = 100
     extract_max_chars: int = 20_000
@@ -213,6 +216,7 @@ class WebToolsSettings:
         self.crawl_job_ttl_seconds = max(self.crawl_job_ttl_seconds, 60)
         self.max_crawl_jobs = max(self.max_crawl_jobs, 1)
         self.max_crawl_errors = max(self.max_crawl_errors, 1)
+        self.archive_budget_seconds = max(self.archive_budget_seconds, 0.1)
         self.max_extract_fields = max(self.max_extract_fields, 1)
         self.extract_max_items = min(max(self.extract_max_items, 1), EXTRACT_MAX_ITEMS_CEILING)
         self.extract_max_chars = min(
@@ -288,6 +292,7 @@ class WebToolsSettings:
             crawl_job_ttl_seconds=_int("WEB_TOOLS_CRAWL_JOB_TTL_SECONDS", 3_600),
             max_crawl_jobs=_int("WEB_TOOLS_MAX_CRAWL_JOBS", 32),
             max_crawl_errors=_int("WEB_TOOLS_MAX_CRAWL_ERRORS", 100),
+            archive_budget_seconds=_float("WEB_TOOLS_ARCHIVE_BUDGET_SECONDS", 20.0),
             max_extract_fields=_int("WEB_TOOLS_MAX_EXTRACT_FIELDS", 50),
             extract_max_items=_int("WEB_TOOLS_EXTRACT_MAX_ITEMS", 100),
             extract_max_chars=_int("WEB_TOOLS_EXTRACT_MAX_CHARS", 20_000),

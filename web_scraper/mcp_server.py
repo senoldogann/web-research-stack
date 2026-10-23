@@ -158,8 +158,9 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
                     "timings. A shared headless browser is used only for JavaScript "
                     "shells or access interstitials; CAPTCHA and login walls fail fast, their "
                     "error's hint saying what to try next: archive: true reads the Internet "
-                    "Archive's latest copy of a page the site walls off or no longer serves, "
-                    "marked fetched_with archive with archived_at and an archived_copy warning. A PDF "
+                    "Archive's newest copy that is not itself a wall of a page the site walls "
+                    "off or no longer serves, marked fetched_with archive with archived_at (that "
+                    "copy's date), archive_skipped and an archived_copy warning. A PDF "
                     "comes back as Markdown text with content_type application/pdf and its "
                     "page count in pages."
                 ),

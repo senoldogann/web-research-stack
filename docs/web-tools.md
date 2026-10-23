@@ -157,6 +157,7 @@ Copy `.env.example` to `.env` and set what you need. The important web tool knob
 | `SEARCH_PROVIDER_COOLDOWN_SECONDS` | `5` | First cooldown after a failed provider call |
 | `SEARCH_PROVIDER_MAX_COOLDOWN_SECONDS` | `300` | Cap for the doubling cooldown |
 | `SCRAPE_MAX_LINKS` | `50` | Links `web_scrape` lists, from the page content |
+| `ARCHIVE_BUDGET_SECONDS` | `20` | Time the walk through the archive's copies may take (`archive: true`) |
 | `FETCH_TIMEOUT_SECONDS` | `20` | Per-request timeout |
 | `FETCH_RETRIES` | `1` | Retries for transient failures only |
 | `MAX_RESPONSE_BYTES` | `5000000` | Response body cap |
@@ -818,7 +819,9 @@ headless browser met as well.
   ask again with `archive: true`, or find the story elsewhere with
   `web_search`. A `dns_error` or an `unsafe_target` has none.
 - `archive: true` (off by default) reads the Internet Archive's latest copy
-  when the site would not serve the page: its availability API, asked for the
+  when the site would not serve the page (round 3 replaced the lookup below with
+  the CDX index, see "Archive copies that are not themselves captchas"): its
+  availability API, asked for the
   copy closest to today (without a date it named one a year old), names the
   snapshot, and the `id_` form of the snapshot's address serves the page as
   archived, without the archive's banner. The page's links are read against
@@ -930,4 +933,33 @@ headless browser met as well.
   returns, posted back. A challenge is still `search_failed` with
   `detail=bot_detected`. Whether this lowers the refusal rate cannot be shown
   with a few calls: a refusal depends on the address and the pace as well.
+
+### Archive copies that are not themselves captchas
+
+- `archive: true` asked the archive's availability API for the closest copy and
+  read only that one. On WSJ, NYT and Reuters the closest copy is the captcha
+  the archive's crawler met: none of three tries read a page. It now asks the
+  CDX index for the last copies that answered 200, one per content digest
+  (`https://web.archive.org/cdx/search/cdx?url=...&output=json&filter=statuscode:200&collapse=digest&limit=-8&fl=timestamp,original,statuscode,digest`),
+  and reads them newest first (the `id_` address of each, under the address it
+  was archived at), at most four, within `ARCHIVE_BUDGET_SECONDS` (20 by
+  default). The first copy that reads is the answer, and `archived_at` is that
+  copy's date, not the newest one's.
+- A copy the existing challenge check flags (a captcha, a login wall, an
+  `access_blocked` page) or that has no text to read is skipped and listed in
+  `archive_skipped`, newest first, each `{"timestamp", "reason"}` (`captcha`,
+  `access_wall`, `access_blocked`, `empty_content`, or the error's code). It is
+  `[]` when the newest copy read, and absent when the archive was not used. No
+  headless browser is opened for an archived copy.
+- When no copy reads, the site's error stands and its hint says which: the
+  archive holds no copy; its newest copies are walls too (their dates and
+  reasons); it answered HTTP 429, with the advice to try again later (on the
+  lookup or on a copy, which ends the walk); it did not answer; or the walk ran
+  past the time budget.
+- archive.today (`https://archive.ph/newest/<url>`) is left out. One request
+  from this Mac on 2026-10-23, with the fetcher's own user agent, got no
+  answer: the connection timed out after 25 s, so it serves this tool no page,
+  readable or not. It is also known to put a captcha in front of automated
+  clients, which the tool must not try to pass. Add it as a second source only
+  where it answers a script a readable page.
 

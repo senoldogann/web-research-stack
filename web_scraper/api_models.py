@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from web_scraper.config import config
+from web_scraper.web_tools.settings import MIN_MARKDOWN_CHARS
 
 
 def utc_now_iso() -> str:
@@ -295,7 +296,15 @@ class WebScrapeRequest(BaseModel):
     """Single-page scrape request."""
 
     url: str = Field(..., min_length=3, max_length=2048)
-    max_chars: Optional[int] = Field(default=None, ge=1, le=200_000)
+    max_chars: Optional[int] = Field(
+        default=None,
+        ge=MIN_MARKDOWN_CHARS,
+        le=200_000,
+        description=(
+            f"Markdown character cap, at least {MIN_MARKDOWN_CHARS}; the server's own cap "
+            "(WEB_TOOLS_MARKDOWN_MAX_CHARS, 50,000 by default) applies above it"
+        ),
+    )
 
     @field_validator("url")
     @classmethod

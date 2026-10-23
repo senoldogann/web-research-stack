@@ -10,6 +10,10 @@ import dotenv
 
 _BROWSER_PREFERENCES = {"auto", "chrome", "chromium", "camoufox"}
 
+# The smallest Markdown cap a scrape accepts. The request schema states it and
+# the service refuses a smaller one, so no layer silently raises a caller's cap.
+MIN_MARKDOWN_CHARS = 500
+
 
 def _bool(name: str, default: bool) -> bool:
     value = os.getenv(name)
@@ -148,7 +152,7 @@ class WebToolsSettings:
         self.browser_max_contexts = max(self.browser_max_contexts, 1)
         self.browser_render_min_chars = max(self.browser_render_min_chars, 20)
 
-        self.markdown_max_chars = max(self.markdown_max_chars, 500)
+        self.markdown_max_chars = max(self.markdown_max_chars, MIN_MARKDOWN_CHARS)
         self.max_links = max(self.max_links, 1)
         self.scrape_max_links = min(max(self.scrape_max_links, 0), self.max_links)
         self.default_map_limit = max(self.default_map_limit, 1)

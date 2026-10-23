@@ -47,7 +47,7 @@ from web_scraper.web_tools.search import (
     SearchAdapter,
     SearchResult,
 )
-from web_scraper.web_tools.settings import WebToolsSettings
+from web_scraper.web_tools.settings import MIN_MARKDOWN_CHARS, WebToolsSettings
 from web_scraper.web_tools.urls import (
     UnsafeUrlError,
     canonicalize_url,
@@ -1076,7 +1076,13 @@ class WebToolsService:
     def _markdown_limit(self, value: Optional[int]) -> int:
         if value is None:
             return self.settings.markdown_max_chars
-        return min(max(int(value), 500), self.settings.markdown_max_chars)
+        if int(value) < MIN_MARKDOWN_CHARS:
+            raise WebToolError(
+                "invalid_request",
+                f"max_chars must be at least {MIN_MARKDOWN_CHARS}",
+                detail=f"got {int(value)}",
+            )
+        return min(int(value), self.settings.markdown_max_chars)
 
     def _canonical(self, url: str) -> str:
         try:

@@ -220,6 +220,20 @@ def test_scrape_route_forwards_markdown_limit(
     assert fake_tools.calls == [("scrape", {"url": "https://example.com", "max_chars": 1200})]
 
 
+@pytest.mark.parametrize("max_chars", [1, 499])
+def test_scrape_route_refuses_a_limit_under_the_minimum(
+    web_client: TestClient, fake_tools: FakeWebTools, max_chars: int
+) -> None:
+    response = web_client.post(
+        "/api/v1/web/scrape",
+        headers=HEADERS,
+        json={"url": "https://example.com", "max_chars": max_chars},
+    )
+
+    assert response.status_code == 422
+    assert fake_tools.calls == []
+
+
 def test_map_route_forwards_filters(web_client: TestClient, fake_tools: FakeWebTools) -> None:
     response = web_client.post(
         "/api/v1/web/map",

@@ -684,3 +684,12 @@ headless browser met as well.
   under a millisecond). Its `timings` now hold only `cache_lookup_ms` and the
   real `total_ms`; the stored call's timings move to `cached_timings`, and
   `cached_at` says when it was made (UTC), so a caller can judge its age.
+
+### One minimum for `max_chars`
+
+- The scrape schema accepted `max_chars` from 1 while the service raised any
+  value under 500 to 500, so `max_chars: 1` returned 500 characters. The schema
+  now states the minimum (`minimum: 500`), a smaller value is refused (HTTP 422
+  on REST, `invalid_arguments` on MCP, `invalid_request` from the service), and
+  the server's cap (`WEB_TOOLS_MARKDOWN_MAX_CHARS`, 50,000 by default) still
+  applies above it.

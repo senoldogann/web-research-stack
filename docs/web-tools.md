@@ -12,6 +12,7 @@ exposed over the REST API and over a stdio MCP server that Dot Desktop can run.
 | Scrape one page | `POST /api/v1/web/scrape` | `web_scrape` (`mcp__web-research__web_scrape`) |
 | Map a site | `POST /api/v1/web/map` | `web_map` (`mcp__web-research__web_map`) |
 | Extract fields | `POST /api/v1/web/extract` | `web_extract` (`mcp__web-research__web_extract`) |
+| Providers' state | `GET /api/v1/web/health` | `web_health` (`mcp__web-research__web_health`) |
 | Start a crawl | `POST /api/v1/web/crawl` | `web_crawl_start` |
 | Crawl status | `GET /api/v1/web/crawl/{job_id}` | `web_crawl_status` |
 | Crawl results | `GET /api/v1/web/crawl/{job_id}/results` | `web_crawl_results` |
@@ -134,10 +135,11 @@ floor under relevance" below). Every result carries `source_type`, `year`,
 `facets` (source types, recency buckets, domains, angles, candidate count),
 per-angle `queries` with provider, result/new counts, date filters and errors,
 `warnings`, and `cache_hit`. If an angle fails, usable results from the remaining
-angles are returned with a warning. Each provider is paced, failures earn it a
-cooldown (5 s doubling to 300 s, reset by a successful call), and the fallback
-chain answers while it rests (see
-[Search provider pacing, fallback, and cooldown](#search-provider-pacing-fallback-and-cooldown)).
+angles are returned with a warning. Each provider is paced, a wall (or the third failure
+in a row) earns it a cooldown of 10 minutes (since 1.3.0; it was 5 s doubling to 300 s), and the
+fallback chain answers while it rests (see
+[Search provider pacing, fallback, and cooldown](#search-provider-pacing-fallback-and-cooldown)
+and [Providers that heal](#providers-that-heal)).
 `fast` keeps provider order and does not fan out, so it sends the fewest
 requests. Successful responses are cached for
 `WEB_TOOLS_SEARCH_CACHE_TTL_SECONDS` (default 300 s) per provider/depth/limit/
@@ -162,8 +164,20 @@ Copy `.env.example` to `.env` and set what you need. The important web tool knob
 | `SEARCH_JITTER_MIN_MS` / `SEARCH_JITTER_MAX_MS` | `250` / `500` | Random gap between a provider's calls |
 | `SEARCH_FALLBACK_PROVIDERS` | `duckduckgo_lite,yahoo,google` | The chain a failed call goes down, in order; `none` turns it off. The older single `SEARCH_FALLBACK_PROVIDER` is read when this is unset |
 | `SEARCH_FALLBACK_TIMEOUT_SECONDS` | `60` | Timeout of a fallback call (a cold headless browser) |
-| `SEARCH_PROVIDER_COOLDOWN_SECONDS` | `5` | First cooldown after a failed provider call |
-| `SEARCH_PROVIDER_MAX_COOLDOWN_SECONDS` | `300` | Cap for the doubling cooldown |
+| `SEARCH_PROVIDER_COOLDOWN_SECONDS` | `600` | The cooldown a wall, or the `SEARCH_PROVIDER_FAILURE_LIMIT`th failure in a row, starts (10 minutes; it was 5 seconds until 1.3.0) |
+| `SEARCH_PROVIDER_MAX_COOLDOWN_SECONDS` | `3600` | Cap for the doubling cooldown of a provider that comes back and is refused again |
+| `SEARCH_PROVIDER_FAILURE_LIMIT` | `3` | Failures in a row, other than walls, that start a cooldown |
+| `SEARCH_PROVIDER_WINDOW_SECONDS` | `1800` | How far back the recent calls that order the providers reach |
+| `SEARCH_PRIMARY_BUDGET_MS` | `15000` | How long a deep search's primary-source angle may run while the side angles are cut at `SEARCH_ANGLE_BUDGET_MS` (`0`: the same) |
+| `SEARCH_RESOLVE_DATES` | `auto` | `auto` (news and date-range searches), `on` (every search) or `off` (never, whatever a call says) |
+| `SEARCH_RESOLVE_DATES_TOP` / `_MAX` | `6` / `12` | Results whose page head is read for a date (`_MAX` with `strict_dates`) |
+| `SEARCH_RESOLVE_DATES_BUDGET_MS` | `4000` | Time the date reads may take together |
+| `SEARCH_RESOLVE_DATES_BYTES` / `_HEAD_CAP` | `65536` / `262144` | The first bytes of a page read, and how far a head that has not ended is read on |
+| `SEARCH_RESOLVE_DATES_CONCURRENCY` | `4` | Date reads at once (two of one host) |
+| `SCRAPE_RECOVER` | `on` | `off` never reads a walled page another way, whatever a call says |
+| `RECOVER_BUDGET_SECONDS` / `RECOVER_MAX_ALTERNATES` | `30` / `6` | Time the ways round a wall may take together, and the most `alternates` listed |
+| `OFFICIAL_HOSTS` / `AGGREGATOR_HOSTS` | empty | Hosts (or `host/path`) added to the first-party and aggregator tables |
+| `BRAVE_SEARCH_API_KEY`, `SERPER_API_KEY` (no prefix) | unset | Turn on the Brave Search API and Serper; never logged or answered |
 | `SCRAPE_MAX_LINKS` | `50` | Links `web_scrape` lists by default, from the page content; a request's `max_links` (0 to 200) replaces it |
 | `SCRAPE_BATCH_CONCURRENCY` | `4` | Pages one `web_scrape` call with `urls` reads at a time (and at most 2 from one host) |
 | `SCRAPE_BATCH_MAX_TOTAL_CHARS` | `60000` | Cap on a whole batch answer, in characters; a request's `max_total_chars` (5,000 to 500,000) replaces it |
@@ -548,18 +562,23 @@ pick up the new schema.
 - The default DuckDuckGo path can be rate-limited. A 202 bot-detection response
   is reported as `search_failed` with `detail=bot_detected`; a 200 response with
   no result nodes still returns an empty list, which is a provider quality
-  signal. Any failed provider call starts that provider's cooldown; with a
-  fallback registered, later calls go to the fallback chain while it rests. The
+  signal. A wall (and, since 1.3.0, the third failure in a row of another kind)
+  starts that provider's 10-minute cooldown; with a fallback registered, later calls go to the
+  fallback chain while it rests. The
   adapter can be replaced without changing the service contract: one written as
   `search(query, limit)` is called so when no date filter or option is asked.
 - `discover` and `deep` send 3 and 4 provider queries instead of 1. They cost
   more latency and provider budget than `fast`; use `fast` when that matters.
   An individual angle failure is surfaced in `warnings` and may reduce coverage.
-- Recency is inferred from a plausible year in the title, snippet, or URL, not
-  from page metadata. Results whose year is not visible are labelled `unknown`
-  and receive no current/historical bonus.
-- Source type is a host-and-path heuristic. A blog hosted on a vendor domain can
-  be classified `official`; the per-domain cap still prevents it from filling the
+- `recency` is inferred from a plausible year in the title, snippet, or URL. Since 1.3.0 a
+  result's `date` can come from its page's own metadata (`resolve_dates`, on for news and
+  date-range searches), but only for the top few results within a time budget, and the read
+  stops at 256 KB of a head: the rest keep the date their address, snippet or title showed, with
+  a `date_confidence` under 0.5. Results whose year is not visible are labelled `unknown` and
+  receive no current/historical bonus.
+- Source type is a host-and-path heuristic. A blog hosted on a first-party domain (a vendor's
+  own `blog.`) is `official` by design, a site that is not in the tables (a regional outlet) is
+  `other`, and the aggregator table is a list, not a classifier; the per-domain cap still prevents it from filling the
   page. Scores are relative to the current result set, not calibrated relevance.
 - The Google provider remains headless-only and may be refused; it is not a
   guaranteed search fallback.
@@ -659,8 +678,8 @@ headless browser met as well.
   `duckduckgo+google` when the angles were split), `requested_provider` keeps
   the requested one, the angle's entry in `queries` carries
   `fallback: {from, to, reason, error}`, and `warnings` gets `provider_fallback`.
-- A failure cools down only the provider that failed: 5 s
-  (`SEARCH_PROVIDER_COOLDOWN_SECONDS`), doubling while failures repeat up to
+- (Until 1.3.0; see "Providers that heal" for the rule now.) A failure cools down only the
+  provider that failed: 5 s (`SEARCH_PROVIDER_COOLDOWN_SECONDS`), doubling while failures repeat up to
   300 s (`SEARCH_PROVIDER_MAX_COOLDOWN_SECONDS`); a success resets it. While it
   cools down, its calls go to a healthy fallback (`reason: provider_cooldown`).
   With no fallback, or when the fallback fails too, the provider is still
@@ -1433,3 +1452,249 @@ About 30 calls in all, one search at a time, 8 s or more apart.
   chain's `tried` was `duckduckgo` failed, `duckduckgo_lite` failed, `yahoo` answered, in 0.6 s, where
   the headless browser had taken 25 s.
 
+
+## Round A: dates you can trust, providers that heal, walled pages recovered, compact output (1.3.0, 2026-10-24)
+
+A researcher used the server for a real job, the AI news of 16 to 23 October in 13 searches,
+and rated it 7/10 (6.5 for production). Their evidence: DuckDuckGo gave way to Yahoo or
+Google in 10 of the 13 searches and Yahoo once raised a `RuntimeError`; two `deep` searches had
+their primary angle cut at 5 s; Reuters pages came back as a captcha and `archive: true` had no
+copy; a `cloud.google.com` page with a published time came back with `date: null` and "Claude
+Opus 5.5" mixed 22 September and 21 October; `openai.com` and `cloud.google.com` were typed
+`other` and aggregators ranked above official sources; the search JSON swelled with facets,
+queries and timings, and `web_scrape` wrote a long page as a one-line 20k or 44k file. What they
+praised stays: `web_extract`'s JSON-LD provenance, `web_map`'s `lastmod`, and the transparency
+of `warnings`, `timings`, `fallback`, `provider` and `provenance`. Compact output moves those
+behind a flag and takes none away.
+
+### Dates you can trust
+
+`web_tools/dates.py` reads every date signal of a page as a `DateSignal` with the trust it
+deserves alone, and weighs them together.
+
+| Signal | `date_source` | Alone |
+|---|---|---:|
+| JSON-LD `datePublished` of the page's article (or WebPage) item | `json_ld:datePublished` | 0.80 |
+| a second JSON-LD item's `datePublished` | `json_ld:<Type>.datePublished` | 0.65 |
+| JSON-LD `dateCreated`, `uploadDate` | `json_ld:dateCreated` | 0.55 |
+| `article:published_time`, `og:published_time`, `itemprop=datePublished` in a meta tag | `meta:article:published_time` | 0.75 |
+| `itemprop=datePublished` on a visible element | `time[itemprop=datePublished]` | 0.70 |
+| meta `parsely-pub-date`, `published_time` | `meta:published_time` | 0.65 |
+| meta `sailthru.date`, `publish-date`, `publishdate`, `pubdate`, `article.published`, `citation_publication_date`, `dc.date.issued` | `meta:pubdate` | 0.60 |
+| meta `dc.date`, `dcterms.date`, `dcterms.created`, `citation_date` | `meta:dc.date` | 0.55 |
+| meta `date` | `meta:date` | 0.50 |
+| the first `<time datetime>` of the page's own content (not a menu, a sidebar, a footer, a list of other stories) | `time[datetime]` | 0.50, 0.55 when marked as the publication time |
+| a date printed near the headline (not inside the story) | `visible` | 0.35, 0.40 when labelled "Published" |
+| the address, a day or a month | `url` | 0.35, 0.20 |
+| the snippet: a day, "3 days ago" or "yesterday", a month | `snippet` | 0.35, 0.30, 0.20 |
+| the title: a day, a month | `title` | 0.25, 0.20 |
+| a date the provider gave as a field (Brave `page_age`, Serper `date`) | `provider` | 0.45 |
+
+`dateModified`, `article:modified_time`, `og:updated_time` and the like are *modified* signals:
+they give `date_modified` and are never the published date, so a story published on 22
+September and updated on 21 October disagrees with nothing.
+
+- **Agree.** Signals within a day of each other agree (a time zone is no conflict); a month agrees
+  with a day inside it. A group of agreeing signals weighs `1 - (1 - a)(1 - b)...`: JSON-LD
+  (0.80) and `article:published_time` (0.75) together are 0.95.
+- **Date and confidence.** The heaviest group is the `date` (of equal weights, the earlier one:
+  an update is stamped later than the story it updates). `date_confidence` is its weight times
+  `1 - 0.5 w` for every other group of weight `w`: two strong signals that disagree leave about
+  0.5. Under 0.5 a date is *low*; a date only the address or only the printed text gives always is.
+- **Conflicts.** The signals outside the winning group are `date_conflicts`, at most five, each
+  `{source, value}`; the "Claude Opus 5.5" page says
+  `date: 2026-09-22, date_confidence: 0.5, date_conflicts: [{source: meta:article:published_time, value: 2026-10-21T09:00:00+00:00}]`.
+- **Where it is said.** `web_scrape` and `web_extract` answer `date`, `date_source`,
+  `date_confidence`, `date_conflicts` (and `date_modified` when the page has one), with no date
+  said as `null` and a confidence of 0, never left out. In `web_extract` a named `published_at`
+  or `modified_at` is held to the signals: found by its name first in JSON-LD, it is replaced by
+  the winning signal when two others weigh against it, so `date` and `data.published_at` are never
+  two different days; its provenance gains `date_confidence` and `date_conflicts`. Every search
+  result carries `date_confidence` and `date_conflicts` over its own weak signals (address,
+  snippet, title, provider); its `date` and `date_source` are what they were.
+- **`resolve_dates`.** A result whose date is unknown or low (under 0.5) has its page's head
+  read, for the top 6 results (`..._RESOLVE_DATES_TOP`; 12 for `strict_dates`), at most 4 at once
+  and 2 of one host, within 4 s (`..._BUDGET_MS`, a read still out is cut and the answer says
+  `resolve_dates_cut:N`), from the page cache when it holds the page. It reads the first 64 KB
+  and, when the head has not ended by then, on to `</head>` up to 256 KB (`..._HEAD_CAP`): the
+  live probe found `cloud.google.com`'s heads 170 KB long with the JSON-LD at byte 140,000, and
+  64 KB dated none of them. A front page, a section or tag page, a PDF is not read (its date is
+  other stories'). What is read is weighed with the signals the result showed, the results are
+  ranked again with the dates found (freshness moves the order), and the answer's `dates` block
+  says asked, read, from the page cache, resolved, failed, cut. On by default for a query that
+  asks for news (the freshness cues, `news`, `uutiset`, `haber`...) or a call with a date range,
+  and for `strict_dates`; `resolve_dates: true` or `false` decides, `..._RESOLVE_DATES=on` makes
+  it the default for every search and **`off` makes it never happen, whatever a call says**.
+- **`strict_dates`.** Ranks twice the limit, dates them, drops the results with no date or a low
+  `date_confidence`, keeps the limit's worth of the rest and says `strict_dates_dropped:N` in
+  `warnings`; an empty answer from the filter is not `no_relevant_results`.
+- **Tests.** `tests/test_web_dates.py` has a head for each signal, conflicts, agreement,
+  time zones, placeholders and future dates, the recorded head of a Google Cloud post
+  (`tests/fixtures/cloud_google_trillium_head.html`, its scripts put back so that every date
+  signal is past byte 120,000) and extract's settling; `tests/test_web_search_resolve_dates.py`
+  the reads, the budget, the cache, the head read to its end and `strict_dates`.
+
+### Providers that heal
+
+- **A record per provider**, in the process: calls, answers, walls (`bot_detected`, a captcha),
+  HTTP errors (`http_503`, `rate_limited`, `invalid_key`), timeouts, other exceptions (a
+  `RuntimeError`, a parser given the wrong page), the latency of each call and the last error.
+  An exception a provider raises is its failure and never the search's: Yahoo's HTTP error status
+  is `http_<status>`, a refusing status (403, 429, 999) is `bot_detected`, a timeout is
+  `search_timeout`.
+- **Cooldown.** A wall starts one at once; any other failure starts one on the third in a row
+  (`..._PROVIDER_FAILURE_LIMIT`). It lasts 10 minutes (`..._PROVIDER_COOLDOWN_SECONDS`), twice as
+  long for each time a provider that came back is refused again, up to an hour
+  (`..._MAX_COOLDOWN_SECONDS`); a provider that cools is skipped in the chain (`tried` says
+  `skipped`, `provider_cooldown`) and asked only as a last resort. When the cooldown is over the
+  provider is on probation: its record of failures is cleared and the next call is the probe, an
+  answer clears the rest. A cut angle (the search's own budget) is no failure.
+- **Healthy first.** The providers that are not cooling are ordered by their recent calls (the
+  last 20 within 30 minutes, and only a record of 4 calls or more counts): 4 of 5 answered is
+  good, half shaky, fewer poor; the configured order breaks ties and a cooling provider keeps
+  its place. The provider asked first gives way to one in better standing
+  (`reason: provider_unhealthy`).
+- **Brave Search API and Serper.** `BRAVE_SEARCH_API_KEY` and `SERPER_API_KEY` turn them on;
+  without a key a provider does not exist (a call naming it is told the variable, `web_health`
+  lists it as `no_key`). A call that names no provider asks Brave, then Serper, then DuckDuckGo
+  and the rest of the chain; a call that names one asks it first and the keyed providers last.
+  The key is read from the environment, held in a closure, sent in a request header and
+  nowhere else: not in a URL, a log line (the module has no logging), an error, a `repr`,
+  `web_health` or an answer (`tests/test_web_paid_search.py` serialises all of them against a
+  server that echoes the request). Brave is paced at one call a second (its free plan); their dates
+  are a signal of a result. Note that every angle is a call: `depth: fast` costs one.
+- **`web_health`.** `{providers: [{name, state, calls, ok, failures, block_rate, mean_latency_ms,
+  last_error: {kind, code, detail, status_code, seconds_ago}, cooldown_remaining_s}], order,
+  calls, cooldown_seconds, failures_before_cooldown}`; `state` is `ok`, `degraded`, `cooling` or
+  `no_key` (with `key_env`). It reads memory and makes no request; 200 calls take a few
+  milliseconds. `GET /api/v1/web/health` is the same.
+- **A deep search's primary angle** is asked right after the base, before the side angles, so it
+  queues first at a provider's gate, and may run to 15 s (`..._PRIMARY_BUDGET_MS`) while the side
+  angles are cut at 5 s; `primary_query_cut` or `current_query_cut` says which was cut, and the
+  angle's error says at what budget.
+
+### Walled pages recovered
+
+- **What is a wall:** a captcha, a bot or login wall (`blocked`), or 401, 403, 429. Any other
+  failure keeps its hint (`archive: true`). `recover` defaults to on for a wall, unless `archive:
+  true` is the only thing asked for (then, as before, only the archive); `recover: true` is every
+  way whatever else is asked, `recover: false` none.
+- **The ways,** together within 30 s (`..._RECOVER_BUDGET_SECONDS`): the Internet Archive's
+  copy; the page's AMP and print forms (the wall's own `<link rel="amphtml">`, then `/amp`,
+  `?outputType=amp`, `?print=1`, `?amp=1`: four at most, the site's own addresses only); the
+  entry of the page in the site's RSS or Atom feed (the head's links, then `/feed`, `/rss.xml`...,
+  the same site only), in full when the entry carries the article. The text of the page's own forms
+  wins: the freshest form (AMP, print, then the archive) that holds at least 80% of the longest,
+  the archive first when `archive: true` was asked for as well. When none gives the page, the
+  title (what the wall still shows, else what the address spells) is searched away from the site
+  and the first two results of an outlet or an official page that hold the story's words are
+  read; posts, forums, repositories and aggregators are listed, never read as a report. A
+  feed that carries only a summary is given only when nothing else reads.
+- **Whose it is.** The answer never says it got the page when it got another source.
+  `recovered_from` is `{kind: archive|amp|print|feed|other_source, url, ...}` (`at` for an
+  archive copy, `partial` for a feed, `domain` and `title` for another outlet); the text begins
+  with a Markdown line that says it (`> Recovered from the Internet Archive's copy of ... Not the
+  live page`, `> Not the requested page. ... this is "..." from hindustantimes.com`), so a page
+  written to a file carries it; for another outlet `url` is that outlet's and `requested_url` the
+  walled page; `canonical_url` and `date` are those of the text read.
+- **`alternates`** are the other addresses (`url, domain, title, date, source_type, why`: "78%
+  of this story's title words, on hindustantimes.com (read)") and `next_action` one sentence to act
+  on ("The text is hindustantimes.com's report, not reuters.com's: cross-check it with
+  https://money.usnews.com/... or scrape ... again later").
+- **When nothing reads,** the wall's error is raised, in MCP and REST both, with `hint` (what was
+  tried: "archive: no archived copy; amp/print: none of the usual forms is served; ..."),
+  `alternates`, `next_action` and `recovery_tried`.
+- **What it does not do:** `web_search` with `read` hunts for no walled page (it was quick and
+  stays so; `archive` still applies); AMP and feed addresses come from the walled page's own site
+  only; `WEB_TOOLS_SCRAPE_RECOVER=off` turns it off for every call. A recovered answer is cached
+  like any other.
+
+### Compact output
+
+- **`web_search`.** Per result: `title, url, domain, date, date_confidence, source_type, snippet,
+  score` (and `content`, `content_truncated`, `content_error` where `read` asked for them), and
+  `run: {provider, warnings, fallback}` (`fallback` is `{from, to, reason, tried}` of the first
+  angle that took one; `cache_hit: true` when it did). A result whose dates conflict is named in
+  `run.warnings` as `date_conflict:2`, so the eight fields stay eight. `debug: true` adds a
+  `debug` block (`requested_provider, depth, facets, queries, timings, dates, cached_*`) and, under
+  each result, the date's source and conflicts and the parts of the score; `compact: false` is the
+  whole answer as it was.
+  **Decision:** over MCP `compact` is on unless the call says `compact: false`, and the tool
+  description says so plainly (the model reads it, and pays for every character); over REST the
+  default stays the full answer, which the web UI and the benchmarks read. The search cache holds
+  the whole answer, so both shapes share it. On the live query below the answer went from 5.5 KB
+  to 2.8 KB.
+- **`web_scrape lean`** returns `url, title, date, date_confidence, markdown, truncated,
+  total_chars` and, when they are the case, the date's conflicts, `fetched_with`, everything of a
+  recovery, the links that were asked for, and warnings; no metadata, timings, hash or links. A
+  page cut by `max_chars` says `truncated: true`, `total_chars`, `next_offset` and, for a page the
+  page cache keeps, a `content_id` (`c-` and 12 hex digits, the name of this text of this page).
+  `web_scrape {content_id, offset, max_chars}` returns the Markdown from `offset` on, from the
+  page cache and with no request, lean unless `lean: false`; it is the text the first read cut,
+  part by part. An id the cache let go of (the page cache keeps a page 5 minutes) is a 410
+  `content_expired` that names the page to scrape again; an answer cached longer than its page is
+  read again, never repeated with a dead id. A PDF, a recovered page and a page when the page
+  cache is off have no `content_id`.
+- **The page in a block of its own.** Dot keeps an answer longer than a result holds in a file,
+  and `web_scrape`'s was one line of 12k to 44k characters, the page's newlines escaped inside a
+  JSON string (the saved `web_scrape` answers had no newline at all). Over MCP the answer
+  is now the JSON on its first line, with `"markdown":"(below)"`, and the page's Markdown in a
+  second text block: the file is the JSON line and then the page as Markdown with its own line
+  breaks. A batch (`urls`) marks each page's block with `<!-- page 2 of 3: URL -->`; errors stay
+  one block of JSON. REST is unchanged.
+- **Tool text.** The schemas a model reads no longer say that an optional argument may be `null`,
+  and the descriptions are shorter: nine tools in 11,504 characters (eight were 11,451).
+
+### Source types that are right
+
+- **First-party sites** are `official` (`sources.py`, `FIRST_PARTY_HOSTS`): `openai.com`,
+  `anthropic.com`, `cloud.google.com`, `blog.google`, `deepmind.google`, `research.google`,
+  `ai.meta.com`, `about.fb.com`, `microsoft.com` (its blogs and news included), the newsroom of
+  `apple.com` (a host and a path), `aws.amazon.com`, `nvidia.com`, `github.blog` and more; every
+  site under a brand top-level domain (`.google`, `.microsoft`, `.apple`...); a forum on the
+  domain (`community.openai.com`) is not the organization speaking. `WEB_TOOLS_OFFICIAL_HOSTS`
+  (comma-separated hosts or `host/path`) adds to the table.
+- **An organization the query names:** its docs, developers, help, blog, newsroom, research and
+  status pages are `official` (`docs.stripe.com`, `developers.notion.com`, `notion.so/help`) when
+  the query says its name as a word or two joined, the name has four letters or more and is not
+  a word that is only a word (`time`, `cloud`), and the page is the organization speaking: never
+  an article that merely sits on a site with the name's word (`turkiye.ai/turkiye-yapay-zeka-...`
+  stays `other`).
+- **Aggregators** (`news.google.com`, `msn.com`, `flipboard.com`, `ground.news`, `techmeme.com`,
+  `newsbreak.com`...; `WEB_TOOLS_AGGREGATOR_HOSTS` adds to them) are a new type, `aggregator`, and
+  lose 0.12 in the score for every query.
+- **`primary_first`** (on for a news query, a parameter) adds 0.12 to official sites and 0.10 to
+  news outlets (0.05 academic) on top of their authority, unless the result is too old for the
+  window the query asks about, so a fresh page still goes before a stale outlet.
+- **"OpenAI Google Cloud GPT-6 Astra".** A query that names two organizations or more is about
+  what holds both. The bonuses of a site's kind (authority, `primary_first`, the primary angle's)
+  count in proportion to the share of the query's distinctive words that the result's title and
+  snippet hold, and a result that holds more than half gets up to 0.12 more. The page about the
+  model on `openai.com` (3 of 5 words) and Google Cloud's page on Astra (3 of 5) are official and
+  went first; the Reuters piece with both organizations and the event (5 of 5) now goes before
+  both, and the aggregator's copy of it is last (`tests/test_web_source_trust.py`). A query that
+  names one organization or one project's documentation is untouched, and the ten recorded
+  queries of `benchmarks/web_search_relevance.json` keep their order.
+
+### What it measured live (2026-10-24, this Mac, one run each)
+
+| | before (1.2.0) | after (1.3.0) |
+|---|---|---|
+| `AI news this week`, `discover`, 6 results (DuckDuckGo answered) | 5.5 s, 4,719 bytes; 1 result of 6 dated (a month, from its title) | 7.5 to 8.7 s, 2,786 to 2,955 bytes compact (5,500 full); date reads of 5 pages in 1.4 s: 3 read, 1 dated, 2 refused (Reuters, Bloomberg) |
+| Reuters article, HTTP 401 `access_blocked` | error in 0.35 s; `archive: true`: "holds no archived copy" in 1.05 s | text of the same Reuters story from hindustantimes.com in 4.9 to 5.8 s, labelled as another outlet's, with 5 `alternates` (usnews, thestar, emirates247, aol, msn) and a `next_action` |
+| Google Cloud blog post with a JSON-LD date and no snippet date | search `date: null`; scrape: no `date` (`datePublished` inside `metadata`) | scrape `date: 2024-05-15`, `date_confidence: 0.87`, `json_ld:datePublished`; search with `resolve_dates`: 4 of 5 Google Cloud posts dated in 1.0 to 1.5 s (one run in which the host answered slowly: `resolve_dates_cut:4` at the 4 s budget) |
+
+The browsers (Chrome, Camoufox) were not installed in the throwaway environment of these runs; the
+Reuters recovery did not need one.
+
+### For Dot
+
+- `resolve_dates` and recovery read addresses the server chooses. They are not bound by Dot's
+  `[browser] allowed_hosts` and `blocked_hosts` (`web_search` with `read` is refused while the
+  owner has set a list, for the same reason): set `WEB_TOOLS_SEARCH_RESOLVE_DATES=off` and
+  `WEB_TOOLS_SCRAPE_RECOVER=off` in the environment Dot gives the server while a list is set.
+- `web_scrape` has a new string argument, `content_id`, which the server works on and never
+  sends (Dot's `STAYS_IN_THE_SERVER` list of the server's string arguments needs
+  `web_scrape.content_id`); `web_health` takes none; the server has nine tools, not eight.
+- The `web_scrape` answer is two text blocks (the JSON, then the Markdown); a client that parses
+  `content[0]` as JSON finds `"markdown":"(below)"` where the page was.

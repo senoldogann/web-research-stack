@@ -107,6 +107,7 @@ from web_scraper.web_tools.settings import (
     SEARCH_READ_MAX,
     WebToolsSettings,
 )
+from web_scraper.web_tools.sources import DEFAULT_RULES
 from web_scraper.web_tools.urls import (
     UnsafeUrlError,
     canonicalize_url,
@@ -227,6 +228,9 @@ class WebToolsService:
         self._provider_gates: dict[str, ProviderGate] = {}
         self._provider_health: dict[str, ProviderHealth] = {}
         self._content_urls: OrderedDict[str, str] = OrderedDict()
+        self._source_rules = DEFAULT_RULES.extended(
+            settings.official_hosts, settings.aggregator_hosts
+        )
 
     @classmethod
     def from_env(
@@ -318,9 +322,13 @@ class WebToolsService:
         strict_dates: bool = False,
         compact: bool = False,
         debug: bool = False,
+        primary_first: Optional[bool] = None,
     ) -> dict[str, Any]:
         """Discover URLs for a query: ranked results, and what it took to get them.
 
+        ``primary_first`` makes an organization's own site and the news outlets that report it
+        lead (unset: it does for a query that asks for news); a known aggregator ranks lower
+        whatever the query.
 
         ``compact`` shapes the answer for a model that pays for every character (see
         ``_present_search``); the search cache keeps the whole answer, so a compact call and a
@@ -383,6 +391,7 @@ class WebToolsService:
             f"{self.settings.search_region}:{self.settings.search_language}:"
             f"{_parameters_key(options, site_list, excluded_list)}:"
             f"dates{int(reading_dates)}{int(strict_dates)}:"
+            f"first{'a' if primary_first is None else int(primary_first)}:"
             f"{cleaned.casefold()}"
         )
         started = time.perf_counter()
@@ -518,9 +527,22 @@ class WebToolsService:
                 # Provider order, minus results that hold no distinctive word of the query. The
                 # whole pool is scored, so BM25 sees the same corpus as in discover and deep;
                 # annotate_candidates keeps the provider's order.
-                annotated = annotate_candidates(cleaned, candidates.values(), dates=found)
+                annotated = annotate_candidates(
+                    cleaned,
+                    candidates.values(),
+                    dates=found,
+                    rules=self._source_rules,
+                    primary_first=primary_first,
+                )
                 return relevant_results(cleaned, annotated)[:size]
-            return rank_candidates(cleaned, candidates.values(), size, dates=found)
+            return rank_candidates(
+                cleaned,
+                candidates.values(),
+                size,
+                dates=found,
+                rules=self._source_rules,
+                primary_first=primary_first,
+            )
 
         # A strict search drops the results that cannot be dated, so it ranks a longer list and
         # dates more of it, to have the limit left after the drop.

@@ -39,6 +39,7 @@ _SEARCH_PARAMETERS = {
     "date_from",
     "date_to",
     "resolve_dates",
+    "primary_first",
 }
 _SEARCH_READ_PARAMETERS = {"read", "read_chars", "archive", "strict_dates", "debug"}
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]

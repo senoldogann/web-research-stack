@@ -282,6 +282,10 @@ class WebSearchRequest(BaseModel):
         default=False,
         description="Drop results with no date or a low date_confidence",
     )
+    primary_first: Optional[bool] = Field(
+        default=None,
+        description="Official sites and mainstream news lead, aggregators lower (default: news)",
+    )
     compact: Optional[bool] = Field(
         default=None,
         description="Compact answer (the default here); false returns everything",

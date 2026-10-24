@@ -29,10 +29,17 @@ from web_scraper.web_tools.dates import infer_publication_date as infer_publicat
 from web_scraper.web_tools.search import SearchResult
 from web_scraper.web_tools.sources import (
     BLOG_HOSTS,
+    DEFAULT_RULES,
+    FIRST_PARTY_SEGMENTS,
+    FIRST_PARTY_SUBDOMAINS,
+    GENERIC_NAMES,
     NEWS_HOSTS,
     PRESS_RELEASE_HOSTS,
     SOCIAL_HOSTS,
     SOCIAL_ON_NEWS_HOSTS,
+    SourceRules,
+    registrable_label,
+    split_host,
 )
 
 DEPTHS = ("fast", "discover", "deep")
@@ -344,7 +351,19 @@ _AUTHORITY = {
     "other": 0.0,
     "press_release": 0.0,
     "social": 0.0,
+    # Somebody else's reporting a hop away: below the report itself, whatever the query.
+    "aggregator": -0.12,
 }
+# With primary_first (the default for a news query) the organization's own site and the outlets
+# that report it lead: a bonus on top of their authority, but not to a result too old for the
+# time the query asks about.
+_PRIMARY_FIRST = {"official": 0.12, "news": 0.10, "academic": 0.05}
+# A query that names two organizations or more (a deal, a partnership, a comparison) is about
+# what holds both: the bonuses of a site's kind count in proportion to the share of the query's
+# distinctive words its title and snippet hold, and a result holding more than half of them gets
+# up to this, all of it for every one.
+_FULL_COVERAGE_BONUS = 0.12
+_COVERAGE_MIN_TERMS = 3
 # On a news query the kind of source decides more: an outlet's article goes before the page
 # of an unknown site of the same freshness (an aggregator that copies its headline), and a
 # post, a press release or a blog below it. An outlet gets 0.05 more, not a lot: a fresh page
@@ -749,13 +768,25 @@ def classify_recency(year: Optional[int], *, year_now: Optional[int] = None) -> 
     return "historical"
 
 
-def classify_source_type(url: str, *, news: bool = False) -> str:
+def classify_source_type(
+    url: str,
+    *,
+    news: bool = False,
+    query: str = "",
+    rules: Optional[SourceRules] = None,
+) -> str:
     """Classify a result URL: official, academic, news, press_release, social, reference,
-    code, community or other.
+    code, community, aggregator or other.
 
     ``news`` says the query asks for news: a video site such as YouTube is ``social``
-    then, and a video of the news is not the story.
+    then, and a video of the news is not the story. An organization's own site is ``official``:
+    a known first-party domain (``openai.com``, ``cloud.google.com``, ``blog.google``,
+    ``apple.com/newsroom``, a table that WEB_TOOLS_OFFICIAL_HOSTS extends; *rules* carries it),
+    and, for a query that names the organization, its docs, blog, newsroom or developer pages
+    (``docs.stripe.com`` for "stripe webhooks"). A site that collects other outlets' stories is
+    ``aggregator``.
     """
+    rules = rules or DEFAULT_RULES
     try:
         parsed = urlsplit(url)
         host = (parsed.hostname or "").lower().rstrip(".")
@@ -771,6 +802,7 @@ def classify_source_type(url: str, *, news: bool = False) -> str:
         _host_matches(host, _OFFICIAL_HOSTS)
         or _host_matches(host, _PUBLIC_SECTOR_HOSTS)
         or _GOVERNMENT_SUFFIX.search(host)
+        or rules.is_first_party(host, path)
     ):
         return "official"
     if _host_matches(host, _ACADEMIC_HOSTS) or _ACADEMIC_SUFFIX.search(host):
@@ -787,6 +819,10 @@ def classify_source_type(url: str, *, news: bool = False) -> str:
         return "code"
     if _host_matches(host, _COMMUNITY_HOSTS):
         return "community"
+    if rules.is_aggregator(host, path):
+        return "aggregator"
+    if query and _site_named_by(host, path, _query_words(query)):
+        return "official"
     # A docs-looking path alone does not make a host official: mirrors (mdn.org.cn, runebook.dev) copy another
     # project's documentation. Give them the weight of a reference, below the canonical project's own domain.
     if any(
@@ -795,6 +831,35 @@ def classify_source_type(url: str, *, news: bool = False) -> str:
     ):
         return "reference"
     return "other"
+
+
+def _query_words(query: str) -> list[str]:
+    return [_normalise_token(word) for word in re.findall(r"[^\W_]+", query or "", re.UNICODE)]
+
+
+def _names(words: list[str]) -> set[str]:
+    """What a query may be calling a site: each of its words, and two next to each other joined."""
+    return set(words) | {left + right for left, right in zip(words, words[1:])}
+
+
+def _site_named_by(host: str, path: str, words: list[str]) -> bool:
+    """Whether a query names the organization behind a site and the page is the organization's own.
+
+    The name is the site's registrable label (``stripe`` of ``docs.stripe.com``) when the query
+    says it, as a word or two joined (``hugging face``), at least four letters and not a word that
+    is only a word (``time``, ``cloud``). The page is the organization speaking: its front page,
+    its docs, developers, blog or newsroom (a subdomain or a first path segment), never an
+    article that merely sits on the site (``turkiye.ai/turkiye-yapay-zeka-eylem-plani``).
+    """
+    label = registrable_label(host)
+    if len(label) < 4 or label in GENERIC_NAMES or label not in _names(words):
+        return False
+    subdomain, _ = split_host(host)
+    first = subdomain.split(".")[0] if subdomain else ""
+    segments = [part for part in path.split("/") if part]
+    if first in ("", "www"):
+        return not segments or segments[0] in FIRST_PARTY_SEGMENTS
+    return first in FIRST_PARTY_SUBDOMAINS
 
 
 def _field_tokens(text: str) -> list[str]:
@@ -886,13 +951,17 @@ def annotate_candidates(
     year_now: Optional[int] = None,
     today: Optional[date] = None,
     dates: Optional[Mapping[str, DateResolution]] = None,
+    rules: Optional[SourceRules] = None,
+    primary_first: Optional[bool] = None,
 ) -> list[dict[str, Any]]:
     """Score a candidate pool, including corpus-relative BM25F.
 
     Field weighting and document frequency only make sense against the other
     results from the same search, so the whole pool is scored together. *dates* holds, by
     address, the dates found by reading a page (see ``dates.py``); a result with one is dated by
-    it and not by its address, snippet or title.
+    it and not by its address, snippet or title. *rules* are the tables of first-party sites and
+    aggregators (``sources.py``). With *primary_first* (unset: when the query asks for news) the
+    organization's own site and the news outlets that report lead.
     """
     items = list(candidates)
     terms = _bm25_query_terms(query)
@@ -904,6 +973,7 @@ def annotate_candidates(
     now = today or date.today()
     news = wants_news(query)
     window = detect_date_filter(query, year=now.year)
+    facts = _QueryFacts.of(query, news, primary_first, rules or DEFAULT_RULES)
     return [
         _annotate_candidate(
             query,
@@ -914,9 +984,34 @@ def annotate_candidates(
             news,
             window,
             (dates or {}).get(item.result.url),
+            facts,
         )
         for index, item in enumerate(items)
     ]
+
+
+@dataclass(frozen=True)
+class _QueryFacts:
+    """What the query itself says that scoring needs, found once for the whole pool."""
+
+    rules: SourceRules
+    primary_first: bool
+    # The query names two organizations or more and has words enough for a page to hold some of them.
+    by_coverage: bool
+    terms: frozenset[str]
+
+    @classmethod
+    def of(
+        cls, query: str, news: bool, primary_first: Optional[bool], rules: SourceRules
+    ) -> _QueryFacts:
+        terms = frozenset(distinctive_terms(query))
+        named = _names(_query_words(query)) & rules.organizations()
+        return cls(
+            rules=rules,
+            primary_first=news if primary_first is None else primary_first,
+            by_coverage=len(named) >= 2 and len(terms) >= _COVERAGE_MIN_TERMS,
+            terms=terms,
+        )
 
 
 def annotate_candidate(
@@ -939,10 +1034,12 @@ def _annotate_candidate(
     news: bool,
     window: Optional[str],
     resolution: Optional[DateResolution] = None,
+    facts: Optional[_QueryFacts] = None,
 ) -> dict[str, Any]:
+    facts = facts or _QueryFacts.of(query, news, None, DEFAULT_RULES)
     result = candidate.result
     url = result.url
-    source_type = classify_source_type(url, news=news)
+    source_type = classify_source_type(url, news=news, query=query, rules=facts.rules)
     year = infer_publication_year(
         result.title,
         result.snippet,
@@ -974,7 +1071,23 @@ def _annotate_candidate(
         ANGLE_WEIGHTS.get(name, 0.5) / (_RRF_K + rank)
         for name, rank in candidate.angle_ranks.items()
     )
-    score = 0.45 * bm25 + 0.10 * relevance + 1.8 * rrf + _AUTHORITY[source_type]
+    # What a site's kind is worth counts in proportion to how much of the query a result's title
+    # and snippet hold, for a query about what holds several organizations: the page of one of
+    # them is not the story of both.
+    coverage = 1.0
+    if facts.by_coverage:
+        coverage = len(matched_terms(facts.terms, result.title, result.snippet, "")) / len(
+            facts.terms
+        )
+    authority = _AUTHORITY[source_type]
+    score = (
+        0.45 * bm25
+        + 0.10 * relevance
+        + 1.8 * rrf
+        + (authority * coverage if authority > 0 else authority)
+    )
+    if facts.by_coverage and coverage > 0.5 and authority >= 0:
+        score += _FULL_COVERAGE_BONUS * (coverage - 0.5) / 0.5
     # A query that says how fresh, and a result whose date can answer it: the
     # date decides, not the year it names (a February article is "current" in
     # October by its year, and no news of this week).
@@ -983,6 +1096,8 @@ def _annotate_candidate(
         score += 0.10 if fresh else -0.20
     else:
         score += {"current": 0.10, "recent": 0.05}.get(recency, 0.0)
+    if facts.primary_first and fresh is not False:
+        score += _PRIMARY_FIRST.get(source_type, 0.0) * coverage
     if recency == "historical":
         score += 0.08 if source_type in {"official", "academic", "reference"} else 0.04
     if _has_exact_phrase(query, result.title, result.snippet):
@@ -996,7 +1111,7 @@ def _annotate_candidate(
     ):
         score += 0.05
     if "primary" in candidate.angle_ranks and source_type == "official":
-        score += 0.08
+        score += 0.08 * coverage
     # A news query wants the stories, not the front pages and lists that link them.
     if news:
         score += {"article": 0.08, "listing": -0.08, "front": -0.08}.get(kind, 0.0)
@@ -1052,6 +1167,8 @@ def rank_candidates(
     year_now: Optional[int] = None,
     today: Optional[date] = None,
     dates: Optional[Mapping[str, DateResolution]] = None,
+    rules: Optional[SourceRules] = None,
+    primary_first: Optional[bool] = None,
 ) -> list[dict[str, Any]]:
     """Rank candidates by relevance, agreement, authority, and recency, then diversify.
 
@@ -1061,7 +1178,15 @@ def rank_candidates(
     ``MIN_RESULT_SCORE`` are dropped beside better ones and kept only when no
     relevant result reaches it.
     """
-    annotated = annotate_candidates(query, candidates, year_now=year_now, today=today, dates=dates)
+    annotated = annotate_candidates(
+        query,
+        candidates,
+        year_now=year_now,
+        today=today,
+        dates=dates,
+        rules=rules,
+        primary_first=primary_first,
+    )
     relevant = relevant_results(query, annotated)
     if not relevant:
         return []

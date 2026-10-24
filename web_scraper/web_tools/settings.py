@@ -207,6 +207,12 @@ class WebToolsSettings:
     # How long the walk through the Internet Archive's copies of a walled page may take.
     archive_budget_seconds: float = 20.0
 
+    # Hosts added to the tables of first-party sites (official) and of aggregators (ranked below
+    # the report they copy); each a host or a host and a path (apple.com/newsroom), a subdomain
+    # included. The built-in tables are in sources.py.
+    official_hosts: list[str] = field(default_factory=list)
+    aggregator_hosts: list[str] = field(default_factory=list)
+
     # Reading a walled page another way (web_scrape recover): "on" does it for a page that answers
     # a captcha, a 401, 403 or 429 or a bot wall, unless the call says recover: false; "off" never
     # does, whatever a call says, so the server reads no page of its own choosing for a scrape.
@@ -337,6 +343,8 @@ class WebToolsSettings:
         )
         self.recover_budget_seconds = min(max(self.recover_budget_seconds, 1.0), 300.0)
         self.recover_max_alternates = min(max(self.recover_max_alternates, 1), 20)
+        self.official_hosts = [host for host in self.official_hosts if host and host.strip()]
+        self.aggregator_hosts = [host for host in self.aggregator_hosts if host and host.strip()]
         self.max_extract_fields = max(self.max_extract_fields, 1)
         self.extract_max_items = min(max(self.extract_max_items, 1), EXTRACT_MAX_ITEMS_CEILING)
         self.extract_max_chars = min(
@@ -431,6 +439,8 @@ class WebToolsSettings:
             scrape_recover=os.getenv("WEB_TOOLS_SCRAPE_RECOVER", "on"),
             recover_budget_seconds=_float("WEB_TOOLS_RECOVER_BUDGET_SECONDS", 30.0),
             recover_max_alternates=_int("WEB_TOOLS_RECOVER_MAX_ALTERNATES", 6),
+            official_hosts=_csv("WEB_TOOLS_OFFICIAL_HOSTS"),
+            aggregator_hosts=_csv("WEB_TOOLS_AGGREGATOR_HOSTS"),
             data_dir=_data_dir_from_env(),
             max_extract_fields=_int("WEB_TOOLS_MAX_EXTRACT_FIELDS", 50),
             extract_max_items=_int("WEB_TOOLS_EXTRACT_MAX_ITEMS", 100),

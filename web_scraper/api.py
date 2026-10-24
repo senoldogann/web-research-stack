@@ -1290,6 +1290,7 @@ def create_app(settings: Optional[Config] = None) -> FastAPI:
                         "date_from",
                         "date_to",
                         "resolve_dates",
+                        "primary_first",
                     },
                     exclude_none=True,
                 ),

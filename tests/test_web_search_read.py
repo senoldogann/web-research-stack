@@ -43,6 +43,7 @@ def _build(
         "search_angle_delay_ms": 0,
         "search_jitter_min_ms": 0,
         "search_jitter_max_ms": 0,
+        "soft_404_check": False,  # these tests count fetches; see test_web_missing_pages.py
         **settings,
     }
     service = _service(fetcher, search=search, settings=WebToolsSettings(**values))  # type: ignore[arg-type]

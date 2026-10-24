@@ -180,9 +180,21 @@ class WebToolsSettings:
     browser_preference: str = "auto"
     browser_timeout_seconds: float = 30.0
     browser_idle_seconds: int = 120
+    # After a page has loaded the browser waits at least this long, and then until the page's visible text
+    # has stopped growing for browser_settle_stable_ms (and is more than a loading placeholder), but not
+    # longer than browser_settle_max_ms (and never past browser_timeout_seconds for the whole render).
     browser_post_load_wait_ms: int = 500
+    browser_settle_max_ms: int = 8_000
+    browser_settle_stable_ms: int = 600
     browser_max_contexts: int = 4
+    # A page whose readable text is shorter than this while its HTML has scripts is read again in the
+    # browser; the text of a rendered page is a shell's under a quarter of it.
     browser_render_min_chars: int = 200
+
+    # Telling a page a site gives for an address it has nothing at (a soft 404) costs a request: a page that
+    # does not say it is itself (no canonical link to its own address) makes the server ask its host, once
+    # per session, for a path that cannot exist, and compare. "off" never asks.
+    soft_404_check: bool = True
 
     markdown_max_chars: int = 50_000
     max_links: int = 500
@@ -300,6 +312,8 @@ class WebToolsSettings:
         self.browser_timeout_seconds = max(self.browser_timeout_seconds, 1.0)
         self.browser_idle_seconds = max(self.browser_idle_seconds, 5)
         self.browser_post_load_wait_ms = max(self.browser_post_load_wait_ms, 0)
+        self.browser_settle_max_ms = max(self.browser_settle_max_ms, 0)
+        self.browser_settle_stable_ms = max(self.browser_settle_stable_ms, 0)
         self.browser_max_contexts = max(self.browser_max_contexts, 1)
         self.browser_render_min_chars = max(self.browser_render_min_chars, 20)
 
@@ -420,8 +434,11 @@ class WebToolsSettings:
             browser_timeout_seconds=_float("WEB_TOOLS_BROWSER_TIMEOUT_SECONDS", 30.0),
             browser_idle_seconds=_int("WEB_TOOLS_BROWSER_IDLE_SECONDS", 120),
             browser_post_load_wait_ms=_int("WEB_TOOLS_BROWSER_POST_LOAD_WAIT_MS", 500),
+            browser_settle_max_ms=_int("WEB_TOOLS_BROWSER_SETTLE_MAX_MS", 8_000),
+            browser_settle_stable_ms=_int("WEB_TOOLS_BROWSER_SETTLE_STABLE_MS", 600),
             browser_max_contexts=_int("WEB_TOOLS_BROWSER_MAX_CONTEXTS", 4),
             browser_render_min_chars=_int("WEB_TOOLS_BROWSER_RENDER_MIN_CHARS", 200),
+            soft_404_check=_bool("WEB_TOOLS_SOFT_404_CHECK", True),
             markdown_max_chars=_int("WEB_TOOLS_MARKDOWN_MAX_CHARS", 50_000),
             max_links=_int("WEB_TOOLS_MAX_LINKS", 500),
             scrape_max_links=_int("WEB_TOOLS_SCRAPE_MAX_LINKS", 50),

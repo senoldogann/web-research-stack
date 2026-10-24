@@ -53,6 +53,7 @@ def _settings(**overrides: object) -> WebToolsSettings:
         "search_jitter_max_ms": 0,
         "search_fallback_providers": [],
         "search_resolve_dates": "off",
+        "soft_404_check": False,  # these tests count requests; see test_web_missing_pages.py
     }
     values.update(overrides)
     return WebToolsSettings(**values)  # type: ignore[arg-type]

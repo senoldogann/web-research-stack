@@ -8,10 +8,11 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 from urllib.parse import urlsplit
 
 from web_scraper.network_safety import validate_outbound_url
+from web_scraper.web_tools.content import shell_text
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,35 @@ _ALLOWED_KEPT_SECONDS = 30.0
 _REFUSED_KEPT_SECONDS = 300.0
 _CHECK_TIMEOUT_SECONDS = 5.0
 _HOSTS_KEPT_MAX = 1024
+# Waiting for a page to settle (see ``HeadlessBrowserManager._settle``): how long the network may take to
+# go quiet, how often the page's text is looked at, and the time kept back from the render's own deadline
+# to read the page in.
+_NETWORK_IDLE_MAX_MS = 3_000
+_POLL_SECONDS = 0.1
+_DEADLINE_MARGIN_SECONDS = 0.5
+# The text a reader of the page would see: the Markdown reader's own choices in the page itself (the
+# first of main, article and role=main, else the body; no menus, banners, footers, sidebars, forms or
+# scripts), counted without laying the page out again and again. Returns how many characters there are
+# and the first ``limit`` of them.
+_VISIBLE_TEXT_JS = """(limit) => {
+  const skip = 'script,style,noscript,template,nav,header,footer,aside,svg,canvas,form,iframe,dialog,' +
+    'button,select,textarea,[role=navigation],[role=banner],[role=contentinfo],' +
+    '[role=complementary],[role=search],[hidden],[aria-hidden=true]';
+  const root = document.querySelector('main') || document.querySelector('article') ||
+    document.querySelector('[role=main]') || document.body;
+  if (!root) return {chars: 0, head: ''};
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let chars = 0, head = '', node;
+  while ((node = walker.nextNode())) {
+    const text = node.nodeValue.replace(/\\s+/g, ' ').trim();
+    if (!text) continue;
+    const parent = node.parentElement;
+    if (parent && parent.closest(skip)) continue;
+    chars += text.length + (chars ? 1 : 0);
+    if (head.length < limit) head += (head ? ' ' : '') + text;
+  }
+  return {chars: chars, head: head.slice(0, limit)};
+}"""
 
 
 @dataclass(frozen=True)
@@ -51,6 +81,25 @@ class BrowserPage:
     final_url: str
     status_code: int
     engine: str
+    # How the wait for the page to settle went: how long it was, how much visible text the page had at
+    # the end (-1: it could not be read), and why it ended: ``stable`` (the text had stopped growing),
+    # ``cap`` (the time allowed ran out first). Empty for a page that was not waited for.
+    settled_ms: float = 0.0
+    text_chars: int = -1
+    settle: str = ""
+
+
+@dataclass
+class _Settled:
+    waited_ms: float
+    chars: int
+    reason: str
+
+
+@dataclass
+class _VisibleText:
+    chars: int
+    head: str
 
 
 @dataclass
@@ -194,11 +243,20 @@ class HeadlessBrowserManager:
         max_contexts: int = 4,
         viewport_width: int = 1440,
         viewport_height: int = 900,
+        settle_max_ms: int = 8_000,
+        settle_stable_ms: int = 600,
+        shell_chars: int = 200,
     ) -> None:
         self.preference = preference
         self.timeout_seconds = max(timeout_seconds, 1.0)
         self.idle_seconds = max(idle_seconds, 5)
+        # The least a page is waited for after it has loaded, and the most (within timeout_seconds); in
+        # between it is waited for until its text has stopped growing for settle_stable_ms and is more than
+        # a shell's (shell_chars is where a page stops being one).
         self.post_load_wait_ms = max(post_load_wait_ms, 0)
+        self.settle_max_ms = max(settle_max_ms, 0)
+        self.settle_stable_ms = max(settle_stable_ms, 0)
+        self.shell_chars = max(shell_chars, 20)
         self.max_contexts = max(max_contexts, 1)
         self.viewport_width = viewport_width
         self.viewport_height = viewport_height
@@ -213,6 +271,9 @@ class HeadlessBrowserManager:
         self._last_used = 0.0
         self._idle_task: Optional[asyncio.Task[Any]] = None
         self._guard = RequestGuard()
+        # The time the wait for a page measures and sleeps by; a test sets its own.
+        self._clock: Callable[[], float] = time.monotonic
+        self._sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep
 
     @property
     def engine(self) -> Optional[str]:
@@ -277,18 +338,23 @@ class HeadlessBrowserManager:
         self._browser = browser
 
     async def render(self, url: str, *, post_load_wait_ms: Optional[int] = None) -> BrowserPage:
-        """Render *url* in a fresh context with every network request guarded."""
+        """Render *url* in a fresh context with every network request guarded.
+
+        The page is read once it has settled (``_settle``), not after a fixed wait: a page whose
+        script draws its content a second or three after the load is read with its content.
+        """
         if not await self._guard.allowed_now(url):
             raise BrowserRenderError("unsafe_target", "Blocked unsafe browser target")
         await self.start()
         if self._browser is None:
             raise BrowserRenderError("browser_unavailable", "Headless browser is not running")
 
-        wait_ms = self.post_load_wait_ms if post_load_wait_ms is None else post_load_wait_ms
+        least_ms = self.post_load_wait_ms if post_load_wait_ms is None else post_load_wait_ms
         async with self._context_gate:
             self._active += 1
             context = None
             try:
+                deadline = self._clock() + self.timeout_seconds
                 context = await self._create_context()
                 page = await context.new_page()
                 await page.route("**/*", self._guard.route)
@@ -303,11 +369,8 @@ class HeadlessBrowserManager:
                     code = "timeout" if "timeout" in name else "navigation_failed"
                     raise BrowserRenderError(code, "Browser navigation failed") from exc
 
-                if wait_ms:
-                    with contextlib.suppress(Exception):
-                        await page.wait_for_timeout(wait_ms)
-
-                html = await page.content()
+                settled = await self._settle(page, least_ms, deadline)
+                html = await self._content(page)
                 final_url = page.url
                 status = response.status if response else 0
                 return BrowserPage(
@@ -315,6 +378,9 @@ class HeadlessBrowserManager:
                     final_url=final_url,
                     status_code=status,
                     engine=self._engine or "unknown",
+                    settled_ms=round(settled.waited_ms, 2),
+                    text_chars=settled.chars,
+                    settle=settled.reason,
                 )
             finally:
                 if context is not None:
@@ -322,6 +388,72 @@ class HeadlessBrowserManager:
                         await context.close()
                 self._active -= 1
                 self._last_used = time.monotonic()
+
+    async def _settle(self, page: Any, least_ms: int, deadline: float) -> _Settled:
+        """Wait for a page that has reached DOMContentLoaded to finish drawing itself.
+
+        After the load event, the network at rest (each bounded: a page that never goes quiet is
+        waited for at most ``_NETWORK_IDLE_MAX_MS``); then the page's visible text, looked at every
+        tenth of a second, until it has not changed for ``settle_stable_ms`` and is more than a
+        shell's (a loading placeholder, an empty app root: ``shell_text``), and not before
+        *least_ms* (``post_load_wait_ms``) have passed. A page that is still a shell is waited for
+        up to ``settle_max_ms``: its script may be about to draw. Nothing is waited for past the
+        render's own *deadline* (less the time to read the page in).
+        """
+        began = self._clock()
+        cap_at = max(
+            min(began + self.settle_max_ms / 1000, deadline - _DEADLINE_MARGIN_SECONDS), began
+        )
+        floor_at = min(began + max(least_ms, 0) / 1000, cap_at)
+        await self._reach(page, "load", cap_at)
+        await self._reach(
+            page, "networkidle", min(cap_at, self._clock() + _NETWORK_IDLE_MAX_MS / 1000)
+        )
+
+        chars, since, reason = -1, self._clock(), "cap"
+        while True:
+            now = self._clock()
+            seen = await self._visible_text(page)
+            if seen.chars != chars:
+                chars, since = seen.chars, now
+            drawn = chars >= 0 and (
+                chars >= self.shell_chars or shell_text(seen.head, self.shell_chars) is None
+            )
+            if now >= floor_at and drawn and now - since >= self.settle_stable_ms / 1000:
+                reason = "stable"
+                break
+            if now >= cap_at:
+                break
+            await self._sleep(min(_POLL_SECONDS, max(cap_at - now, 0.0)))
+        return _Settled(waited_ms=(self._clock() - began) * 1000, chars=chars, reason=reason)
+
+    async def _reach(self, page: Any, state: str, until: float) -> None:
+        """Wait for a load state until the time *until*; a page that does not reach it in time is not an error."""
+        remaining_ms = int(max(until - self._clock(), 0.0) * 1000)
+        if remaining_ms <= 0:
+            return
+        with contextlib.suppress(Exception):
+            await page.wait_for_load_state(state, timeout=remaining_ms)
+
+    async def _visible_text(self, page: Any) -> _VisibleText:
+        """How much text the page shows and its first characters; ``-1`` characters when it cannot be read
+        (the page is navigating)."""
+        try:
+            seen = await page.evaluate(_VISIBLE_TEXT_JS, self.shell_chars)
+            return _VisibleText(chars=int(seen["chars"]), head=str(seen["head"]))
+        except Exception:  # noqa: BLE001 - a page that is changing under the read is read again
+            return _VisibleText(chars=-1, head="")
+
+    async def _content(self, page: Any) -> str:
+        """The page's HTML as it is now; a page that is navigating at that moment is asked again."""
+        last: Optional[Exception] = None
+        for _ in range(3):
+            try:
+                return str(await page.content())
+            except Exception as exc:  # noqa: BLE001 - normalise Playwright errors
+                last = exc
+                await self._sleep(0.2)
+        raise BrowserRenderError("navigation_failed", "Browser could not read the page") from last
 
     async def _create_context(self) -> Any:
         if self._browser is None:

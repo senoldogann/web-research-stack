@@ -33,8 +33,10 @@ from web_scraper.web_tools.content import (
     extract_page,
     extract_structured,
     interstitial_message,
+    markdown_of,
     needs_browser_render,
     parse_sitemap_xml,
+    shell_reason,
 )
 from web_scraper.web_tools.crawl import CrawlManager, CrawlOptions, canonical_target
 from web_scraper.web_tools.crawl_store import CrawlStore
@@ -57,6 +59,14 @@ from web_scraper.web_tools.errors import WebToolError, unusable_address
 from web_scraper.web_tools.fetcher import FetchError, FetchResult, HostGate, SafeFetcher
 from web_scraper.web_tools.headdates import read_result_dates
 from web_scraper.web_tools.metrics import LatencyTracker, WebToolsMetrics
+from web_scraper.web_tools.missing import (
+    Fingerprint,
+    fingerprint,
+    probe_url,
+    same_page,
+    suspect,
+    title_key,
+)
 from web_scraper.web_tools.pagecache import CachedDocument, PageCache
 from web_scraper.web_tools.paid_search import PAID_PROVIDERS, build_paid_adapters
 from web_scraper.web_tools.pdf import PDF_CONTENT_TYPE, PdfError, extract_pdf
@@ -171,6 +181,20 @@ class _Recovery:
 
 
 @dataclass
+class _Fallback:
+    """What a host answers for an address that cannot exist (see ``_judge_missing``).
+
+    *kind* is ``page`` (the host answers every address with a page: *page* is that page),
+    ``honest`` (it says the page is not there: a 404 or a 410) or ``unknown`` (the probe told nothing: it
+    failed, or was refused; asked again after ``_FALLBACK_UNKNOWN_KEPT_SECONDS``).
+    """
+
+    kind: str
+    page: Optional[Fingerprint] = None
+    at: float = 0.0
+
+
+@dataclass
 class _AngleOutcome:
     """What one search angle got: who answered, and how a fallback went."""
 
@@ -228,6 +252,11 @@ class WebToolsService:
         self._provider_gates: dict[str, ProviderGate] = {}
         self._provider_health: dict[str, ProviderHealth] = {}
         self._content_urls: OrderedDict[str, str] = OrderedDict()
+        # What each host answers an address that cannot exist with, found once and kept for the session,
+        # the probe in flight for a host, and the title of each root this session has read.
+        self._fallbacks: OrderedDict[str, _Fallback] = OrderedDict()
+        self._fallback_probes: dict[str, asyncio.Future[_Fallback]] = {}
+        self._root_titles: OrderedDict[str, str] = OrderedDict()
         self._source_rules = DEFAULT_RULES.extended(
             settings.official_hosts, settings.aggregator_hosts
         )
@@ -259,6 +288,9 @@ class WebToolsService:
                 idle_seconds=settings.browser_idle_seconds,
                 post_load_wait_ms=settings.browser_post_load_wait_ms,
                 max_contexts=settings.browser_max_contexts,
+                settle_max_ms=settings.browser_settle_max_ms,
+                settle_stable_ms=settings.browser_settle_stable_ms,
+                shell_chars=settings.browser_render_min_chars,
             )
             if settings.browser_enabled
             else None
@@ -1735,7 +1767,7 @@ class WebToolsService:
         async def read(kind: str, address: str) -> Optional[_Recovery]:
             try:
                 document = await self._load_page(
-                    address, max_chars=limit, browser=False, cache=False
+                    address, max_chars=limit, browser=False, cache=False, judge=False
                 )
             except WebToolError:
                 return None
@@ -1862,7 +1894,7 @@ class WebToolsService:
         for _, item in readable[:2]:
             try:
                 document = await asyncio.wait_for(
-                    self._load_page(item["url"], max_chars=limit, browser=False),
+                    self._load_page(item["url"], max_chars=limit, browser=False, judge=False),
                     timeout=_remaining(deadline),
                 )
             except (WebToolError, asyncio.TimeoutError):
@@ -1902,12 +1934,15 @@ class WebToolsService:
         )
 
         started = time.perf_counter()
+        # A page the site gave for an address it has nothing at has nothing to extract: its fields are
+        # the fallback's (the home page's title and description), so none is read from it.
+        missing = SOFT_404 in document.warnings
         structured = extract_structured(
-            document.html,
+            "" if missing else document.html,
             document.final_url,
             validated,
             max_items=self.settings.extract_max_items,
-            dates=document.page.dates,
+            dates=None if missing else document.page.dates,
         )
         extract_ms = (time.perf_counter() - started) * 1000
         self.metrics.observe("extraction", extract_ms, operation="structured")
@@ -1921,9 +1956,9 @@ class WebToolsService:
         payload: dict[str, Any] = {
             "url": document.final_url,
             "requested_url": requested,
-            "title": document.page.title,
-            "description": document.page.description,
-            "canonical_url": document.page.canonical_url,
+            "title": "" if missing else document.page.title,
+            "description": "" if missing else document.page.description,
+            "canonical_url": "" if missing else document.page.canonical_url,
             "status_code": document.status_code,
             "data": structured.data,
             "provenance": structured.provenance,
@@ -1934,7 +1969,8 @@ class WebToolsService:
             "warnings": list(document.warnings),
             "truncated": False,
         }
-        payload.update(_date_fields(document.page.dates))
+        payload.update(_date_fields(None if missing else document.page.dates))
+        payload.update(_doubt_fields(document.warnings))
         if document.cache_hit:
             payload["cached_timings"] = dict(document.cached_timings)
         cut = fit_extract_payload(payload, budget)
@@ -2153,6 +2189,13 @@ class WebToolsService:
     async def _crawl_page(self, url: str) -> dict[str, Any]:
         limit = self.settings.crawl_content_limit_chars
         document = await self._load_page(url, max_chars=limit, cache=False)
+        if SOFT_404 in document.warnings:
+            raise WebToolError(
+                SOFT_404,
+                "The site answers this address with the page it answers any address with",
+                url=document.final_url,
+                status_code=document.status_code,
+            )
         final_url = document.final_url
         page = document.page
         secure = upgrade_to_https(final_url)
@@ -2181,6 +2224,7 @@ class WebToolsService:
             "status_code": document.status_code,
             "content_hash": content_hash(page.markdown),
             "fetched_with": document.fetched_with,
+            "warnings": list(document.warnings),
             "links": [link.url for link in page.links],
         }
 
@@ -2192,13 +2236,18 @@ class WebToolsService:
         browser: bool = True,
         cache: bool = True,
         fetcher: Optional[Any] = None,
+        judge: bool = True,
     ) -> LoadedDocument:
         """Read a page, from the page cache when it was fetched a moment ago.
 
-        The cache holds the fetched document (see ``PageCache``), so each call parses it with
+        This is the one loader: scrape, extract, a crawl's pages, a map's start page and every other
+        read of a page come through it, so that two tools never say different things of one page. The
+        cache holds the fetched document (see ``PageCache``), so each call parses it with
         its own cap. A page is stored only when it read well: errors, challenge pages (they
-        are errors), PDFs, a page with nothing to read, a failed browser render and anything
-        read with ``cache=False`` (archived copies, crawled pages) never are.
+        are errors), PDFs, a page with nothing to read, a failed browser render, a page that is
+        still a shell and anything read with ``cache=False`` (archived copies, crawled pages) never
+        are. ``judge`` asks whether a site gave this page for an address it has nothing at
+        (``_judge_missing``): off for a probe, and for the other forms and copies of a walled page.
         """
         key = self._page_key(url) if cache else None
         if key is not None:
@@ -2210,6 +2259,8 @@ class WebToolsService:
         document = await self._fetch_document(
             url, max_chars=max_chars, browser=browser, fetcher=fetcher
         )
+        if judge and fetcher is None:
+            await self._judge_missing(document)
         if key is not None and _storable(document):
             self._pages.put(
                 key,
@@ -2224,6 +2275,91 @@ class WebToolsService:
                 ),
             )
         return document
+
+    async def _judge_missing(self, document: LoadedDocument) -> None:
+        """Say ``soft_404`` of a page that is what its site answers any address with.
+
+        Only a page that may be one is looked at (``missing.suspect``: not the root, and not naming
+        itself by a canonical link, or titled as the root is). The host is then asked once for an address
+        that cannot exist (a random path of the same host, through the same checks and, for a page drawn by
+        scripts, the same browser), the answer is kept for the session, and a page that is that answer, by
+        title and text, is marked: ``warnings`` holds ``soft_404``. The roots this session reads are
+        remembered by title, which is how a page titled as its site's root is told.
+        """
+        if not self.settings.soft_404_check or document.pages is not None or not document.html:
+            return
+        if document.fetched_with not in {"http", "browser"}:
+            return
+        parts = urlsplit(document.final_url)
+        host = (parts.hostname or "").lower()
+        if not host:
+            return
+        title = document.page.title
+        if (parts.path or "/") == "/":
+            self._remember(self._root_titles, host, title_key(title))
+            return
+        if not suspect(
+            document.final_url,
+            document.page.canonical_declared,
+            title,
+            self._root_titles.get(host, ""),
+        ):
+            return
+        fallback = await self._fallback_of(f"{parts.scheme}://{parts.netloc}")
+        if fallback.kind != "page" or fallback.page is None:
+            return
+        text = markdown_of(document.html, document.final_url)
+        if same_page(fingerprint(title, text), fallback.page):
+            document.warnings.append(SOFT_404)
+
+    async def _fallback_of(self, origin: str) -> _Fallback:
+        """What *origin* answers an address that cannot exist with: asked once, kept for the session.
+
+        Pages that are read together and want the answer wait for one probe, not one each. A probe that
+        told nothing (``unknown``) is asked again after five minutes.
+        """
+        held = self._fallbacks.get(origin)
+        if held is not None and (
+            held.kind != "unknown" or time.monotonic() - held.at < _FALLBACK_UNKNOWN_KEPT_SECONDS
+        ):
+            self._fallbacks.move_to_end(origin)
+            return held
+        probe = self._fallback_probes.get(origin)
+        if probe is None:
+            probe = asyncio.ensure_future(self._probe_fallback(origin))
+            self._fallback_probes[origin] = probe
+            probe.add_done_callback(lambda _done, key=origin: self._fallback_probes.pop(key, None))
+        return await asyncio.shield(probe)
+
+    async def _probe_fallback(self, origin: str) -> _Fallback:
+        """Ask *origin* for a path that cannot exist, as any page is read, and keep what it said."""
+        address = probe_url(origin)
+        now = time.monotonic()
+        try:
+            answered = await self._load_page(
+                address, max_chars=MIN_MARKDOWN_CHARS, cache=False, judge=False
+            )
+        except WebToolError as exc:
+            # A 404 or a 410 is a host that says when a page is not there; any other refusal says nothing.
+            honest = exc.code == "http_error" and exc.status_code in {404, 410}
+            found = _Fallback("honest" if honest else "unknown", at=now)
+        except Exception:  # noqa: BLE001 - a probe that fails tells nothing; it never fails a read
+            found = _Fallback("unknown", at=now)
+        else:
+            text = markdown_of(answered.html, answered.final_url)
+            found = _Fallback("page", fingerprint(answered.page.title, text), at=now)
+        self._fallbacks[origin] = found
+        self._fallbacks.move_to_end(origin)
+        while len(self._fallbacks) > _FALLBACKS_KEPT:
+            self._fallbacks.popitem(last=False)
+        return found
+
+    @staticmethod
+    def _remember(table: OrderedDict[str, str], key: str, value: str) -> None:
+        table[key] = value
+        table.move_to_end(key)
+        while len(table) > _FALLBACKS_KEPT:
+            table.popitem(last=False)
 
     @staticmethod
     def _page_key(url: str) -> Optional[str]:
@@ -2331,6 +2467,7 @@ class WebToolsService:
             },
         )
 
+        rendered_in_browser = False
         if (
             browser
             and self.browser is not None
@@ -2354,12 +2491,31 @@ class WebToolsService:
                 self.metrics.observe("browser_render", browser_ms, outcome="ok")
                 document.timings["browser_ms"] = round(browser_ms, 2)
                 document = self._merge_rendered(document, rendered, max_chars)
+                rendered_in_browser = True
 
         if not document.page.markdown.strip():
             document.warnings.append("empty_content")
+        if browser:
+            self._flag_shell(document, rendered_in_browser)
 
         document.timings["total_ms"] = round((time.perf_counter() - started) * 1000, 2)
         return document
+
+    def _flag_shell(self, document: LoadedDocument, rendered_in_browser: bool) -> None:
+        """Say so when a page is still a shell: a page that says little and is drawn by scripts is not a
+        short page, it is one that was not read.
+
+        ``rendered_shell`` is a page the browser read after waiting for it to settle and which still shows
+        a loading placeholder, an empty app root or next to nothing; ``needs_javascript`` is one that
+        was not read in a browser (the browser is off, or could not start).
+        """
+        if document.pages is not None or not document.html:
+            return
+        reason = shell_reason(
+            document.html, document.page.markdown, self.settings.browser_render_min_chars
+        )
+        if reason is not None:
+            document.warnings.append(RENDERED_SHELL if rendered_in_browser else NEEDS_JAVASCRIPT)
 
     async def _pdf_document(
         self,
@@ -2484,8 +2640,11 @@ class WebToolsService:
                 "total_ms": round(total_ms, 2),
             },
         )
+        if rendered.settled_ms:
+            document.timings["settle_ms"] = rendered.settled_ms
         if not page.markdown.strip():
             document.warnings.append("empty_content")
+        self._flag_shell(document, True)
         return document
 
     def _merge_rendered(
@@ -2519,11 +2678,15 @@ class WebToolsService:
         extract_ms = (time.perf_counter() - extraction_started) * 1000
         self.metrics.observe("extraction", extract_ms, mode="browser")
 
+        # A render that shows less than the HTTP page did (a loader taken away, nothing drawn yet) is no
+        # better a reading of the page: the HTTP text stays, and a shell says so (``_flag_shell``).
         if len(page.markdown) < len(document.page.markdown):
             return document
 
         timings = dict(document.timings)
         timings["extract_ms"] = round(timings.get("extract_ms", 0.0) + extract_ms, 2)
+        if rendered.settled_ms:
+            timings["settle_ms"] = rendered.settled_ms
         return LoadedDocument(
             final_url=rendered.final_url,
             status_code=rendered.status_code,
@@ -2572,6 +2735,7 @@ class WebToolsService:
             "timings": dict(document.timings),
         }
         payload.update(_date_fields(document.page.dates))
+        payload.update(_doubt_fields(document.warnings))
         if document.pages is not None:
             payload["pages"] = document.pages
         # Whether the Markdown is the whole of the page, and how to read the rest: from where the
@@ -2721,6 +2885,17 @@ class WebToolsService:
             "detail": None,
         }
 
+
+# What a page's answer says when it is not the page it seems: it is drawn by scripts and stayed a shell
+# after a browser read it (``rendered_shell``), or the browser was not there to try (``needs_javascript``),
+# or the site answers this address as it answers any other (``soft_404``).
+RENDERED_SHELL = "rendered_shell"
+NEEDS_JAVASCRIPT = "needs_javascript"
+SOFT_404 = "soft_404"
+# How many hosts the session remembers an answer to an address that cannot exist for (and roots), and how
+# long a probe that told nothing is believed.
+_FALLBACKS_KEPT = 512
+_FALLBACK_UNKNOWN_KEPT_SECONDS = 300.0
 
 # Failures an archived copy can answer: the page exists but the site would not
 # serve it now. A host that does not resolve or a refused target cannot.
@@ -2895,7 +3070,8 @@ def _storable(document: LoadedDocument) -> bool:
         and document.fetched_with in {"http", "browser"}  # not an archived copy
         and bool(document.html)
         and not any(
-            warning == "empty_content" or warning.startswith("browser_render_failed")
+            warning in {"empty_content", RENDERED_SHELL, NEEDS_JAVASCRIPT}
+            or warning.startswith("browser_render_failed")
             for warning in document.warnings
         )
     )
@@ -3035,7 +3211,40 @@ def _lean_view(payload: Mapping[str, Any]) -> dict[str, Any]:
         lean["next_action"] = payload.get("next_action")
     if payload.get("warnings"):
         lean["warnings"] = payload["warnings"]
+    for key in ("looks_missing", "hint"):
+        if payload.get(key):
+            lean[key] = payload[key]
     return lean
+
+
+_HINTS = {
+    SOFT_404: (
+        "This site answers every address with the same page, so this address may not exist: what "
+        "was read is the site's fallback, not a page of its own."
+    ),
+    RENDERED_SHELL: (
+        "The page is drawn by scripts and was still empty after the browser waited for it. It may "
+        "need a login or more time (WEB_TOOLS_BROWSER_SETTLE_MAX_MS), or may not exist."
+    ),
+    NEEDS_JAVASCRIPT: (
+        "The page is drawn by scripts and no browser read it (see the warnings): only its empty "
+        "shell was read."
+    ),
+}
+
+
+def _doubt_fields(warnings: Sequence[str]) -> dict[str, Any]:
+    """What a page's answer adds when its text is not to be taken for the page: ``looks_missing`` and a
+    ``hint``, in the order of how much the doubt is worth (a site's fallback, a shell a browser read, a
+    shell none did). Nothing when the page is as it seems."""
+    fields: dict[str, Any] = {}
+    if SOFT_404 in warnings:
+        fields["looks_missing"] = True
+    for warning in (SOFT_404, RENDERED_SHELL, NEEDS_JAVASCRIPT):
+        if warning in warnings:
+            fields["hint"] = _HINTS[warning]
+            break
+    return fields
 
 
 def _date_fields(dates: Optional[DateResolution]) -> dict[str, Any]:

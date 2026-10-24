@@ -42,6 +42,8 @@ def _service(
     browser: FakeBrowser | None = None,
     **settings: Any,
 ) -> WebToolsService:
+    # These tests count fetches; the missing-page check's probe has a file of its own.
+    settings.setdefault("soft_404_check", False)
     return WebToolsService(
         settings=WebToolsSettings(search_provider="fake", **settings),
         fetcher=fetcher,  # type: ignore[arg-type]

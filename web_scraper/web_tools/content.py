@@ -125,6 +125,9 @@ class ParsedPage:
     # The length of the page's whole Markdown, of which ``markdown`` is the first part when it was
     # cut to a cap; None when it is not known (a PDF is read only as far as the cap).
     total_chars: Optional[int] = None
+    # The address the page's own ``<link rel=canonical>`` names; empty when it names none (then
+    # ``canonical_url`` is the page's own address, which says nothing about the page).
+    canonical_declared: str = ""
 
 
 @dataclass
@@ -357,12 +360,18 @@ def _extract_description(soup: BeautifulSoup) -> str:
     return ""
 
 
-def _extract_canonical(soup: BeautifulSoup, base_url: str) -> str:
+def _declared_canonical(soup: BeautifulSoup, base_url: str) -> str:
+    """The address a page's ``<link rel=canonical>`` names, or an empty string when it names none."""
     link = soup.find("link", rel=lambda value: value and "canonical" in value)
     if link and link.get("href"):
-        target = _resolve(base_url, link["href"])
-        if target:
-            return target
+        return _resolve(base_url, link["href"]) or ""
+    return ""
+
+
+def _extract_canonical(soup: BeautifulSoup, base_url: str) -> str:
+    declared = _declared_canonical(soup, base_url)
+    if declared:
+        return declared
     try:
         return canonicalize_url(base_url)
     except UnsafeUrlError:
@@ -457,6 +466,7 @@ def extract_page(
         metadata=metadata,
         dates=resolve_page(soup, metadata.get("json_ld") or [], base_url),
         total_chars=len(whole),
+        canonical_declared=_declared_canonical(soup, base_url),
     )
 
 
@@ -470,20 +480,107 @@ def resolve_html_dates(html: str, base_url: str, *, today: Optional[date] = None
     return resolve_page(soup, _iter_json_ld(soup), base_url, today=today)
 
 
-def needs_browser_render(html: str, markdown: str, min_chars: int = 200) -> bool:
-    """Whether static HTML is likely a client-rendered shell rather than content."""
-    text_length = len(_clean_text(markdown))
-    if text_length >= min_chars:
+# What a client-rendered page shows before its script has run: it says it is loading, or that it needs
+# JavaScript, or it shows nothing. The elements an app mounts itself on.
+_MOUNT_IDS = ("root", "app", "__next", "__nuxt", "___gatsby", "svelte")
+# A text made only of these words, one of them "loading" or a kin, is a placeholder: "Loading...",
+# "Loading animation while page loads", "Please wait while the page is loading". A text with a word
+# of the page's own in it ("Loading docks") is a page.
+_LOADING_WORDS = frozenset(
+    {
+        "a", "again", "all", "animation", "app", "application", "bar", "content", "data", "for",
+        "indicator", "initializing", "is", "just", "load", "loaded", "loader", "loading", "loads",
+        "message", "moment", "momentarily", "one", "page", "please", "progress", "screen",
+        "second", "site", "spinner", "still", "the", "this", "wait", "website", "while", "your",
+        # the owner's languages, and the big ones
+        "bekleyin", "cargando", "chargement", "caricamento", "carregando", "laden", "ladataan",
+        "lädt", "lütfen", "sayfa", "yükleniyor",
+    }
+)  # fmt: skip
+_LOADING_KEYS = frozenset(
+    {"cargando", "chargement", "caricamento", "carregando", "initializing", "laden", "ladataan",
+     "loading", "loads", "lädt", "yükleniyor"}
+)  # fmt: skip
+_JAVASCRIPT_NEEDED = re.compile(
+    r"\bjavascript\b.{0,60}\b(?:enable|enabled|required|requires|disabled|turned off|turn on|needs?|must)\b"
+    r"|\b(?:enable|requires?|needs?|must have)\b.{0,60}\bjavascript\b",
+    re.IGNORECASE,
+)
+
+
+def is_placeholder_text(text: str) -> bool:
+    """Whether a text only says that the page is loading, or that it needs JavaScript.
+
+    ``Loading…``, ``Loading animation while page loads``, ``Please enable JavaScript to view this
+    page``: what a page shows until its script has drawn it. A text of more than a sentence is a page.
+    """
+    cleaned = _clean_text(text or "")
+    if not cleaned or len(cleaned) > 120:
         return False
+    if _JAVASCRIPT_NEEDED.search(cleaned):
+        return True
+    words = re.findall(r"[^\W\d_]+", cleaned.casefold())
+    return (
+        bool(words) and all(w in _LOADING_WORDS for w in words) and bool(_LOADING_KEYS & set(words))
+    )
+
+
+def shell_text(text: str, min_chars: int = 200) -> Optional[str]:
+    """Why a page's readable text is a shell's rather than a page's, or ``None`` when it can pass.
+
+    ``loading_placeholder`` (it says it is loading, or that it needs JavaScript) or ``almost_empty``
+    (a quarter of *min_chars*, at least 20 characters, is the least a page says). A text of
+    *min_chars* or more is a page, and so is a short one that says something of its own.
+    """
+    cleaned = _clean_text(text or "")
+    if len(cleaned) >= min_chars:
+        return None
+    if is_placeholder_text(cleaned):
+        return "loading_placeholder"
+    if len(cleaned) < max(20, min_chars // 4):
+        return "almost_empty"
+    return None
+
+
+def _has_empty_mount(html: str) -> bool:
+    """Whether an element an app mounts on (``#root``, ``#app``, ``#__next``...) has no text of its own."""
     lowered = (html or "").lower()
-    if "<script" not in lowered:
+    if not any(f'id="{name}"' in lowered or f"id='{name}'" in lowered for name in _MOUNT_IDS):
         return False
-    shell_markers = ('id="root"', "id='root'", 'id="app"', "id='app'")
-    if any(marker in lowered for marker in shell_markers):
-        return True
-    if "document.write(" in lowered or "document.writeln(" in lowered:
-        return True
-    return text_length < max(20, min_chars // 4)
+    soup = _soup(html)
+    for tag in soup(_INVISIBLE_TAGS + ("noscript",)):
+        tag.decompose()
+    return any(not _clean_text(node.get_text(" ")) for node in soup.find_all(id=list(_MOUNT_IDS)))
+
+
+def needs_browser_render(html: str, markdown: str, min_chars: int = 200) -> bool:
+    """Whether static HTML is likely a client-rendered shell rather than content.
+
+    A page whose readable text is tiny (under *min_chars*) while its HTML carries scripts: the text
+    is a loading placeholder, an empty ``#root``, ``#app`` or ``#__next``, or a few lines a script
+    is about to replace. A page with scripts and a little to say is read again as well: the browser
+    costs a few seconds, and a page it finds the same is kept as it was.
+    """
+    if len(_clean_text(markdown)) >= min_chars:
+        return False
+    return "<script" in (html or "").lower()
+
+
+def shell_reason(html: str, markdown: str, min_chars: int = 200) -> Optional[str]:
+    """Why a page is still a shell (``loading_placeholder``, ``empty_app_root`` or ``almost_empty``), or ``None``.
+
+    The question asked of a page after it was read in the browser, and of one that could not be. Text
+    of *min_chars* or more, a page with no script (nothing is about to draw it) and a short page that
+    says something of its own are not shells.
+    """
+    text = _clean_text(markdown)
+    if len(text) >= min_chars or "<script" not in (html or "").lower():
+        return None
+    if is_placeholder_text(text):
+        return "loading_placeholder"
+    if _has_empty_mount(html):
+        return "empty_app_root"
+    return shell_text(text, min_chars)
 
 
 def _body_bytes(text: str) -> int:

@@ -75,7 +75,8 @@ def _urls(count: int, *, hosts: int = 0) -> list[str]:
 
 
 def _service_for(fetcher: TrackingFetcher, **settings: Any):
-    values = {"search_provider": "fake", **settings}
+    # The batch tests count requests; the missing-page check has a file of its own.
+    values = {"search_provider": "fake", "soft_404_check": False, **settings}
     return _service(fetcher, settings=WebToolsSettings(**values))  # type: ignore[arg-type]
 
 

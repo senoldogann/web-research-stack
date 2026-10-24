@@ -556,18 +556,21 @@ class CrawlManager:
 
         seen_hashes[digest] = url
         job.fetched += 1
-        job.results.append(
-            {
-                "url": payload.get("url", url),
-                "title": payload.get("title", ""),
-                "description": payload.get("description", ""),
-                "markdown": payload.get("markdown", ""),
-                "status_code": payload.get("status_code"),
-                "content_hash": digest,
-                "fetched_with": payload.get("fetched_with", "http"),
-                "depth": depth,
-            }
-        )
+        result = {
+            "url": payload.get("url", url),
+            "title": payload.get("title", ""),
+            "description": payload.get("description", ""),
+            "markdown": payload.get("markdown", ""),
+            "status_code": payload.get("status_code"),
+            "content_hash": digest,
+            "fetched_with": payload.get("fetched_with", "http"),
+            "depth": depth,
+        }
+        if payload.get("warnings"):
+            result["warnings"] = list(
+                payload["warnings"]
+            )  # a shell says so here as it does in a scrape
+        job.results.append(result)
         job.updated_ts = time.time()
         if depth >= job.options.max_depth:
             return []

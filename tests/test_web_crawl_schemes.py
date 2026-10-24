@@ -51,6 +51,7 @@ def _service(fetcher: RedirectingFetcher) -> WebToolsService:
             crawl_concurrency=1,
             max_crawl_pages=20,
             max_crawl_depth=3,
+            soft_404_check=False,  # the crawl is asked which pages it fetched; see test_web_missing_pages.py
         ),
         fetcher=fetcher,
         browser=None,

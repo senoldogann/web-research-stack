@@ -117,6 +117,9 @@ def _service(
         search_angle_delay_ms=0,
         search_jitter_min_ms=0,
         search_jitter_max_ms=0,
+        # These tests count the requests a call makes: the probe of the missing-page check has a file
+        # of its own (test_web_missing_pages.py).
+        soft_404_check=False,
     )
     adapters = {search.name: search} if search is not None else {}
     return WebToolsService(

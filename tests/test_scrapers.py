@@ -110,13 +110,11 @@ class TestWebScraper:
                 return DummyResponse(url)
 
         scraper._client = DummyClient()
+        # example.com resolves to a public address (no lookup leaves the machine); the hop to the
+        # loopback is refused on the address it is written with.
         monkeypatch.setattr(
-            "web_scraper.scrapers.validate_outbound_url",
-            lambda url, allow_private_networks=False: (
-                url
-                if "127.0.0.1" not in url
-                else (_ for _ in ()).throw(ValueError("Blocked unsafe target"))
-            ),
+            "web_scraper.network_safety.resolve_hostname",
+            lambda hostname, port: ["93.184.216.34"],
         )
 
         result = scraper.scrape("https://example.com/start")

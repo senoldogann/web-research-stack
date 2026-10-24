@@ -29,6 +29,12 @@ _DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
+# How long the verdict on a host is kept for the requests of a page. An allow is short: a name can answer
+# another address a moment later; a refusal is kept long, since it only errs toward not loading.
+_ALLOWED_KEPT_SECONDS = 30.0
+_REFUSED_KEPT_SECONDS = 300.0
+_CHECK_TIMEOUT_SECONDS = 5.0
+_HOSTS_KEPT_MAX = 1024
 
 
 @dataclass(frozen=True)
@@ -110,6 +116,57 @@ def browser_request_allowed(url: str) -> bool:
         return False
 
 
+class RequestGuard:
+    """Holds the requests of a browser page to the public-address rule, one verdict per host kept for a while.
+
+    A check at one moment, not a pin: the browser resolves the name itself when it connects (see
+    ``HeadlessBrowserManager``).
+    """
+
+    def __init__(self) -> None:
+        self._hosts: dict[str, _AllowedHost] = {}
+
+    async def allowed_now(self, url: str) -> bool:
+        """Whether *url* may be requested, judged now and off the event loop; any failure is a no."""
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(browser_request_allowed, url),
+                timeout=_CHECK_TIMEOUT_SECONDS,
+            )
+        except Exception:  # noqa: BLE001 - deny on any failure
+            return False
+
+    async def allowed(self, url: str) -> bool:
+        """Whether a request of a page may be made: the verdict on its host, kept 30 seconds for a yes, 300 for a no."""
+        parsed = urlsplit(url)
+        if parsed.scheme.lower() not in {"http", "https"}:
+            return False
+        host = (parsed.hostname or "").lower()
+        if not host:
+            return False
+
+        now = time.monotonic()
+        cached = self._hosts.get(host)
+        if cached is not None and cached.expires_at > now:
+            return cached.allowed
+        allowed = await self.allowed_now(url)
+
+        kept = _ALLOWED_KEPT_SECONDS if allowed else _REFUSED_KEPT_SECONDS
+        if len(self._hosts) >= _HOSTS_KEPT_MAX:
+            self._hosts = {h: v for h, v in self._hosts.items() if v.expires_at > now}
+        self._hosts[host] = _AllowedHost(allowed=allowed, expires_at=now + kept)
+        return allowed
+
+    async def route(self, route: Any) -> None:
+        """A Playwright route handler: let a request through if it may be made, abort it if not."""
+        if await self.allowed(route.request.url):
+            with contextlib.suppress(Exception):
+                await route.continue_()
+        else:
+            with contextlib.suppress(Exception):
+                await route.abort("blockedbyclient")
+
+
 class HeadlessBrowserManager:
     """One long-lived headless browser, one isolated context per request.
 
@@ -117,6 +174,14 @@ class HeadlessBrowserManager:
     temporary profile, never the user's Chrome profile. If Chrome and bundled
     Chromium cannot start, headless Camoufox is tried. There is deliberately no
     code path that launches a visible window.
+
+    A page is rendered only if its host resolves to public addresses only when the
+    render is asked for, and every request the page makes is held to the same rule
+    (``RequestGuard``). That is a check at one moment, not a pin: the browser
+    resolves the name itself when it connects, which this server cannot steer to the
+    address it checked, so a name that answers a public address to the check and
+    another to the browser is the one thing it does not stop. ``SafeFetcher`` pins
+    its connections and has no such gap.
     """
 
     def __init__(
@@ -147,8 +212,7 @@ class HeadlessBrowserManager:
         self._active = 0
         self._last_used = 0.0
         self._idle_task: Optional[asyncio.Task[Any]] = None
-        self._allowed_hosts: dict[str, _AllowedHost] = {}
-        self._host_lock = asyncio.Lock()
+        self._guard = RequestGuard()
 
     @property
     def engine(self) -> Optional[str]:
@@ -214,7 +278,7 @@ class HeadlessBrowserManager:
 
     async def render(self, url: str, *, post_load_wait_ms: Optional[int] = None) -> BrowserPage:
         """Render *url* in a fresh context with every network request guarded."""
-        if not browser_request_allowed(url):
+        if not await self._guard.allowed_now(url):
             raise BrowserRenderError("unsafe_target", "Blocked unsafe browser target")
         await self.start()
         if self._browser is None:
@@ -227,7 +291,7 @@ class HeadlessBrowserManager:
             try:
                 context = await self._create_context()
                 page = await context.new_page()
-                await page.route("**/*", self._guard_route)
+                await page.route("**/*", self._guard.route)
                 try:
                     response = await page.goto(
                         url,
@@ -272,40 +336,6 @@ class HeadlessBrowserManager:
         if self._engine in {"chrome", "chromium"}:
             options["user_agent"] = _DEFAULT_USER_AGENT
         return await self._browser.new_context(**options)
-
-    async def _guard_route(self, route: Any) -> None:
-        request_url = route.request.url
-        if await self._request_allowed(request_url):
-            with contextlib.suppress(Exception):
-                await route.continue_()
-        else:
-            with contextlib.suppress(Exception):
-                await route.abort("blockedbyclient")
-
-    async def _request_allowed(self, url: str) -> bool:
-        parsed = urlsplit(url)
-        if parsed.scheme.lower() not in {"http", "https"}:
-            return False
-        host = (parsed.hostname or "").lower()
-        if not host:
-            return False
-
-        now = time.monotonic()
-        async with self._host_lock:
-            cached = self._allowed_hosts.get(host)
-            if cached is not None and cached.expires_at > now:
-                return cached.allowed
-        try:
-            allowed = await asyncio.wait_for(
-                asyncio.to_thread(browser_request_allowed, url),
-                timeout=5.0,
-            )
-        except Exception:  # noqa: BLE001 - deny on any failure
-            allowed = False
-
-        async with self._host_lock:
-            self._allowed_hosts[host] = _AllowedHost(allowed=allowed, expires_at=now + 300)
-        return allowed
 
     async def _idle_loop(self) -> None:
         interval = max(5.0, self.idle_seconds / 2)

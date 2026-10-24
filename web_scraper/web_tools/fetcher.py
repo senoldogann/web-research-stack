@@ -15,7 +15,9 @@ from web_scraper.network_safety import (
     HostnameResolutionError,
     UnsafeTargetError,
     validate_outbound_url,
+    validate_outbound_url_syntax,
 )
+from web_scraper.pinned_transport import PinnedTransport
 from web_scraper.web_tools.content import detect_interstitial, interstitial_message
 from web_scraper.web_tools.pdf import PDF_CONTENT_TYPE, looks_like_pdf
 from web_scraper.web_tools.urls import UnsafeUrlError, normalize_request_url
@@ -137,7 +139,16 @@ class HostGate:
 
 
 class SafeFetcher:
-    """Fetch public HTTP targets with size, redirect, and redirect-hop guards."""
+    """Fetch public HTTP targets with size, redirect, and redirect-hop guards.
+
+    Every connection goes to an address that was checked in the same step: the host name is resolved
+    once, inside the connection (``PinnedTransport``), every address of the answer must be public, and the
+    connection is made to one of them. A name that answers a public address to a check and the loopback to
+    a second lookup (DNS rebinding) is never looked up twice, so the second answer is never used. A redirect
+    is a new request and goes through the same step. With a *transport* of the caller's, the caller owns the
+    connections (a test's mock, the Internet Archive's curl session, which pins its own) and *validator*
+    looks the name up as it always did.
+    """
 
     def __init__(
         self,
@@ -150,7 +161,7 @@ class SafeFetcher:
         max_backoff_seconds: float = 5.0,
         max_concurrency: int = 8,
         transport: Optional[httpx.AsyncBaseTransport] = None,
-        validator: Callable[..., str] = validate_outbound_url,
+        validator: Optional[Callable[..., str]] = None,
         allow_private_networks: bool = False,
         host_gate: Optional[HostGate] = None,
         user_agent: str = DEFAULT_USER_AGENT,
@@ -162,7 +173,11 @@ class SafeFetcher:
         self.backoff_seconds = max(backoff_seconds, 0.0)
         self.max_backoff_seconds = max(max_backoff_seconds, 0.0)
         self.transport = transport
-        self.validator = validator
+        # Our own connections resolve, check and connect in one step, so the validator has no lookup left to
+        # make; a transport that was given connects as it likes, and the validator then looks the name up.
+        self.validator = validator or (
+            validate_outbound_url if transport is not None else validate_outbound_url_syntax
+        )
         self.allow_private_networks = allow_private_networks
         self.host_gate = host_gate or HostGate(max_per_host=max_concurrency)
         self._global_gate = asyncio.Semaphore(max(max_concurrency, 1))
@@ -189,7 +204,11 @@ class SafeFetcher:
         return httpx.AsyncClient(
             timeout=httpx.Timeout(self.timeout_seconds),
             follow_redirects=False,
-            transport=self.transport,
+            transport=(
+                self.transport
+                if self.transport is not None
+                else PinnedTransport(allow_private_networks=self.allow_private_networks)
+            ),
             headers=self.headers,
             trust_env=False,
         )
@@ -411,6 +430,8 @@ class SafeFetcher:
                     url=current,
                     retryable=True,
                 ) from exc
+            except HostnameResolutionError as exc:
+                raise FetchError("dns_error", str(exc), url=current, detail=exc.hostname) from exc
             except ValueError as exc:
                 raise FetchError("unsafe_target", str(exc), url=current) from exc
 

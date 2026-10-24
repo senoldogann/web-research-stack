@@ -697,7 +697,7 @@ class GoogleSearcher:
         ) as client:
 
             async def resolve(link: str) -> str:
-                if "google.com/goto" not in link and "/url?" not in link:
+                if not self._is_google_wrapper(link):
                     return link
                 try:
                     response = await client.get(link, headers={"User-Agent": self.USER_AGENT})
@@ -707,6 +707,21 @@ class GoogleSearcher:
                     return link
 
             return list(await asyncio.gather(*(resolve(link) for link in links)))
+
+    @staticmethod
+    def _is_google_wrapper(link: str) -> bool:
+        """Whether *link* is Google's own redirect wrapper (``/goto?url=``, ``/url?q=``), the only kind of
+        link that is requested here. A result's address that merely has ``/url?`` in it is a page on some
+        other host, and a request to it would go wherever a stranger's page points."""
+        try:
+            parts = urlparse(link)
+        except ValueError:
+            return False
+        host = (parts.hostname or "").lower()
+        on_google = parts.scheme in ("http", "https") and (
+            host == "google.com" or host.endswith(".google.com")
+        )
+        return on_google and parts.path in ("/goto", "/url")
 
     @staticmethod
     async def _dismiss_consent(page) -> None:

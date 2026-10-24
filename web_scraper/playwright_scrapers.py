@@ -13,6 +13,7 @@ from web_scraper.config import config
 from web_scraper.content_safety import preserve_code_blocks
 from web_scraper.network_safety import UnsafeTargetError, validate_outbound_url
 from web_scraper.scrapers import ScrapedData
+from web_scraper.web_tools.browser import RequestGuard
 
 # Cloudflare challenge fingerprints — status code alone is NOT reliable;
 # IUAM pages typically return HTTP 200 so we match on HTML content only.
@@ -61,6 +62,7 @@ class PlaywrightScraper:
         self._browser: Optional[Any] = None
         self._context: Optional[Any] = None
         self._page: Optional[Any] = None
+        self._guard = RequestGuard()
 
     async def __aenter__(self) -> "PlaywrightScraper":
         """Async context manager entry."""
@@ -89,6 +91,9 @@ class PlaywrightScraper:
         )
 
         self._page = await self._context.new_page()
+        # What the page redirects to and loads is held to the same rule as the address it is given: a
+        # public page may not send the browser to the loopback or the home network.
+        await self._page.route("**/*", self._guard.route)
 
         # Apply comprehensive stealth evasions (navigator, webgl, user-agent, etc.)
         await stealth_async(self._page)

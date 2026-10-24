@@ -625,9 +625,8 @@ class CrawlManager:
             "depth": depth,
         }
         if payload.get("warnings"):
-            result["warnings"] = list(
-                payload["warnings"]
-            )  # a shell says so here as it does in a scrape
+            # A page that is a shell says so here as it does in a scrape.
+            result["warnings"] = list(payload["warnings"])
         job.results.append(result)
         job.updated_ts = time.time()
         return [(link, depth + 1) for link in payload.get("links", [])]

@@ -389,7 +389,11 @@ _DOCUMENT_BONUS = 0.12
 # ``/specification/2026-07-28``, ``/3.11/`` beside ``/3.12/``) is the older edition: it goes after the
 # newest by this, unless the query names a version.
 _SUPERSEDED = 0.10
-_VERSION_SEGMENT = re.compile(r"^(?:\d{4}-\d{2}(?:-\d{2})?|v?\d+(?:\.\d+){0,2})$")
+# An edition is named by a year or a date (2026, 2026-07, 2026-07-28), by ``v2`` or by a dotted number
+# (3.12, 1.4.0); a bare number (/page/2, /45) is a page or an id.
+_VERSION_SEGMENT = re.compile(
+    r"^(?:(?:19|20)\d{2}(?:-\d{2}(?:-\d{2})?)?|v\d+(?:\.\d+){0,2}|\d+\.\d+(?:\.\d+)?)$"
+)
 # A query that names two organizations or more (a deal, a partnership, a comparison) is about
 # what holds both: the bonuses of a site's kind count in proportion to the share of the query's
 # distinctive words its title and snippet hold, and a result holding more than half of them gets

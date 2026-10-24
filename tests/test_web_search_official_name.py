@@ -482,6 +482,12 @@ class TestPrimaryFirstForDocumentQueries:
             return {"url": url, "score": 1.0}
 
         rows = [
+            row(
+                "https://x.org/docs/guide/page/1"
+            ),  # a bare number is a page number, not an edition
+            row("https://x.org/docs/guide/page/2"),
+            row("https://x.org/handbook/2024/intro"),  # a year is
+            row("https://x.org/handbook/2025/intro"),
             row("https://x.org/specification/2025-03-26"),
             row("https://x.org/specification/2026-07-28"),
             row("https://x.org/specification/2026-07-28/architecture"),  # no other edition of it
@@ -496,6 +502,10 @@ class TestPrimaryFirstForDocumentQueries:
         discovery._demote_superseded(rows)
 
         scores = {item["url"]: item["score"] for item in rows}
+        assert scores["https://x.org/docs/guide/page/1"] == 1.0
+        assert scores["https://x.org/docs/guide/page/2"] == 1.0
+        assert scores["https://x.org/handbook/2024/intro"] == pytest.approx(0.90)
+        assert scores["https://x.org/handbook/2025/intro"] == 1.0
         assert scores["https://x.org/specification/2025-03-26"] == pytest.approx(0.90)
         assert scores["https://x.org/specification/2026-07-28"] == 1.0
         assert scores["https://x.org/specification/2026-07-28/architecture"] == 1.0

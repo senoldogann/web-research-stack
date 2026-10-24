@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
@@ -112,6 +113,38 @@ def _result(url: str, title: str = TITLE, snippet: str = SENTENCE) -> SearchResu
 CNBC = "https://www.cnbc.com/2026/10/21/openai-google-cloud-models-enterprise.html"
 THEVERGE = "https://www.theverge.com/2026/10/21/openai-sells-models-through-google-cloud"
 BLOG = "https://someblog.example/2026/10/my-take-on-the-openai-google-cloud-push"
+
+
+RECORDED_WALL = (Path(__file__).parent / "fixtures" / "reuters_datadome_wall.html").read_text(
+    encoding="utf-8"
+)
+
+
+class TestTheRecordedReutersWall:
+    """What Reuters answered a plain client on 2026-10-24: HTTP 401, a 774-byte DataDome page."""
+
+    def test_it_shows_no_title_of_the_story_and_names_no_other_form(self) -> None:
+        assert wall_title(RECORDED_WALL) == ""  # its title is "reuters.com"
+        candidates = amp_candidates(URL, RECORDED_WALL)
+        assert [kind for kind, _ in candidates] == ["amp", "amp", "print", "amp"]
+        assert all(address.startswith("https://www.reuters.com/") for _, address in candidates)
+
+    @pytest.mark.asyncio
+    async def test_the_story_is_searched_by_what_its_address_spells(self) -> None:
+        search = FakeSearch([_result(CNBC)])
+        service, fetcher = _service_for(
+            {
+                URL: _wall(body=RECORDED_WALL),
+                CNBC: _html_result(CNBC, _article()),
+            },
+            search=search,
+        )
+
+        page = await service.scrape(URL)
+
+        assert page["recovered_from"]["kind"] == "other_source" and page["url"] == CNBC
+        assert search.calls[0][0].startswith("openai sell its top models google cloud latest")
+        assert "-site:reuters.com" in search.calls[0][0]
 
 
 class TestTheWallIsRecognised:

@@ -1608,6 +1608,11 @@ September and updated on 21 October disagrees with nothing.
   stays so; `archive` still applies); AMP and feed addresses come from the walled page's own site
   only; `WEB_TOOLS_SCRAPE_RECOVER=off` turns it off for every call. A recovered answer is cached
   like any other.
+- **Tests.** `tests/test_web_scrape_recover.py`: each way with fakes (a wall's own head, AMP and
+  print addresses, an RSS and an Atom feed, the archive's CDX, another outlet found by search),
+  the labels, the error's shape, the budget, the settings, and the recorded answer Reuters gave a
+  plain client (`tests/fixtures/reuters_datadome_wall.html`: HTTP 401, 774 bytes, title
+  "reuters.com", its tokens redacted).
 
 ### Compact output
 

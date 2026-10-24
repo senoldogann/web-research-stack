@@ -231,7 +231,7 @@ class ProviderHealth:
     def mean_latency_ms(self) -> Optional[float]:
         return self.latency_ms_total / self.latency_calls if self.latency_calls else None
 
-    def report(self) -> dict[str, Any]:
+    def report(self, window_seconds: float = 1800.0) -> dict[str, Any]:
         """The record as ``web_health`` says it: no secrets, no network, numbers and one error."""
         now = self.clock()
         entry: dict[str, Any] = {
@@ -246,7 +246,7 @@ class ProviderHealth:
         }
         if self.cooling_down():
             entry["cooldown_remaining_s"] = round(self.retry_after(), 1)
-        elif self.standing() in (SHAKY, POOR):
+        elif self.standing(window_seconds) in (SHAKY, POOR):
             entry["state"] = "degraded"
         if self.last_error is not None and self.last_error_at is not None:
             entry["last_error"] = {

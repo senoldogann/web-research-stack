@@ -1143,7 +1143,14 @@ class WebToolsService:
                 )
                 continue
             known = self._provider_health.get(name)
-            providers.append({"name": name, **(known or ProviderHealth()).report()})
+            providers.append(
+                {
+                    "name": name,
+                    **(known or ProviderHealth()).report(
+                        self.settings.search_provider_window_seconds
+                    ),
+                }
+            )
         return {
             "providers": providers,
             "order": self._ask_order(),

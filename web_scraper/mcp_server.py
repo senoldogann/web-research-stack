@@ -591,7 +591,8 @@ class McpServer:
             "instructions": (
                 "Local web research tools. Search discovers URLs; scrape, map, and extract "
                 "read pages HTTP-first with a shared headless browser fallback; crawl runs "
-                "as a background job with explicit status, results, and cancellation."
+                "as a background job with explicit status, results, and cancellation; "
+                "web_health says which search providers are cooling."
             ),
         }
 

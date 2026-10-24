@@ -238,49 +238,61 @@ class WebSearchRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=10_000)
     limit: Optional[int] = Field(default=None, ge=1, le=50)
     provider: Optional[str] = Field(default=None, min_length=1, max_length=32)
-    depth: Optional[Literal["fast", "discover", "deep"]] = Field(
-        default=None,
-        description=(
-            "fast sends one query; discover adds current-year and historical angles; "
-            "deep adds an official or primary-source angle"
-        ),
-    )
+    depth: Optional[Literal["fast", "discover", "deep"]] = Field(default=None)
 
     region: Optional[str] = Field(
         default=None,
-        description="Region: fi-fi, us-en, wt-wt (none). DuckDuckGo kl, Google gl",
+        description="fi-fi, us-en, wt-wt (none)",
     )
-    language: Optional[str] = Field(
-        default=None, description="Language tag (fi, en): Google hl, DuckDuckGo's locale"
-    )
+    language: Optional[str] = Field(default=None, description="Language tag: fi, en, pt-BR")
     sites: Optional[List[str]] = Field(
         default=None,
         max_length=5,
-        description="Up to 5 domains: only their results (subdomains too)",
+        description="Up to 5 domains: only their results",
     )
     exclude_sites: Optional[List[str]] = Field(
         default=None, max_length=5, description="Up to 5 domains kept out"
     )
     date_from: Optional[date] = Field(
         default=None,
-        description="ISO date: results dated before it are dropped, undated stay",
+        description="ISO date: earlier results are dropped, undated stay",
     )
-    date_to: Optional[date] = Field(default=None, description="ISO date: later ones dropped")
+    date_to: Optional[date] = Field(default=None, description="ISO date: later results dropped")
     read: int = Field(
         default=0,
         ge=0,
         le=SEARCH_READ_MAX,
-        description="Also read the top N results: content or content_error each. Costs seconds",
+        description="Also read the top N results (costs seconds)",
     )
     read_chars: Optional[int] = Field(
         default=None,
         ge=MIN_MARKDOWN_CHARS,
         le=SEARCH_READ_CHARS_MAX,
-        description="With read: characters of Markdown per page (4,000)",
+        description="With read: Markdown characters per page (4,000)",
     )
     archive: bool = Field(
         default=False,
         description="With read: use the Internet Archive for walled pages",
+    )
+    resolve_dates: Optional[bool] = Field(
+        default=None,
+        description="Read the first 64 KB of the top pages for dates (default: news, date ranges)",
+    )
+    strict_dates: bool = Field(
+        default=False,
+        description="Drop results with no date or a low date_confidence",
+    )
+    primary_first: Optional[bool] = Field(
+        default=None,
+        description="Official sites and mainstream news lead, aggregators lower (default: news)",
+    )
+    compact: Optional[bool] = Field(
+        default=None,
+        description="Compact answer (the default here); false returns everything",
+    )
+    debug: bool = Field(
+        default=False,
+        description="With compact: add facets, queries, timings, score parts",
     )
 
     @field_validator("query")
@@ -357,7 +369,18 @@ class WebSearchResult(BaseModel):
         default=None,
         description="YYYY-MM-DD or YYYY-MM read from the address, the snippet or the title",
     )
-    date_source: Optional[str] = Field(default=None, description="url, snippet, or title")
+    date_source: Optional[str] = Field(
+        default=None, description="url, snippet, title, provider, or the page's own signal"
+    )
+    date_confidence: float = Field(
+        default=0.0,
+        description="0 to 1: agreeing signals raise it, an address-only or snippet-only date is low",
+    )
+    date_conflicts: List[Dict[str, str]] = Field(
+        default_factory=list,
+        description="Signals more than a day from date, each with source and value",
+    )
+    date_modified: Optional[str] = None
     age_days: Optional[int] = None
     freshness: str = Field(
         default="undated",
@@ -414,6 +437,10 @@ class WebSearchResponse(BaseModel):
     # On a cache hit: the timings of the call that filled the cache, and when.
     cached_timings: Optional[Dict[str, float]] = None
     cached_at: Optional[str] = None
+    dates: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="With resolve_dates: pages asked, read, resolved, failed, cut, and the budget",
+    )
     timings: Dict[str, float]
 
 
@@ -425,7 +452,7 @@ def _flatten_scrape_schema(schema: Dict[str, Any]) -> None:
     top-level ``oneOf``, which several providers refuse in a tool's input schema.
     """
     properties = schema.get("properties", {})
-    for name in ("url", "urls"):
+    for name in ("url", "urls", "content_id"):
         union = properties.get(name)
         if not union or "anyOf" not in union:
             continue
@@ -445,28 +472,27 @@ class WebScrapeRequest(BaseModel):
         default=None,
         min_length=3,
         max_length=2048,
-        description="The page; exactly one of url and urls",
+        description="The page; one of url, urls, content_id",
     )
     urls: Optional[List[str]] = Field(
         default=None,
         min_length=SCRAPE_BATCH_MIN_URLS,
         max_length=SCRAPE_BATCH_MAX_URLS,
-        description="2 to 10 pages in one call, instead of url: pages in this order, each an answer or {url, error}",
+        description="2 to 10 pages in one call",
     )
     max_total_chars: Optional[int] = Field(
         default=None,
         ge=SCRAPE_BATCH_MIN_TOTAL_CHARS,
         le=SCRAPE_BATCH_MAX_TOTAL_CHARS,
-        description="With urls: cap on the whole answer (60,000); Markdown is cut to fit",
+        description="With urls: cap on the whole answer (60,000)",
     )
     max_chars: Optional[int] = Field(
         default=None,
         ge=MIN_MARKDOWN_CHARS,
         le=200_000,
         description=(
-            f"Markdown character cap, at least {MIN_MARKDOWN_CHARS}; the server's own cap "
-            "(WEB_TOOLS_MARKDOWN_MAX_CHARS, 50,000 by default) applies above it. It bounds "
-            "the Markdown only; max_links bounds the links"
+            f"Markdown cap, at least {MIN_MARKDOWN_CHARS} (the server's own, 50,000, applies "
+            "above); bounds the Markdown only"
         ),
     )
     links: bool = Field(
@@ -477,14 +503,30 @@ class WebScrapeRequest(BaseModel):
         default=None,
         ge=0,
         le=SCRAPE_MAX_LINKS_CEILING,
-        description="Most links returned, 0 to 200 (50); links_truncated says more exist",
+        description="Most links returned, 0 to 200 (50)",
     )
     archive: bool = Field(
         default=False,
-        description=(
-            "A walled or gone page: read the Internet Archive's newest copy that is not itself "
-            "a wall, marked as such (may be days or months old)"
-        ),
+        description="Read the Internet Archive's copy of a walled page; alone, only that",
+    )
+    recover: Optional[bool] = Field(
+        default=None,
+        description="A walled page: false does not look for it elsewhere",
+    )
+    lean: Optional[bool] = Field(
+        default=None,
+        description="Only text, date and cut info; a content_id read is lean unless false",
+    )
+    content_id: Optional[str] = Field(
+        default=None,
+        pattern=r"^c-[0-9a-f]{12}$",
+        description="Instead of url: read on in a page a scrape cut (cache, 5 minutes)",
+    )
+    offset: int = Field(
+        default=0,
+        ge=0,
+        le=100_000_000,
+        description="With content_id: where to start (next_offset)",
     )
 
     @field_validator("url")
@@ -502,10 +544,25 @@ class WebScrapeRequest(BaseModel):
                 raise ValueError("each URL must be 3 to 2048 characters")
         return [normalize_url(value) for value in values]
 
+    def service_options(self) -> Dict[str, Any]:
+        """The optional arguments the service's ``scrape`` takes, only those the request sets.
+
+        A lean answer has no links unless the request asked for some.
+        """
+        options = self.model_dump(include={"links", "max_links", "recover"}, exclude_defaults=True)
+        if self.lean:
+            options["lean"] = True
+            if not {"links", "max_links"} & self.model_fields_set:
+                options["links"] = False
+        return options
+
     @model_validator(mode="after")
-    def exactly_one_of_url_and_urls(self) -> WebScrapeRequest:
-        if (self.url is None) == (self.urls is None):
-            raise ValueError("give exactly one of url and urls")
+    def exactly_one_of_url_urls_and_content_id(self) -> WebScrapeRequest:
+        given = [value is not None for value in (self.url, self.urls, self.content_id)]
+        if sum(given) != 1:
+            raise ValueError("give exactly one of url, urls and content_id")
+        if self.offset and self.content_id is None:
+            raise ValueError("offset goes with content_id")
         return self
 
 
@@ -522,25 +579,61 @@ class WebArchiveSkipped(BaseModel):
 
 class WebScrapeResponse(BaseModel):
     url: str
-    requested_url: str
+    requested_url: str = ""
     title: str
-    description: str
-    canonical_url: str
+    description: str = ""
+    canonical_url: str = ""
     markdown: str
-    status_code: int
-    content_type: str
-    links: List[WebLink]
+    status_code: int = 0
+    content_type: str = ""
+    links: List[WebLink] = Field(default_factory=list)
+    truncated: bool = Field(
+        default=False,
+        description="True when max_chars (or offset and max_chars) left the rest of the page out",
+    )
+    total_chars: Optional[int] = Field(
+        default=None, description="The length of the page's whole Markdown"
+    )
+    offset: Optional[int] = Field(
+        default=None, description="Where this part starts, with content_id"
+    )
+    next_offset: Optional[int] = Field(
+        default=None, description="With truncated: where the next part starts"
+    )
+    content_id: Optional[str] = Field(
+        default=None,
+        description="With truncated: ask with it and next_offset for the rest, no request is made",
+    )
     links_truncated: bool = Field(
         default=False,
         description="True when the page has links that links leaves out (page chrome or cap)",
     )
-    metadata: Dict[str, Any]
+    metadata: Dict[str, Any] = Field(default_factory=dict)
     metadata_truncated: bool = Field(
         default=False,
         description="True when the page's meta tags or JSON-LD were cut to 10,000 characters",
     )
-    content_hash: str
-    fetched_with: str
+    content_hash: str = ""
+    date: Optional[str] = Field(
+        default=None,
+        description="The page's published date, YYYY-MM-DD, from all its date signals",
+    )
+    date_source: Optional[str] = Field(
+        default=None,
+        description="Which signal gave date (json_ld:datePublished, meta:..., time, ...)",
+    )
+    date_confidence: float = Field(
+        default=0.0,
+        description="0 to 1: agreeing signals raise it, a lone address or printed date is low",
+    )
+    date_conflicts: List[Dict[str, str]] = Field(
+        default_factory=list,
+        description="Signals more than a day from date, each with source and value",
+    )
+    date_modified: Optional[str] = Field(
+        default=None, description="When the page says it was updated"
+    )
+    fetched_with: str = "http"
     cache_hit: bool = False
     # On a cache hit: the timings of the call that filled the cache, and when.
     cached_timings: Optional[Dict[str, float]] = None
@@ -556,8 +649,23 @@ class WebScrapeResponse(BaseModel):
             "archive's crawler met, an empty page), newest first"
         ),
     )
+    recovered_from: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Set when the page was walled and read another way: kind (archive, amp, print, feed, "
+            "other_source) and url of where the text came from; the text begins with a line "
+            "saying so. For other_source, url is that outlet's, not the page's"
+        ),
+    )
+    alternates: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        description="With recovered_from: other addresses (url, domain, title, date, source_type, why)",
+    )
+    next_action: Optional[str] = Field(
+        default=None, description="With recovered_from: one sentence on what to do with the text"
+    )
     warnings: List[str] = Field(default_factory=list)
-    timings: Dict[str, float]
+    timings: Dict[str, float] = Field(default_factory=dict)
     pages: Optional[int] = Field(default=None, description="Page count of a PDF document")
 
 
@@ -708,6 +816,25 @@ class WebExtractResponse(BaseModel):
     data: Dict[str, Any]
     provenance: Dict[str, Any]
     errors: List[Dict[str, Any]]
+    date: Optional[str] = Field(
+        default=None,
+        description="The page's published date, YYYY-MM-DD, from all its date signals",
+    )
+    date_source: Optional[str] = Field(
+        default=None,
+        description="Which signal gave date (json_ld:datePublished, meta:..., time, ...)",
+    )
+    date_confidence: float = Field(
+        default=0.0,
+        description="0 to 1: agreeing signals raise it, a lone address or printed date is low",
+    )
+    date_conflicts: List[Dict[str, str]] = Field(
+        default_factory=list,
+        description="Signals more than a day from date, each with source and value",
+    )
+    date_modified: Optional[str] = Field(
+        default=None, description="When the page says it was updated"
+    )
     fetched_with: str
     timings: Dict[str, float]
     cache_hit: bool = Field(

@@ -112,7 +112,13 @@ async def test_results_reports_and_timings_keep_the_angle_order() -> None:
 async def test_an_angle_past_the_budget_is_cut_without_blaming_the_provider() -> None:
     # The primary angle stalls as a refused one does while the Google fallback starts.
     search = TimedSearch({"primary": 5.0})
-    service = _service(search, search_provider_concurrency=3, search_angle_budget_ms=300)
+    # A primary budget of 0 gives the primary angle no more than the side angles have.
+    service = _service(
+        search,
+        search_provider_concurrency=3,
+        search_angle_budget_ms=300,
+        search_primary_budget_ms=0,
+    )
 
     started = time.perf_counter()
     result = await service.search(QUERY, depth="deep")
@@ -158,3 +164,121 @@ def test_the_budget_defaults_to_five_seconds_and_reads_its_env(
     assert WebToolsSettings().search_angle_budget_ms == 5_000
     monkeypatch.setenv("WEB_TOOLS_SEARCH_ANGLE_BUDGET_MS", "0")
     assert WebToolsSettings.from_env().search_angle_budget_ms == 0
+
+
+class RecordingSearch(TimedSearch):
+    """TimedSearch that also records the order the angles were asked in."""
+
+    def __init__(self, delays: Optional[dict[str, float]] = None) -> None:
+        super().__init__(delays)
+        self.asked: list[str] = []
+
+    async def search(
+        self, query: str, limit: int, *, date_filter: Optional[str] = None
+    ) -> list[SearchResult]:
+        self.asked.append(_angle_of(query))
+        return await super().search(query, limit, date_filter=date_filter)
+
+
+@pytest.mark.asyncio
+async def test_the_primary_angle_is_asked_before_the_side_angles() -> None:
+    search = RecordingSearch({"base": 0.0, "current": 0.0, "background": 0.0, "primary": 0.0})
+    service = _service(search)  # a gate of one call at a time
+
+    result = await service.search(QUERY, depth="deep")
+
+    assert search.asked == ["base", "primary", "current", "background"]
+    # The answer keeps the angles' order whichever was asked first.
+    assert [query["angle"] for query in result["queries"]] == ANGLES
+
+
+@pytest.mark.asyncio
+async def test_the_primary_angle_goes_on_after_the_side_angles_are_cut() -> None:
+    # The side angles stall; the primary-source angle is slower than the side budget and quicker
+    # than its own: it is the one that is waited for.
+    search = RecordingSearch({"current": 5.0, "background": 5.0, "primary": 0.7})
+    service = _service(
+        search,
+        search_provider_concurrency=3,
+        search_angle_budget_ms=250,
+        search_primary_budget_ms=3_000,
+    )
+
+    started = time.perf_counter()
+    result = await service.search(QUERY, depth="deep")
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 2.0, elapsed
+    reports = {query["angle"]: query for query in result["queries"]}
+    assert reports["primary"]["error"] is None and reports["primary"]["results"] > 0
+    assert reports["current"]["error"]["detail"] == "angle_budget"
+    assert reports["background"]["error"]["detail"] == "angle_budget"
+    assert "current_query_cut" in result["warnings"]
+    assert "background_query_cut" in result["warnings"]
+    # Which was cut is said, and the primary angle is not among them.
+    assert "primary_query_cut" not in result["warnings"]
+    assert "(0.25 s)" in reports["current"]["error"]["message"]
+    assert service._provider_health_for("duckduckgo").consecutive_failures == 0
+
+
+@pytest.mark.asyncio
+async def test_the_primary_angle_is_cut_at_its_own_budget_and_says_so() -> None:
+    search = RecordingSearch({"base": 0.0, "current": 0.0, "background": 0.0, "primary": 5.0})
+    service = _service(
+        search,
+        search_provider_concurrency=3,
+        search_angle_budget_ms=200,
+        search_primary_budget_ms=600,
+    )
+
+    started = time.perf_counter()
+    result = await service.search(QUERY, depth="deep")
+    elapsed = time.perf_counter() - started
+
+    assert 0.5 < elapsed < 1.5, elapsed
+    reports = {query["angle"]: query for query in result["queries"]}
+    assert reports["primary"]["error"]["detail"] == "angle_budget"
+    assert "(0.6 s)" in reports["primary"]["error"]["message"]
+    assert result["warnings"] == ["primary_query_cut"]
+    assert result["results"]
+
+
+@pytest.mark.asyncio
+async def test_a_primary_budget_under_the_side_budget_is_the_side_budget() -> None:
+    search = RecordingSearch({"primary": 5.0})
+    service = _service(
+        search,
+        search_provider_concurrency=3,
+        search_angle_budget_ms=300,
+        search_primary_budget_ms=100,
+    )
+
+    started = time.perf_counter()
+    await service.search(QUERY, depth="deep")
+
+    assert time.perf_counter() - started < 1.0
+
+
+@pytest.mark.asyncio
+async def test_a_zero_side_budget_waits_for_every_angle_whatever_the_primary_budget_is() -> None:
+    search = RecordingSearch({"primary": 0.4, "current": 0.4})
+    service = _service(
+        search,
+        search_provider_concurrency=3,
+        search_angle_budget_ms=0,
+        search_primary_budget_ms=100,
+    )
+
+    result = await service.search(QUERY, depth="deep")
+
+    assert [query["error"] for query in result["queries"]] == [None] * 4
+
+
+def test_the_primary_budget_is_fifteen_seconds_and_reads_its_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from web_scraper.web_tools.settings import WebToolsSettings
+
+    assert WebToolsSettings().search_primary_budget_ms == 15_000
+    monkeypatch.setenv("WEB_TOOLS_SEARCH_PRIMARY_BUDGET_MS", "8000")
+    assert WebToolsSettings.from_env().search_primary_budget_ms == 8_000

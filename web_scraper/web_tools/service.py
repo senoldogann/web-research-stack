@@ -6,6 +6,7 @@ import asyncio
 import json
 import re
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -37,6 +38,7 @@ from web_scraper.web_tools.content import (
 )
 from web_scraper.web_tools.crawl import CrawlManager, CrawlOptions, canonical_target
 from web_scraper.web_tools.crawl_store import CrawlStore
+from web_scraper.web_tools.dates import LOW_CONFIDENCE, DateResolution, infer_publication_date
 from web_scraper.web_tools.discovery import (
     DEPTHS,
     MIN_RESULT_RELEVANCE,
@@ -45,17 +47,35 @@ from web_scraper.web_tools.discovery import (
     annotate_candidates,
     build_facets,
     build_search_angles,
-    infer_publication_date,
+    classify_source_type,
     rank_candidates,
     relevant_results,
+    wants_news,
     within_date_range,
 )
 from web_scraper.web_tools.errors import WebToolError
 from web_scraper.web_tools.fetcher import FetchError, FetchResult, HostGate, SafeFetcher
+from web_scraper.web_tools.headdates import read_result_dates
 from web_scraper.web_tools.metrics import LatencyTracker, WebToolsMetrics
 from web_scraper.web_tools.pagecache import CachedDocument, PageCache
+from web_scraper.web_tools.paid_search import PAID_PROVIDERS, build_paid_adapters
 from web_scraper.web_tools.pdf import PDF_CONTENT_TYPE, PdfError, extract_pdf
-from web_scraper.web_tools.providers import ProviderGate, ProviderHealth
+from web_scraper.web_tools.providers import ProviderGate, ProviderHealth, failure_kind
+from web_scraper.web_tools.recover import (
+    MIN_RECOVERED_CHARS,
+    amp_candidates,
+    feed_candidates,
+    feed_document_html,
+    find_feed_item,
+    host_of,
+    is_wall,
+    parse_feed,
+    recovery_header,
+    same_site,
+    same_story,
+    title_from_url,
+    wall_title,
+)
 from web_scraper.web_tools.robots import RobotsPolicy
 from web_scraper.web_tools.search import (
     DuckDuckGoLiteSearchAdapter,
@@ -87,6 +107,7 @@ from web_scraper.web_tools.settings import (
     SEARCH_READ_MAX,
     WebToolsSettings,
 )
+from web_scraper.web_tools.sources import DEFAULT_RULES
 from web_scraper.web_tools.urls import (
     UnsafeUrlError,
     canonicalize_url,
@@ -118,6 +139,38 @@ class LoadedDocument:
 
 
 @dataclass
+class _Recovery:
+    """A walled page read another way, and how: whose text it is, and what to do with it.
+
+    *kind* is archive, amp, print, feed or other_source; *source_url* is where the text was read
+    (for the same page's own forms the page's address stays the answer's ``url``; for another
+    outlet's copy the answer's ``url`` is that outlet's).
+    """
+
+    kind: str
+    document: LoadedDocument
+    source_url: str
+    taken: Optional[str] = None
+    complete: bool = True
+    title: str = ""
+    fields: dict[str, Any] = field(default_factory=dict)
+    alternates: list[dict[str, Any]] = field(default_factory=list)
+    next_action: str = ""
+
+    @property
+    def recovered_from(self) -> dict[str, Any]:
+        info: dict[str, Any] = {"kind": self.kind, "url": self.source_url}
+        if self.taken:
+            info["at"] = self.taken
+        if self.kind == "feed":
+            info["partial"] = not self.complete
+        if self.kind == "other_source":
+            info["domain"] = host_of(self.source_url)
+            info["title"] = self.title
+        return info
+
+
+@dataclass
 class _AngleOutcome:
     """What one search angle got: who answered, and how a fallback went."""
 
@@ -128,7 +181,11 @@ class _AngleOutcome:
 
 
 class _ProviderCoolingDown(Exception):
-    """A provider skipped for its cooldown while a healthy fallback exists."""
+    """A provider skipped while a better one exists: it is cooling down, or its record is worse."""
+
+    def __init__(self, name: str, reason: str = "provider_cooldown") -> None:
+        super().__init__(name)
+        self.reason = reason
 
 
 class WebToolsService:
@@ -170,6 +227,10 @@ class WebToolsService:
         self._crawl: Optional[CrawlManager] = None
         self._provider_gates: dict[str, ProviderGate] = {}
         self._provider_health: dict[str, ProviderHealth] = {}
+        self._content_urls: OrderedDict[str, str] = OrderedDict()
+        self._source_rules = DEFAULT_RULES.extended(
+            settings.official_hosts, settings.aggregator_hosts
+        )
 
     @classmethod
     def from_env(
@@ -214,6 +275,8 @@ class WebToolsService:
             "yahoo": YahooSearchAdapter(language=settings.search_language),
             "google": GoogleSearchAdapter(),
         }
+        # Brave and Serper exist only when their key is in the environment.
+        adapters.update(build_paid_adapters(timeout=settings.search_timeout_seconds))
         return cls(
             settings=settings,
             fetcher=fetcher,
@@ -255,7 +318,23 @@ class WebToolsService:
         read: int = 0,
         read_chars: Optional[int] = None,
         archive: bool = False,
+        resolve_dates: Optional[bool] = None,
+        strict_dates: bool = False,
+        compact: bool = False,
+        debug: bool = False,
+        primary_first: Optional[bool] = None,
     ) -> dict[str, Any]:
+        """Discover URLs for a query: ranked results, and what it took to get them.
+
+        ``primary_first`` makes an organization's own site and the news outlets that report it
+        lead (unset: it does for a query that asks for news); a known aggregator ranks lower
+        whatever the query.
+
+        ``compact`` shapes the answer for a model that pays for every character (see
+        ``_present_search``); the search cache keeps the whole answer, so a compact call and a
+        full one share it. ``debug`` adds the facets, the queries, the timings and the score
+        parts to a compact answer; a full answer (``compact`` false) holds them anyway.
+        """
         cleaned = (query or "").strip()
         if not cleaned:
             raise WebToolError("invalid_request", "Query must not be empty")
@@ -273,8 +352,15 @@ class WebToolsService:
                 detail="Use 'fast', 'discover' or 'deep'",
             )
 
-        provider_name = (provider or self.settings.search_provider).strip().lower()
+        provider_name = self._primary_provider(provider)
         if provider_name not in self.search_adapters:
+            keyed = PAID_PROVIDERS.get(provider_name)
+            if keyed is not None:
+                raise WebToolError(
+                    "invalid_request",
+                    f"Search provider {provider_name} is off: it needs {keyed.env} in the environment",
+                    detail="no_key",
+                )
             raise WebToolError("invalid_request", f"Unknown search provider: {provider_name}")
         resolved_limit = min(
             max(limit or self.settings.default_search_limit, 1),
@@ -297,10 +383,15 @@ class WebToolsService:
                 detail=f"{len(operators)} characters of operators",
             )
 
+        reading_dates, date_warnings = self._dates_plan(
+            cleaned, resolve_dates, strict_dates, options
+        )
         cache_key = (
             f"search:{provider_name}:{resolved_depth}:{resolved_limit}:"
             f"{self.settings.search_region}:{self.settings.search_language}:"
             f"{_parameters_key(options, site_list, excluded_list)}:"
+            f"dates{int(reading_dates)}{int(strict_dates)}:"
+            f"first{'a' if primary_first is None else int(primary_first)}:"
             f"{cleaned.casefold()}"
         )
         started = time.perf_counter()
@@ -309,7 +400,7 @@ class WebToolsService:
             self.metrics.count("cache_hits_total", operation="search")
             answer = _from_cache(cached, started)
             await self._read_results(answer, reading, archive)
-            return answer
+            return _present_search(answer, compact=compact, debug=debug)
 
         # Every angle carries the operators and the parameters; the operators take room
         # from the query, never from the limit the provider has.
@@ -394,6 +485,7 @@ class WebToolsService:
                             url=target,
                             snippet=item.snippet,
                             source=item.source,
+                            published=item.published,
                         ),
                         angle_ranks={angle.name: rank},
                     )
@@ -406,6 +498,7 @@ class WebToolsService:
                             url=target,
                             snippet=item.snippet,
                             source=item.source or existing.result.source,
+                            published=item.published or existing.result.published,
                         )
 
         if not candidates and first_error is not None:
@@ -426,21 +519,105 @@ class WebToolsService:
             warnings.append("provider_fallback")
 
         search_ms = (time.perf_counter() - started) * 1000
+
+        def rank_pool(
+            size: int, found: Optional[Mapping[str, DateResolution]] = None
+        ) -> list[dict[str, Any]]:
+            if resolved_depth == "fast":
+                # Provider order, minus results that hold no distinctive word of the query. The
+                # whole pool is scored, so BM25 sees the same corpus as in discover and deep;
+                # annotate_candidates keeps the provider's order.
+                annotated = annotate_candidates(
+                    cleaned,
+                    candidates.values(),
+                    dates=found,
+                    rules=self._source_rules,
+                    primary_first=primary_first,
+                )
+                return relevant_results(cleaned, annotated)[:size]
+            return rank_candidates(
+                cleaned,
+                candidates.values(),
+                size,
+                dates=found,
+                rules=self._source_rules,
+                primary_first=primary_first,
+            )
+
+        # A strict search drops the results that cannot be dated, so it ranks a longer list and
+        # dates more of it, to have the limit left after the drop.
+        pool = (
+            min(resolved_limit * 2, self.settings.search_resolve_dates_max)
+            if strict_dates
+            else resolved_limit
+        )
+        pool = max(pool, resolved_limit)
         ranking_started = time.perf_counter()
-        if resolved_depth == "fast":
-            # Provider order, minus results that hold no distinctive word of the query. The
-            # whole pool is scored, so BM25 sees the same corpus as in discover and deep;
-            # annotate_candidates keeps the provider's order.
-            annotated = annotate_candidates(cleaned, candidates.values())
-            results = relevant_results(cleaned, annotated)[:resolved_limit]
+        results = rank_pool(pool)
+        ranking_ms = (time.perf_counter() - ranking_started) * 1000
+        dates_report: Optional[dict[str, Any]] = None
+        dates_ms = 0.0
+        if reading_dates and results:
+            dates_started = time.perf_counter()
+            reading_top = max(
+                self.settings.search_resolve_dates_top,
+                min(pool, self.settings.search_resolve_dates_max) if strict_dates else 0,
+            )
+            found, reading_report = await read_result_dates(
+                results,
+                fetcher=self.fetcher,
+                cached_html=self._cached_html,
+                top=reading_top,
+                budget_seconds=self.settings.search_resolve_dates_budget_ms / 1000,
+                max_bytes=self.settings.search_resolve_dates_bytes,
+                head_cap=self.settings.search_resolve_dates_head_cap,
+                concurrency=self.settings.search_resolve_dates_concurrency,
+                snippets={
+                    target: (
+                        candidate.result.title,
+                        candidate.result.snippet,
+                        candidate.result.published,
+                    )
+                    for target, candidate in candidates.items()
+                },
+            )
+            if found:
+                # The dates move freshness, so the order may move: ranked again with them.
+                results = rank_pool(pool, found)
+                if options.date_from or options.date_to:
+                    results = [
+                        row
+                        for row in results
+                        if within_date_range(row["date"], options.date_from, options.date_to)
+                    ]
+            if reading_report.cut:
+                date_warnings.append(f"resolve_dates_cut:{reading_report.cut}")
+            dates_report = reading_report.to_dict()
+            dates_ms = (time.perf_counter() - dates_started) * 1000
+        dropped = 0
+        if strict_dates:
+            kept: list[dict[str, Any]] = []
+            for row in results:
+                if row["date"] and row["date_confidence"] >= LOW_CONFIDENCE:
+                    kept.append(row)
+                    if len(kept) == resolved_limit:
+                        break
+                else:
+                    dropped += 1
+            if dropped and results:
+                date_warnings.append(f"strict_dates_dropped:{dropped}")
+            results = kept
         else:
-            results = rank_candidates(cleaned, candidates.values(), resolved_limit)
-        if not results:
+            results = results[:resolved_limit]
+        if dates_report is not None:
+            dates_report["strict"] = strict_dates
+            dates_report["dropped"] = dropped
+        if not results and not dropped:
             # The provider answered, but nothing it returned is about the query.
             warnings.append("no_relevant_results")
-        elif all(item["relevance"] < MIN_RESULT_RELEVANCE for item in results):
+        elif results and all(row["relevance"] < MIN_RESULT_RELEVANCE for row in results):
             warnings.append("low_relevance_results")
-        ranking_ms = (time.perf_counter() - ranking_started) * 1000
+        warnings.extend(date_warnings)
         facets = build_facets(
             results,
             total_candidates=len(candidates),
@@ -455,6 +632,8 @@ class WebToolsService:
             depth=resolved_depth,
         )
         self.metrics.observe("ranking", ranking_ms, operation="search")
+        if dates_report is not None:
+            self.metrics.observe("search_dates", dates_ms)
         self.metrics.observe("total", total_ms, operation="search")
         self.metrics.count(
             "searches_total",
@@ -466,6 +645,8 @@ class WebToolsService:
             "ranking_ms": round(ranking_ms, 2),
             "total_ms": round(total_ms, 2),
         }
+        if dates_report is not None:
+            timings["dates_ms"] = round(dates_ms, 2)
         for name, value in angle_timings.items():
             timings[f"angle_{name}_ms"] = value
         payload = {
@@ -482,6 +663,8 @@ class WebToolsService:
             "timings": timings,
             "cache_hit": False,
         }
+        if dates_report is not None:
+            payload["dates"] = dates_report
         # The search is cached as it is, without the reading: what is read is the pages' own
         # cache entries, and a search that reads no page never gets one's content.
         await self.cache.set(
@@ -490,7 +673,39 @@ class WebToolsService:
             ttl_seconds=self.settings.search_cache_ttl_seconds,
         )
         await self._read_results(payload, reading, archive)
-        return payload
+        return _present_search(payload, compact=compact, debug=debug)
+
+    def _dates_plan(
+        self,
+        query: str,
+        resolve_dates: Optional[bool],
+        strict_dates: bool,
+        options: SearchOptions,
+    ) -> tuple[bool, list[str]]:
+        """Whether this search reads the head of its top results' pages for their dates.
+
+        Unless a call says, it does when the query asks for news or the call gives a date range
+        (and when ``strict_dates`` needs dates to drop by); ``search_resolve_dates`` off turns it
+        off for every call, and a call that asked is told so.
+        """
+        mode = self.settings.search_resolve_dates
+        if mode == "off":
+            return False, (["resolve_dates_disabled"] if resolve_dates else [])
+        if resolve_dates is not None:
+            return resolve_dates, []
+        wanted = (
+            mode == "on"
+            or strict_dates
+            or bool(options.date_from or options.date_to)
+            or wants_news(query)
+        )
+        return wanted, []
+
+    def _cached_html(self, url: str) -> Optional[str]:
+        """The HTML of a page the page cache holds, if it does: reading it costs no request."""
+        key = self._page_key(url)
+        stored = self._pages.get(key) if key is not None else None
+        return stored.html if stored is not None and stored.html else None
 
     @staticmethod
     def _read_plan(read: int, read_chars: Optional[int]) -> tuple[int, int]:
@@ -525,12 +740,15 @@ class WebToolsService:
         if not top:
             return
         started = time.perf_counter()
+        # A search that reads its top pages is quick: a walled one is read from the archive when
+        # asked, not hunted for in other forms and other outlets (web_scrape does that).
         pages = await self._read_pages(
             [item["url"] for item in top],
             max_chars=chars,
             archive=archive,
             links=False,
             max_links=None,
+            recover=False,
         )
         read: list[dict[str, Any]] = []
         for item, page in zip(top, pages):
@@ -556,40 +774,61 @@ class WebToolsService:
         *,
         options: Optional[SearchOptions] = None,
     ) -> list[tuple[_AngleOutcome, float]]:
-        """The angles after the base, together, each cut once the angle budget ran out.
+        """The angles after the base, together, each cut once its time budget ran out.
 
         A refused angle can wait out the provider's cooldown or start the headless
         Google fallback (seconds to tens of seconds), so the base's answer is not
-        held for it. A cut angle is reported as a ``timeout`` with the detail
-        ``angle_budget``; being the search's own limit, it marks no provider as
-        failed.
+        held for it. The side angles (current, background) are cut at
+        ``search_angle_budget_ms``; the primary-source angle of a deep search, the one worth
+        waiting for, is asked first (it queues first at the provider's gate) and goes on to
+        ``search_primary_budget_ms`` while the side angles are already cut. A cut angle is
+        reported as a ``timeout`` with the detail ``angle_budget``; being the search's own
+        limit, it marks no provider as failed. The answers are returned in the angles' order.
         """
         if not angles:
             return []
         delay = self.settings.search_angle_delay_ms / 1000
-        tasks = [
-            asyncio.create_task(
-                self._timed_angle(provider, angle, limit, stagger=delay * position, options=options)
-            )
-            for position, angle in enumerate(angles, start=1)
-        ]
         budget = self.settings.search_angle_budget_ms / 1000
+        primary_budget = max(self.settings.search_primary_budget_ms / 1000, budget)
+        # The primary angle is scheduled first: it is the last angle in the order of the answer
+        # and would otherwise queue behind the side angles at a gate of one call at a time.
+        schedule = sorted(range(len(angles)), key=lambda index: angles[index].name != "primary")
+        tasks: list[Optional[asyncio.Task[tuple[_AngleOutcome, float]]]] = [None] * len(angles)
+        for position, index in enumerate(schedule, start=1):
+            tasks[index] = asyncio.create_task(
+                self._timed_angle(
+                    provider, angles[index], limit, stagger=delay * position, options=options
+                )
+            )
+        running = [task for task in tasks if task is not None]  # in the angles' order
+        primaries = {tasks[index] for index, angle in enumerate(angles) if angle.name == "primary"}
+        pending: set[asyncio.Task[tuple[_AngleOutcome, float]]] = set()
         try:
-            _, pending = await asyncio.wait(tasks, timeout=budget or None)
+            if budget:
+                _, pending = await asyncio.wait(running, timeout=budget)
+                for task in pending - primaries:
+                    task.cancel()
+                waiting = pending & primaries
+                if waiting:
+                    _, waiting = await asyncio.wait(waiting, timeout=primary_budget - budget)
+                pending = (pending - primaries) | waiting
+            else:
+                await asyncio.wait(running)
         finally:
-            for task in tasks:
+            for task in running:
                 task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(*running, return_exceptions=True)
 
         answered: list[tuple[_AngleOutcome, float]] = []
-        for task in tasks:
+        for task in running:
+            allowed = primary_budget if task in primaries else budget
             if task in pending:
                 cut = WebToolError(
                     "timeout",
-                    "The angle ran past the search's time budget",
+                    f"The angle ran past the search's time budget ({allowed:g} s)",
                     detail="angle_budget",
                 )
-                answered.append((_AngleOutcome(provider, error=cut), budget * 1000))
+                answered.append((_AngleOutcome(provider, error=cut), allowed * 1000))
             elif task.exception() is not None:
                 failed = WebToolError(
                     "search_failed",
@@ -654,8 +893,8 @@ class WebToolsService:
         primary_error: Optional[WebToolError] = None
         try:
             results = await self._call_provider(primary, query, limit, date_filter, yield_to=chain)
-        except _ProviderCoolingDown:
-            reason = "provider_cooldown"
+        except _ProviderCoolingDown as skipped:
+            reason = skipped.reason
             tried.append({"provider": primary, "status": "skipped", "reason": reason})
         except WebToolError as exc:
             if all(self._provider_health_for(name).cooling_down() for name in chain):
@@ -730,20 +969,26 @@ class WebToolsService:
         adapter = self.search_adapters[name]
         health = self._provider_health_for(name)
         gate = self._provider_gate_for(name)
+        window = self.settings.search_provider_window_seconds
 
         def should_yield() -> bool:
-            return (
-                bool(yield_to)
-                and health.cooling_down()
-                and any(not self._provider_health_for(name).cooling_down() for name in yield_to)
+            """Whether a provider in the list is in better standing than this one: not cooling
+            when this one is, or answering more of its calls."""
+            return bool(yield_to) and health.standing(window) > min(
+                self._provider_health_for(other).standing(window) for other in yield_to
+            )
+
+        def gave_way() -> _ProviderCoolingDown:
+            return _ProviderCoolingDown(
+                name, "provider_cooldown" if health.cooling_down() else "provider_unhealthy"
             )
 
         if should_yield():
-            raise _ProviderCoolingDown(name)
+            raise gave_way()
         async with gate.turn():
             # A call queued behind a failure re-checks before spending its turn.
             if should_yield():
-                raise _ProviderCoolingDown(name)
+                raise gave_way()
             await gate.pace()
             # An adapter is given the date filter and the options only when a caller asked for
             # them: with none, the call is what it always was, so an adapter written as
@@ -753,6 +998,7 @@ class WebToolsService:
                 extra["date_filter"] = date_filter
             if options:
                 extra["options"] = options
+            call_started = time.perf_counter()
             try:
                 results = await asyncio.wait_for(
                     adapter.search(query, limit, **extra),
@@ -767,22 +1013,31 @@ class WebToolsService:
             except WebToolError as exc:
                 failure = exc
             except Exception as exc:  # noqa: BLE001 - provider boundary
+                # Whatever a provider raises (Yahoo's RuntimeError for an HTTP error status, a
+                # parser given a page it did not expect) is its failure, never the search's.
                 failure = WebToolError(
                     "search_failed",
                     "Search provider failed",
                     detail=type(exc).__name__,
                 )
             else:
-                health.record_success()
+                health.record_success((time.perf_counter() - call_started) * 1000)
                 return results
             finally:
                 gate.finish()
 
-        health.record_failure(
+        kind = failure_kind(failure)
+        cooldown = health.record_failure(
             self.settings.search_provider_cooldown_seconds,
             self.settings.search_provider_max_cooldown_seconds,
+            kind=kind,
+            limit=self.settings.search_provider_failure_limit,
+            error=failure,
+            latency_ms=(time.perf_counter() - call_started) * 1000,
         )
-        self.metrics.count("search_provider_failures_total", provider=name)
+        self.metrics.count("search_provider_failures_total", provider=name, kind=kind)
+        if cooldown:
+            self.metrics.count("search_provider_cooldowns_total", provider=name, kind=kind)
         raise failure
 
     @staticmethod
@@ -820,22 +1075,114 @@ class WebToolsService:
         """
         names = [
             name
-            for name in self.settings.search_fallback_providers
+            for name in self._route_after(primary)
             if name != primary and name in self.search_adapters
         ]
-        if fast:
-            names.sort(
-                key=lambda name: bool(getattr(self.search_adapters[name], "headless", False))
-            )
+        window = self.settings.search_provider_window_seconds
+        healths = {name: self._provider_health_for(name) for name in names}
+
+        def key(name: str) -> tuple[int, bool]:
+            headless = fast and bool(getattr(self.search_adapters[name], "headless", False))
+            return healths[name].standing(window), headless
+
+        # Healthier providers first, by how their recent calls went; ties keep the configured
+        # order (the sort is stable). A cooling provider keeps its place: it is skipped there
+        # without a call, and the answer records it.
+        slots = [index for index, name in enumerate(names) if not healths[name].cooling_down()]
+        movers = sorted((names[index] for index in slots), key=key)
+        for index, name in zip(slots, movers):
+            names[index] = name
         return names
+
+    def _route_after(self, primary: str) -> list[str]:
+        """The providers a search falls to when *primary* fails, before their health orders them.
+
+        The configured fallback chain; and the providers with a key, which a call that names its
+        own provider reaches last and an unnamed call reaches first (see ``_primary_provider``);
+        DuckDuckGo stays a fallback of a keyed provider.
+        """
+        paid = [name for name in PAID_PROVIDERS if name in self.search_adapters]
+        configured = self.settings.search_fallback_providers
+        if primary in paid:
+            rest = [*paid, self.settings.search_provider, *configured]
+        else:
+            rest = [*configured, *paid]
+        return list(dict.fromkeys(rest))
+
+    def _primary_provider(self, requested: Optional[str]) -> str:
+        """The provider a search asks first: the one a call names, else the first with a key, else the setting.
+
+        A provider with a key (Brave, Serper) is used first when the call names none; none of them
+        is on without its key.
+        """
+        name = (requested or "").strip().lower()
+        if name:
+            return name
+        for paid in PAID_PROVIDERS:
+            if paid in self.search_adapters:
+                return paid
+        return self.settings.search_provider
+
+    def health(self) -> dict[str, Any]:
+        """Each search provider's state in this process, for ``web_health``.
+
+        Cheap: it reads the record the calls left (no request is made). A provider is ``ok``,
+        ``degraded`` (it answered under 4 of 5 of its recent calls), ``cooling`` (with the time
+        left) or ``no_key`` (Brave and Serper without their key, with the variable they read; the
+        key itself is never in an answer). Each has its calls in this process, the share that met
+        a wall (``block_rate``), the mean latency of its calls and its last error. ``order`` is the
+        order the next search would ask them in.
+        """
+        names = list(self.search_adapters)
+        names += [name for name in PAID_PROVIDERS if name not in names]
+        providers: list[dict[str, Any]] = []
+        for name in names:
+            if name not in self.search_adapters:
+                providers.append(
+                    {"name": name, "state": "no_key", "key_env": PAID_PROVIDERS[name].env}
+                )
+                continue
+            known = self._provider_health.get(name)
+            providers.append(
+                {
+                    "name": name,
+                    **(known or ProviderHealth()).report(
+                        self.settings.search_provider_window_seconds
+                    ),
+                }
+            )
+        return {
+            "providers": providers,
+            "order": self._ask_order(),
+            "calls": sum(entry.get("calls", 0) for entry in providers),
+            "cooldown_seconds": self.settings.search_provider_cooldown_seconds,
+            "failures_before_cooldown": self.settings.search_provider_failure_limit,
+        }
+
+    def _ask_order(self) -> list[str]:
+        """The providers in the order the next unnamed search would ask them: the cooling ones last."""
+        primary = self._primary_provider(None)
+        if primary not in self.search_adapters:
+            return []
+        route = [primary, *self._fallback_chain(primary)]
+        window = self.settings.search_provider_window_seconds
+        healths = {name: self._provider_health_for(name) for name in route}
+        active = sorted(
+            (name for name in route if not healths[name].cooling_down()),
+            key=lambda name: healths[name].standing(window),
+        )
+        return active + [name for name in route if healths[name].cooling_down()]
 
     def _provider_gate_for(self, name: str) -> ProviderGate:
         gate = self._provider_gates.get(name)
         if gate is None:
+            # A provider that states a rate (Brave's free plan: one call a second) is never paced
+            # faster than it.
+            floor = int(getattr(self.search_adapters.get(name), "min_gap_ms", 0) or 0)
             gate = ProviderGate(
                 self.settings.search_provider_concurrency,
-                self.settings.search_jitter_min_ms,
-                self.settings.search_jitter_max_ms,
+                max(self.settings.search_jitter_min_ms, floor),
+                max(self.settings.search_jitter_max_ms, floor),
             )
             self._provider_gates[name] = gate
         return gate
@@ -851,44 +1198,161 @@ class WebToolsService:
         archive: bool = False,
         links: bool = True,
         max_links: Optional[int] = None,
+        recover: Optional[bool] = None,
+        lean: bool = False,
     ) -> dict[str, Any]:
+        """Read one page. A page that answers a wall may be read another way (see ``_recover``).
+
+        ``lean`` returns the text without the metadata blocks (see ``_lean_view``). A page whose
+        Markdown was cut says so (``truncated``, ``total_chars``, ``next_offset``) and, when the
+        page cache keeps it, gives a ``content_id`` that ``scrape_content`` reads the rest with.
+
+        ``recover`` unset reads a walled page every way there is, unless ``archive`` alone was
+        asked for (then only the archive, as it has always been); ``recover: true`` is every way
+        whatever else is asked, ``recover: false`` none but the archive when ``archive`` is set.
+        The text of a page read another way begins with a line that says whose it is, and the
+        answer's ``recovered_from`` says how; a page that could not be read any way raises the
+        wall's error with ``alternates`` and ``next_action``.
+        """
         requested = self._canonical(url)
         fetch_target = self._request_url(url)
         limit = self._markdown_limit(max_chars)
         link_cap = self._links_limit(max_links)
+        recovering = self._recovering(recover, archive)
         cache_key = (
             f"scrape:{requested}:{limit}"
             + (":archive" if archive else "")
+            + (":recover" if recovering else "")
             + (f":links{link_cap}" if links else ":nolinks")
         )
 
         started = time.perf_counter()
         cached = await self.cache.get(cache_key)
-        if cached is not None:
+        # A cut page's content_id lives as long as the page cache keeps the page (5 minutes), the
+        # answer cache a little longer: an answer whose id has gone is read again, not repeated.
+        if cached is not None and not self._content_gone(cached):
             self.metrics.count("cache_hits_total", operation="scrape")
-            return _from_cache(cached, started)
+            answer = _from_cache(cached, started)
+            return _lean_view(answer) if lean else answer
 
-        archived: Optional[tuple[str, str]] = None
-        skipped: list[dict[str, str]] = []
+        recovery: Optional[_Recovery] = None
         try:
             document = await self._load_page(fetch_target, max_chars=limit)
         except WebToolError as exc:
             if exc.code not in _ARCHIVABLE:
                 raise
-            if not archive:
-                exc.hint = _ARCHIVE_HINT
+            walled = is_wall(exc)
+            if not archive and not (recovering and walled):
+                if walled and self.settings.scrape_recover == "off" and recover is not False:
+                    exc.hint = _RECOVER_SETTING_HINT
+                elif walled and recover is False:
+                    exc.hint = _RECOVER_OFF_HINT
+                else:
+                    exc.hint = _ARCHIVE_HINT
                 raise
-            document, archived, skipped = await self._archived_copy(fetch_target, limit, exc)
-        payload = self._page_payload(document, requested, links=links, max_links=link_cap)
-        if archived is not None:
-            payload["archived_at"], payload["archive_url"] = archived
-            payload["archive_skipped"] = skipped
+            recovery = await self._recover(
+                fetch_target,
+                requested,
+                limit,
+                exc,
+                archive=archive,
+                everything=recovering and walled,
+            )
+            document = recovery.document
+        content_id = self._content_id_of(fetch_target) if recovery is None else None
+        payload = self._page_payload(
+            document, requested, links=links, max_links=link_cap, content_id=content_id
+        )
+        if recovery is not None:
+            payload.update(recovery.fields)
+            payload["recovered_from"] = recovery.recovered_from
+            payload["alternates"] = recovery.alternates
+            payload["next_action"] = recovery.next_action
+        elif payload.get("content_id"):
+            self._remember_content(payload["content_id"], requested)
         total_ms = (time.perf_counter() - started) * 1000
         payload["timings"]["total_ms"] = round(total_ms, 2)
         self.metrics.observe("total", total_ms, operation="scrape")
         self.metrics.count("scrapes_total", mode=payload["fetched_with"])
         await self.cache.set(cache_key, _for_cache(payload))
-        return payload
+        return _lean_view(payload) if lean else payload
+
+    async def scrape_content(
+        self,
+        content_id: str,
+        *,
+        offset: int = 0,
+        max_chars: Optional[int] = None,
+        lean: bool = True,
+    ) -> dict[str, Any]:
+        """Read on in a page a scrape cut: the part of its Markdown from *offset*, by ``content_id``.
+
+        The page is read from the page cache, never fetched again, so what comes is the text the
+        first scrape cut. The answer is the scrape's own (``next_offset`` and the same
+        ``content_id`` while more is left), lean unless ``lean`` is false. An id the cache no
+        longer holds is an error that names the page to scrape again.
+        """
+        limit = self._markdown_limit(max_chars)
+        started = time.perf_counter()
+        stored = self._pages.get_by_id(content_id)
+        if stored is None:
+            address = self._content_urls.get(content_id)
+            raise WebToolError(
+                "content_expired",
+                f"The content {content_id} is no longer held (pages are kept for "
+                f"{self.settings.page_cache_ttl_seconds} s)",
+                url=address,
+                hint=(
+                    f"Scrape {address} again; its answer gives a new content_id."
+                    if address
+                    else "Scrape the page again; its answer gives a new content_id."
+                ),
+            )
+        document = self._document_from_cache(stored, limit, started, offset=offset)
+        total = document.page.total_chars or 0
+        if offset > total:
+            raise WebToolError(
+                "invalid_request",
+                "offset is past the end of the content",
+                detail=f"offset {offset}, total_chars {total}",
+            )
+        payload = self._page_payload(
+            document,
+            self._canonical(stored.final_url),
+            links=False,
+            max_links=0,
+            content_id=content_id,
+            offset=offset,
+        )
+        payload["cache_hit"] = True
+        self.metrics.count("content_reads_total")
+        return _lean_view(payload) if lean else payload
+
+    def _content_id_of(self, url: str) -> Optional[str]:
+        """The content id of the page the page cache keeps for an address, if it keeps it."""
+        key = self._page_key(url)
+        return self._pages.id_for(key) if key is not None else None
+
+    def _content_gone(self, answer: Mapping[str, Any]) -> bool:
+        """Whether a cached answer names a content_id the page cache no longer holds."""
+        content_id = answer.get("content_id")
+        return bool(content_id) and self._pages.get_by_id(str(content_id)) is None
+
+    def _remember_content(self, content_id: str, address: str) -> None:
+        """Which page a content id was given for, so that its expiry can say what to scrape again."""
+        self._content_urls[content_id] = address
+        self._content_urls.move_to_end(content_id)
+        while len(self._content_urls) > _CONTENT_URLS_KEPT:
+            self._content_urls.popitem(last=False)
+
+    def _recovering(self, recover: Optional[bool], archive: bool) -> bool:
+        """Whether a walled page is read every way there is: the setting allows it and the call
+        asked for it, or did not narrow the way to the archive."""
+        if self.settings.scrape_recover == "off":
+            return False
+        if recover is None:
+            return not archive
+        return recover
 
     async def scrape_many(
         self,
@@ -899,6 +1363,8 @@ class WebToolsService:
         links: bool = True,
         max_links: Optional[int] = None,
         max_total_chars: Optional[int] = None,
+        recover: Optional[bool] = None,
+        lean: bool = False,
     ) -> dict[str, Any]:
         """Read 2 to 10 pages in one call: ``{"pages": [...], "timings": {...}}``.
 
@@ -918,7 +1384,13 @@ class WebToolsService:
         cap = self._batch_total(max_total_chars)
         started = time.perf_counter()
         pages = await self._read_pages(
-            targets, max_chars=max_chars, archive=archive, links=links, max_links=max_links
+            targets,
+            max_chars=max_chars,
+            archive=archive,
+            links=links,
+            max_links=max_links,
+            recover=recover,
+            lean=lean,
         )
         total_ms = round((time.perf_counter() - started) * 1000, 2)
         answer: dict[str, Any] = {"pages": pages, "timings": {"total_ms": total_ms}}
@@ -934,6 +1406,8 @@ class WebToolsService:
         archive: bool,
         links: bool,
         max_links: Optional[int],
+        recover: Optional[bool] = None,
+        lean: bool = False,
     ) -> list[dict[str, Any]]:
         """Scrape pages together, in the order given: each answer, or ``{"url", "error"}``.
 
@@ -955,6 +1429,8 @@ class WebToolsService:
                         archive=archive,
                         links=links,
                         max_links=max_links,
+                        recover=recover,
+                        lean=lean,
                     )
                 except WebToolError as exc:
                     return {"url": url, "error": exc.to_dict()}
@@ -1078,6 +1554,337 @@ class WebToolsService:
             "story elsewhere with web_search."
         )
 
+    async def _recover(
+        self,
+        fetch_target: str,
+        requested: str,
+        limit: int,
+        cause: WebToolError,
+        *,
+        archive: bool,
+        everything: bool,
+    ) -> _Recovery:
+        """Read a walled page another way, or raise its error with what was found.
+
+        With ``everything`` false only the Internet Archive is asked (``archive: true`` alone).
+        Otherwise, within ``recover_budget_seconds``: the archive, the page's AMP and print
+        forms, and its feed are tried together; the text that comes of them, the page's own, is
+        the answer (the freshest form that holds nearly as much as the longest, the archive's copy
+        first when ``archive`` was asked for). A feed that carries only a summary, or nothing
+        found, goes on to another outlet's report of the same story, found by searching the page's
+        title (from the wall, else from the address). Whatever the way, the text begins with a line
+        that says whose it is. With nothing readable, the wall's error is raised with
+        ``alternates`` (candidate addresses, each with its domain, title, date, source type and why)
+        and a ``next_action`` the agent can act on.
+        """
+        if not everything:
+            document, archived, skipped = await self._archived_copy(fetch_target, limit, cause)
+            only = _Recovery(
+                "archive",
+                document,
+                archived[1],
+                taken=archived[0],
+                fields={
+                    "archived_at": archived[0],
+                    "archive_url": archived[1],
+                    "archive_skipped": skipped,
+                },
+            )
+            return self._finish_recovery(only, requested, limit, [])
+
+        deadline = time.monotonic() + self.settings.recover_budget_seconds
+        tried: dict[str, str] = {}
+
+        async def run(method: str, work: Any) -> list[_Recovery]:
+            try:
+                made, reason = await asyncio.wait_for(work, timeout=_remaining(deadline))
+            except asyncio.TimeoutError:
+                tried[method] = "out of time"
+                return []
+            except Exception as error:  # noqa: BLE001 - one way failing never fails the others
+                tried[method] = type(error).__name__
+                return []
+            tried[method] = "read" if made else reason
+            return list(made)
+
+        archived_copies, forms, feeds = await asyncio.gather(
+            run("archive", self._try_archive(fetch_target, limit, cause)),
+            run("amp/print", self._try_forms(fetch_target, limit, cause)),
+            run("feed", self._try_feed(fetch_target, limit, cause)),
+        )
+        pages = [*archived_copies, *forms]
+        chosen = _best_of_the_page(pages, prefer_archive=archive)
+        partial_feed: Optional[_Recovery] = None
+        if chosen is None and feeds:
+            if feeds[0].complete:
+                chosen = feeds[0]
+            else:
+                partial_feed = feeds[0]
+        alternates: list[dict[str, Any]] = []
+        if chosen is None:
+            made_other, alternates, reason = await self._try_other_sources(
+                fetch_target, requested, limit, cause, deadline
+            )
+            tried["other sources"] = "read" if made_other else reason
+            chosen = made_other or partial_feed
+        else:
+            alternates = [
+                self._form_alternate(other) for other in [*pages, *feeds] if other is not chosen
+            ]
+        self.metrics.count("recoveries_total", kind=chosen.kind if chosen else "none")
+        if chosen is None:
+            summary = "; ".join(
+                f"{method}: {tried.get(method, 'not tried')}"
+                for method in ("archive", "amp/print", "feed", "other sources")
+            )
+            cause.hint = (
+                "The page is walled and no other way of reading it gave a text "
+                f"({summary}). Read the story elsewhere: see alternates and next_action."
+            )
+            cause.extra["alternates"] = alternates
+            cause.extra["next_action"] = _next_action(None, requested, alternates)
+            cause.extra["recovery_tried"] = [
+                {"method": method, "result": tried.get(method, "not tried")}
+                for method in ("archive", "amp/print", "feed", "other sources")
+            ]
+            raise cause
+        return self._finish_recovery(chosen, requested, limit, alternates)
+
+    def _finish_recovery(
+        self, recovery: _Recovery, requested: str, limit: int, alternates: list[dict[str, Any]]
+    ) -> _Recovery:
+        """Put on a recovered text the line that says whose it is, and fill in what is said of it."""
+        document = recovery.document
+        header = recovery_header(
+            recovery.kind,
+            requested_url=requested,
+            source_url=recovery.source_url,
+            taken=recovery.taken,
+            title=recovery.title or document.page.title,
+            complete=recovery.complete,
+        )
+        room = max(limit - len(header) - 2, 0)
+        body = document.page.markdown
+        whole = document.page.total_chars if document.page.total_chars is not None else len(body)
+        recovery.fields.update(truncated=whole > min(len(body), room), total_chars=whole)
+        document.page.markdown = f"{header}\n\n{body[:room]}"
+        if recovery.kind == "archive":
+            document.warnings.append("archived_copy")
+            self.metrics.count("archive_copies_total")
+        else:
+            document.warnings.append(f"recovered_{recovery.kind}")
+        if recovery.kind == "feed" and not recovery.complete:
+            document.warnings.append("feed_summary_only")
+        recovery.alternates = alternates[: self.settings.recover_max_alternates]
+        recovery.next_action = _next_action(recovery, requested, recovery.alternates)
+        return recovery
+
+    @staticmethod
+    def _form_alternate(recovery: _Recovery) -> dict[str, Any]:
+        page = recovery.document.page
+        why = {
+            "archive": f"the Internet Archive's copy of the same page, taken {recovery.taken}",
+            "amp": "the site's AMP version of the same page",
+            "print": "the site's print version of the same page",
+            "feed": "the page's entry in the site's feed"
+            + ("" if recovery.complete else " (a summary only)"),
+        }.get(recovery.kind, "another form of the same page")
+        return {
+            "url": recovery.source_url,
+            "domain": host_of(recovery.source_url),
+            "title": page.title,
+            "date": page.dates.date if page.dates is not None else None,
+            "source_type": classify_source_type(recovery.source_url),
+            "why": why,
+        }
+
+    async def _try_archive(
+        self, fetch_target: str, limit: int, cause: WebToolError
+    ) -> tuple[list[_Recovery], str]:
+        probe = WebToolError(
+            cause.code,
+            str(cause),
+            url=cause.url,
+            status_code=cause.status_code,
+            detail=cause.detail,
+        )
+        try:
+            document, archived, skipped = await self._archived_copy(fetch_target, limit, probe)
+        except WebToolError as failed:
+            return [], _archive_reason(failed.hint or "")
+        return [
+            _Recovery(
+                "archive",
+                document,
+                archived[1],
+                taken=archived[0],
+                fields={
+                    "archived_at": archived[0],
+                    "archive_url": archived[1],
+                    "archive_skipped": skipped,
+                },
+            )
+        ], ""
+
+    async def _try_forms(
+        self, fetch_target: str, limit: int, cause: WebToolError
+    ) -> tuple[list[_Recovery], str]:
+        """The page's AMP and print forms: the wall's own ``amphtml`` link and the usual spellings."""
+        candidates = amp_candidates(fetch_target, cause.body)
+
+        async def read(kind: str, address: str) -> Optional[_Recovery]:
+            try:
+                document = await self._load_page(
+                    address, max_chars=limit, browser=False, cache=False
+                )
+            except WebToolError:
+                return None
+            if len(document.page.markdown.strip()) < MIN_RECOVERED_CHARS:
+                return None
+            document.final_url = fetch_target
+            document.fetched_with = kind
+            return _Recovery(kind, document, address)
+
+        read_all = [
+            made
+            for made in await asyncio.gather(*(read(kind, address) for kind, address in candidates))
+            if made is not None
+        ]
+        best: dict[str, _Recovery] = {}
+        for made in read_all:
+            held = best.get(made.kind)
+            if held is None or len(made.document.page.markdown) > len(held.document.page.markdown):
+                best[made.kind] = made
+        return list(best.values()), "none of the usual forms is served"
+
+    async def _try_feed(
+        self, fetch_target: str, limit: int, cause: WebToolError
+    ) -> tuple[list[_Recovery], str]:
+        """The page's entry in the site's RSS or Atom feed, when a feed carries it."""
+        title = wall_title(cause.body) or title_from_url(fetch_target)
+
+        async def read(feed_url: str) -> Optional[_Recovery]:
+            try:
+                fetched = await self.fetcher.fetch(feed_url)
+            except Exception:  # noqa: BLE001 - a feed that is not there is not an error
+                return None
+            item = find_feed_item(parse_feed(fetched.html), fetch_target, title)
+            if item is None:
+                return None
+            html, complete = feed_document_html(item)
+            page = extract_page(
+                html, fetch_target, max_links=self.settings.max_links, max_chars=limit
+            )
+            if len(page.markdown.strip()) < MIN_FEED_CHARS:
+                return None
+            return _Recovery(
+                "feed",
+                LoadedDocument(
+                    final_url=fetch_target,
+                    status_code=200,
+                    content_type="text/html",
+                    html=html,
+                    page=page,
+                    fetched_with="feed",
+                    timings={},
+                ),
+                feed_url,
+                complete=complete,
+            )
+
+        found = [
+            made
+            for made in await asyncio.gather(
+                *(read(feed_url) for feed_url in feed_candidates(fetch_target, cause.body))
+            )
+            if made is not None
+        ]
+        found.sort(key=lambda made: (not made.complete, -len(made.document.page.markdown)))
+        return found[:1], "no feed carries the page"
+
+    async def _try_other_sources(
+        self,
+        fetch_target: str,
+        requested: str,
+        limit: int,
+        cause: WebToolError,
+        deadline: float,
+    ) -> tuple[Optional[_Recovery], list[dict[str, Any]], str]:
+        """Another outlet's report of the same story: search the page's title away from its site.
+
+        The title is what the wall still shows, else what the address spells. Results of another
+        site whose title holds the story's words are the candidates, outlets and official pages
+        first; the first two are read, the first that reads is the answer, the rest are
+        ``alternates`` with why each is offered.
+        """
+        title = wall_title(cause.body) or title_from_url(fetch_target)
+        if not title:
+            return None, [], "the address and the wall give no title to search"
+        site = host_of(fetch_target)
+        try:
+            found = await asyncio.wait_for(
+                self.search(
+                    title,
+                    depth="fast",
+                    limit=10,
+                    exclude_sites=[site] if site else None,
+                    resolve_dates=False,
+                ),
+                timeout=_remaining(deadline),
+            )
+        except (WebToolError, asyncio.TimeoutError):
+            return None, [], "no search provider answered"
+        matches: list[tuple[float, dict[str, Any]]] = []
+        for item in found.get("results", []):
+            if same_site(item["url"], fetch_target) or item.get("kind") in {"front", "listing"}:
+                continue
+            share = same_story(title, item["title"])
+            if share is not None:
+                matches.append((share, item))
+        if not matches:
+            return None, [], "no other site has the story's title"
+        order = {"official": 0, "news": 1, "academic": 2, "reference": 3}
+        matches.sort(
+            key=lambda pair: (order.get(pair[1]["source_type"], 9), -pair[0], -(pair[1]["score"]))
+        )
+        alternates = [
+            {
+                "url": item["url"],
+                "domain": item["domain"],
+                "title": item["title"],
+                "date": item.get("date"),
+                "source_type": item["source_type"],
+                "why": f"{share:.0%} of this story's title words, on {item['domain']}",
+            }
+            for share, item in matches[: self.settings.recover_max_alternates]
+        ]
+        readable = [pair for pair in matches if pair[1]["source_type"] not in _NOT_A_REPORT]
+        for _, item in readable[:2]:
+            try:
+                document = await asyncio.wait_for(
+                    self._load_page(item["url"], max_chars=limit, browser=False),
+                    timeout=_remaining(deadline),
+                )
+            except (WebToolError, asyncio.TimeoutError):
+                continue
+            if len(document.page.markdown.strip()) < MIN_RECOVERED_CHARS:
+                continue
+            for alternate in alternates:
+                if alternate["url"] == item["url"]:
+                    alternate["why"] += " (read)"
+            # The page's own title: a search result's is cut by the provider with "...".
+            return (
+                _Recovery(
+                    "other_source",
+                    document,
+                    document.final_url,
+                    title=(document.page.title or item["title"])[:160],
+                ),
+                alternates,
+                "",
+            )
+        return None, alternates, "the candidates could not be read either"
+
     async def extract(
         self,
         url: str,
@@ -1100,6 +1907,7 @@ class WebToolsService:
             document.final_url,
             validated,
             max_items=self.settings.extract_max_items,
+            dates=document.page.dates,
         )
         extract_ms = (time.perf_counter() - started) * 1000
         self.metrics.observe("extraction", extract_ms, operation="structured")
@@ -1126,6 +1934,7 @@ class WebToolsService:
             "warnings": list(document.warnings),
             "truncated": False,
         }
+        payload.update(_date_fields(document.page.dates))
         if document.cache_hit:
             payload["cached_timings"] = dict(document.cached_timings)
         cut = fit_extract_payload(payload, budget)
@@ -1424,7 +2233,7 @@ class WebToolsService:
             return None
 
     def _document_from_cache(
-        self, stored: CachedDocument, max_chars: int, started: float
+        self, stored: CachedDocument, max_chars: int, started: float, *, offset: int = 0
     ) -> LoadedDocument:
         """A stored document read again: parsed for this call, its timings this call's own."""
         parsing = time.perf_counter()
@@ -1433,6 +2242,7 @@ class WebToolsService:
             stored.final_url,
             max_links=self.settings.max_links,
             max_chars=max_chars,
+            offset=offset,
         )
         extract_ms = (time.perf_counter() - parsing) * 1000
         self.metrics.observe("extraction", extract_ms, mode="cached")
@@ -1645,6 +2455,7 @@ class WebToolsService:
                 url=url,
                 status_code=rendered.status_code or None,
                 detail=interstitial,
+                body=rendered.html[:30_000],
             )
 
         extraction_started = time.perf_counter()
@@ -1695,6 +2506,7 @@ class WebToolsService:
                 url=document.final_url,
                 status_code=rendered.status_code or None,
                 detail=interstitial,
+                body=rendered.html[:30_000],
             )
 
         extraction_started = time.perf_counter()
@@ -1730,6 +2542,8 @@ class WebToolsService:
         *,
         links: bool = True,
         max_links: Optional[int] = None,
+        content_id: Optional[str] = None,
+        offset: int = 0,
     ) -> dict[str, Any]:
         # The page's own links, without menus, banners, footers, and sidebars,
         # capped; map and crawl still see every link. ``links=False`` returns none,
@@ -1757,8 +2571,23 @@ class WebToolsService:
             "warnings": list(document.warnings),
             "timings": dict(document.timings),
         }
+        payload.update(_date_fields(document.page.dates))
         if document.pages is not None:
             payload["pages"] = document.pages
+        # Whether the Markdown is the whole of the page, and how to read the rest: from where the
+        # next part starts, and (for a page the page cache keeps) the id to ask for it with.
+        total = document.page.total_chars
+        end = offset + len(document.page.markdown)
+        truncated = total > end if total is not None else "pdf_truncated" in document.warnings
+        payload["truncated"] = truncated
+        if total is not None:
+            payload["total_chars"] = total
+        if offset:
+            payload["offset"] = offset
+        if truncated and total is not None:
+            payload["next_offset"] = end
+            if content_id:
+                payload["content_id"] = content_id
         return payload
 
     def _links_limit(self, value: Optional[int]) -> int:
@@ -1857,6 +2686,7 @@ class WebToolsService:
             url=exc.url,
             status_code=exc.status_code,
             detail=exc.detail,
+            body=exc.body,
         )
 
     @staticmethod
@@ -1899,6 +2729,97 @@ _ARCHIVE_HINT = (
     "Ask web_scrape again with archive: true for the Internet Archive's latest copy "
     "(it may be days old), or find the same story elsewhere with web_search."
 )
+
+
+_RECOVER_OFF_HINT = (
+    "This page is walled and recover is false. Ask again without it, or with archive: true for "
+    "the Internet Archive's copy, or find the story elsewhere with web_search."
+)
+_RECOVER_SETTING_HINT = (
+    "This page is walled and the server does not read walled pages another way "
+    "(WEB_TOOLS_SCRAPE_RECOVER=off). Ask with archive: true for the Internet Archive's copy, "
+    "or find the story elsewhere with web_search."
+)
+# A feed's text must hold at least this to be given as the page.
+MIN_FEED_CHARS = 120
+# Results of these kinds are listed as alternates, never read as another outlet's report of the
+# story: a post, a forum thread, a repository, an aggregator's copy.
+_NOT_A_REPORT = frozenset({"social", "community", "code", "aggregator"})
+
+
+def _best_of_the_page(pages: list[_Recovery], *, prefer_archive: bool) -> Optional[_Recovery]:
+    """Of the page's own forms that read, the one to give: the freshest of those nearly as long as
+    the longest (an AMP or print form, then the archive's copy); the archive's first if asked."""
+    if not pages:
+        return None
+    if prefer_archive:
+        for page in pages:
+            if page.kind == "archive":
+                return page
+    longest = max(len(page.document.page.markdown) for page in pages)
+    for kind in ("amp", "print", "archive"):
+        for page in pages:
+            if page.kind == kind and len(page.document.page.markdown) >= 0.8 * longest:
+                return page
+    return pages[0]
+
+
+def _archive_reason(hint: str) -> str:
+    lowered = hint.lower()
+    if "no archived copy" in lowered:
+        return "no archived copy"
+    if "walls too" in lowered:
+        return "its newest copies are walls too"
+    if "429" in lowered:
+        return "the archive is rate limiting"
+    if "longer than the time budget" in lowered:
+        return "the archive took too long"
+    return "the archive did not answer"
+
+
+def _next_action(
+    recovery: Optional[_Recovery], requested: str, alternates: list[dict[str, Any]]
+) -> str:
+    """One sentence an agent can act on, after a walled page was (or was not) read another way."""
+    site = host_of(requested)
+    best = alternates[0] if alternates else None
+    if recovery is None:
+        if best is not None:
+            return (
+                f"{site} would not serve the page and no other way of reading it worked: scrape "
+                f"{best['url']} ({best['domain']}), the nearest report of the story, or another of "
+                "alternates."
+            )
+        return (
+            f"{site} would not serve the page and no other way of reading it worked, and no other "
+            "site was found with the story: search for it with different words (web_search), or "
+            "ask the owner to open the page."
+        )
+    if recovery.kind == "archive":
+        return (
+            f"This is the Internet Archive's copy taken {recovery.taken}, not the live page at "
+            f"{site}: check the date before relying on it"
+            + (f", or cross-check with {best['url']}." if best else ".")
+        )
+    if recovery.kind in {"amp", "print"}:
+        return (
+            f"This is {site}'s own {recovery.kind.upper() if recovery.kind == 'amp' else 'print'} "
+            "form of the page: its text is the page's, without the live page's extras."
+        )
+    if recovery.kind == "feed":
+        if recovery.complete:
+            return f"This is the article as {site}'s feed carries it, without the page's extras."
+        return (
+            f"{site}'s feed carries only a summary of the article: scrape "
+            + (f"{best['url']}" if best else "another source")
+            + " for the rest, or ask again later."
+        )
+    other = next((item for item in alternates if item["url"] != recovery.source_url), None)
+    return (
+        f"The text is {host_of(recovery.source_url)}'s report, not {site}'s: cross-check it with "
+        + (f"{other['url']} or " if other else "")
+        + f"scrape {requested} again later."
+    )
 
 
 # The Internet Archive: how many of the newest copies of a walled page are read, and how many
@@ -1978,6 +2899,148 @@ def _storable(document: LoadedDocument) -> bool:
             for warning in document.warnings
         )
     )
+
+
+# A compact search result: these and nothing else, apart from what a read asked for.
+_COMPACT_RESULT_KEYS = (
+    "title",
+    "url",
+    "domain",
+    "date",
+    "date_confidence",
+    "source_type",
+    "snippet",
+    "score",
+)
+_READ_KEYS = ("content", "content_truncated", "content_error")
+# What debug adds to each compact result: how the date was read and the parts of the score.
+_DEBUG_RESULT_KEYS = (
+    "source",
+    "year",
+    "recency",
+    "date_source",
+    "date_conflicts",
+    "date_modified",
+    "age_days",
+    "freshness",
+    "kind",
+    "angles",
+    "relevance",
+    "bm25",
+)
+_DEBUG_RUN_KEYS = (
+    "requested_provider",
+    "depth",
+    "facets",
+    "queries",
+    "timings",
+    "dates",
+    "cached_timings",
+    "cached_at",
+)
+
+
+def _present_search(answer: dict[str, Any], *, compact: bool, debug: bool) -> dict[str, Any]:
+    """A search answer as the caller asked for it.
+
+    Full (``compact`` false) is the whole answer. Compact is, per result, ``title, url, domain,
+    date, date_confidence, source_type, snippet`` and ``score`` (and ``content`` or
+    ``content_error`` where a read asked for them), and a small ``run`` block that keeps what a
+    reader needs to trust the list: the ``provider`` that answered, the ``warnings`` and the
+    ``fallback`` taken. A result whose date has conflicts is named in ``warnings`` by its position
+    (``date_conflict:2``). ``debug`` adds ``facets``, ``queries``, ``timings`` and the rest in a
+    ``debug`` block, and the date's source and the parts of the score under each result's own.
+    """
+    if not compact:
+        return answer
+    warnings = list(answer.get("warnings") or [])
+    results: list[dict[str, Any]] = []
+    for position, item in enumerate(answer.get("results") or [], start=1):
+        row = {key: item.get(key) for key in _COMPACT_RESULT_KEYS}
+        row.update({key: item[key] for key in _READ_KEYS if key in item})
+        if item.get("date_conflicts"):
+            warnings.append(f"date_conflict:{position}")
+        if debug:
+            row["debug"] = {key: item[key] for key in _DEBUG_RESULT_KEYS if key in item}
+        results.append(row)
+    run: dict[str, Any] = {
+        "provider": answer.get("provider"),
+        "warnings": warnings,
+        "fallback": _run_fallback(answer),
+    }
+    if answer.get("cache_hit"):
+        run["cache_hit"] = True
+    shaped: dict[str, Any] = {"query": answer.get("query"), "results": results, "run": run}
+    if debug:
+        shaped["debug"] = {key: answer[key] for key in _DEBUG_RUN_KEYS if key in answer}
+    return shaped
+
+
+def _run_fallback(answer: Mapping[str, Any]) -> Optional[dict[str, Any]]:
+    """The fallback the search took, from its first angle that took one: who gave way, who stood in, why."""
+    for report in answer.get("queries") or []:
+        record = report.get("fallback")
+        if record:
+            return {key: record.get(key) for key in ("from", "to", "reason", "tried")}
+    return None
+
+
+# How many content ids the service remembers the page of, to say what to scrape again when one expires.
+_CONTENT_URLS_KEPT = 256
+
+
+def _lean_view(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """A page's answer without its metadata blocks (``lean``): the text, and what is needed to
+    trust and to continue it.
+
+    Left out: description, canonical address, status, metadata, content hash, timings and cache
+    fields, and the links unless some were asked for. Kept: url and title, the date and how far it
+    is trusted, the Markdown, whether it
+    was cut and where to read on (``next_offset``, ``content_id``), and, when they are the case,
+    the conflicts of the date, a fetch that was not plain HTTP, the PDF page count, warnings, and
+    everything that says the text was recovered another way and whose it is.
+    """
+    lean: dict[str, Any] = {
+        key: payload[key]
+        for key in (
+            "url",
+            "title",
+            "date",
+            "date_confidence",
+            "markdown",
+            "truncated",
+            "total_chars",
+            "offset",
+            "next_offset",
+            "content_id",
+            "pages",
+        )
+        if key in payload
+    }
+    if payload.get("date_conflicts"):
+        lean["date_conflicts"] = payload["date_conflicts"]
+    if payload.get("links"):
+        # Asked for by name (links, max_links): a lean answer has none otherwise.
+        lean["links"] = payload["links"]
+        lean["links_truncated"] = payload.get("links_truncated", False)
+    if payload.get("fetched_with") not in (None, "http"):
+        lean["fetched_with"] = payload["fetched_with"]
+    recovered = payload.get("recovered_from")
+    if recovered:
+        lean["recovered_from"] = recovered
+        if recovered.get("kind") == "other_source":
+            lean["requested_url"] = payload.get("requested_url")
+        if payload.get("alternates"):
+            lean["alternates"] = payload["alternates"]
+        lean["next_action"] = payload.get("next_action")
+    if payload.get("warnings"):
+        lean["warnings"] = payload["warnings"]
+    return lean
+
+
+def _date_fields(dates: Optional[DateResolution]) -> dict[str, Any]:
+    """The date fields of a page's answer: no date is said, with a confidence of 0, never left out."""
+    return (dates or DateResolution()).fields()
 
 
 def _site_operators(sites: list[str], excluded: list[str]) -> str:

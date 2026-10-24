@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -60,6 +62,7 @@ def test_initialize_list_and_ping_without_protocol_noise() -> None:
         "web_scrape",
         "web_map",
         "web_extract",
+        "web_health",
         "web_crawl_start",
         "web_crawl_status",
         "web_crawl_results",
@@ -126,3 +129,47 @@ def test_invalid_tool_arguments_are_tool_errors_not_crashes() -> None:
     error = json.loads(invalid["content"][0]["text"])
     assert error["error"]["code"] == "invalid_arguments"
     assert responses[3]["error"]["code"] == -32601
+
+
+def test_web_health_answers_in_a_real_session_without_a_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The session inherits the environment: a key set on this machine would turn a provider on.
+    monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
+    monkeypatch.delenv("SERPER_API_KEY", raising=False)
+    responses, stderr = _run_session(
+        [
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18", "capabilities": {}},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "web_health", "arguments": {}},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": "web_scrape", "arguments": {"url": "http://127.0.0.1:1/"}},
+            },
+        ]
+    )
+
+    health = responses[2]["result"]
+    assert health["isError"] is False and len(health["content"]) == 1
+    payload = json.loads(health["content"][0]["text"])
+    names = {entry["name"]: entry for entry in payload["providers"]}
+    assert {"duckduckgo", "duckduckgo_lite", "yahoo", "google"} <= set(names)
+    assert names["duckduckgo"]["state"] == "ok" and names["duckduckgo"]["calls"] == 0
+    # The keyed providers are off without their key, and the answer names the variable only.
+    assert names["brave"] == {"name": "brave", "state": "no_key", "key_env": "BRAVE_SEARCH_API_KEY"}
+    # A refused address is one block of JSON error, with no page to put in a block of its own.
+    refused = responses[3]["result"]
+    assert refused["isError"] is True and len(refused["content"]) == 1
+    assert json.loads(refused["content"][0]["text"])["error"]["code"] == "unsafe_target"
+    assert "Traceback" not in stderr

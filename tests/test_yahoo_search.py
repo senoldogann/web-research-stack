@@ -358,9 +358,14 @@ class TestAdapterAndChain:
         assert response["provider"] == "yahoo" and google.calls == []
 
     @pytest.mark.asyncio
-    async def test_the_server_registers_it_and_closes_its_session(self) -> None:
+    async def test_the_server_registers_it_and_closes_its_session(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from web_scraper.web_tools.service import WebToolsService
 
+        # A key in the environment turns a provider on (tests/test_web_paid_search.py).
+        monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
+        monkeypatch.delenv("SERPER_API_KEY", raising=False)
         service = WebToolsService.from_env()
         try:
             assert set(service.search_adapters) == {

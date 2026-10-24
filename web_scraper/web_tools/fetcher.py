@@ -21,6 +21,9 @@ from web_scraper.web_tools.pdf import PDF_CONTENT_TYPE, looks_like_pdf
 from web_scraper.web_tools.urls import UnsafeUrlError, normalize_request_url
 
 _RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504}
+# How much of a refusing page a FetchError keeps: its head, where the title and the page's other
+# forms (AMP, feeds) are named.
+_REFUSAL_BODY_KEPT = 30_000
 _TEXTUAL_TYPES = {
     "application/atom+xml",
     "application/json",
@@ -55,6 +58,7 @@ class FetchError(Exception):
         status_code: Optional[int] = None,
         detail: Optional[str] = None,
         retryable: bool = False,
+        body: str = "",
     ) -> None:
         super().__init__(message)
         self.code = code
@@ -62,6 +66,9 @@ class FetchError(Exception):
         self.status_code = status_code
         self.detail = detail
         self.retryable = retryable
+        # The first bytes of the page that refused (a wall's own head), kept for the code that
+        # tries to read the page another way; it is not part of ``to_dict``.
+        self.body = body
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise the error without leaking request headers or bodies."""
@@ -223,6 +230,30 @@ class SafeFetcher:
 
         raise FetchError("network_error", "Fetch exhausted retries", url=url)
 
+    async def fetch_head(
+        self, url: str, *, max_bytes: int = 65_536, head_cap: Optional[int] = None
+    ) -> FetchResult:
+        """Fetch only the first *max_bytes* of a page, once, and close the connection.
+
+        Enough for a page's ``<head>``, where its meta tags and structured data are, and for the
+        byline near its headline; the rest of a long page is never downloaded. With *head_cap*
+        (larger than *max_bytes*) a head that has not ended by *max_bytes* is read on to its end
+        (``</head>``) or to *head_cap*, whichever comes first: some sites' heads are 170 KB of
+        inline scripts with the structured data in the middle. Every hop is validated as in
+        :meth:`fetch`, and a refusal or an error status raises as it does there; what differs is
+        that a long body is not an error (``too_large``): it is cut, and a page cut is content,
+        never judged a challenge. There is no retry: the caller has a budget.
+        """
+        started = time.monotonic()
+        return await self._fetch_once(
+            original_url=url,
+            start_url=self._validate(url),
+            attempts=1,
+            started=started,
+            head_bytes=max(int(max_bytes), 1),
+            head_cap=max(int(head_cap), int(max_bytes)) if head_cap else None,
+        )
+
     async def _fetch_once(
         self,
         *,
@@ -230,6 +261,8 @@ class SafeFetcher:
         start_url: str,
         attempts: int,
         started: float,
+        head_bytes: Optional[int] = None,
+        head_cap: Optional[int] = None,
     ) -> FetchResult:
         current = start_url
         redirects = 0
@@ -269,7 +302,11 @@ class SafeFetcher:
                             current = self._validate(urljoin(current, location))
                             continue
 
-                        body = await self._read_body(response, content_type)
+                        cut = False
+                        if head_bytes is None:
+                            body = await self._read_body(response, content_type)
+                        else:
+                            body, cut = await self._read_head(response, head_bytes, head_cap)
                         network_ms = (time.monotonic() - request_started) * 1000
 
                         if status >= 400:
@@ -288,6 +325,7 @@ class SafeFetcher:
                                     url=current,
                                     status_code=status,
                                     detail=interstitial,
+                                    body=html[:_REFUSAL_BODY_KEPT],
                                 )
                             raise FetchError(
                                 "http_error",
@@ -295,6 +333,9 @@ class SafeFetcher:
                                 url=current,
                                 status_code=status,
                                 retryable=status in _RETRYABLE_STATUS,
+                                body=html[:_REFUSAL_BODY_KEPT]
+                                if self._is_textual(content_type)
+                                else "",
                             )
 
                         safe_headers = {
@@ -326,8 +367,12 @@ class SafeFetcher:
                             )
 
                         html = self._decode(body, response)
-                        interstitial = detect_interstitial(
-                            html, str(response.url), status, content_type=content_type
+                        interstitial = (
+                            None
+                            if cut
+                            else detect_interstitial(
+                                html, str(response.url), status, content_type=content_type
+                            )
                         )
                         if interstitial:
                             raise FetchError(
@@ -336,6 +381,7 @@ class SafeFetcher:
                                 url=current,
                                 status_code=status,
                                 detail=interstitial,
+                                body=html[:_REFUSAL_BODY_KEPT],
                             )
 
                         return FetchResult(
@@ -393,6 +439,35 @@ class SafeFetcher:
                 )
             chunks.append(chunk)
         return b"".join(chunks)
+
+    @staticmethod
+    async def _read_head(
+        response: httpx.Response, head_bytes: int, head_cap: Optional[int] = None
+    ) -> tuple[bytes, bool]:
+        """The first *head_bytes* of a body, and whether the body went on past them.
+
+        With *head_cap*, a body whose ``<head>`` has not ended by *head_bytes* is read on until
+        it has, or to *head_cap*.
+        """
+        chunks: list[bytes] = []
+        total = 0
+        ceiling = head_bytes
+        async for chunk in response.aiter_bytes():
+            chunks.append(chunk)
+            total += len(chunk)
+            if total <= head_bytes:
+                continue
+            if head_cap is None:
+                break
+            ended = b"".join(chunks).lower().find(b"</head")
+            if ended >= 0:
+                ceiling = max(head_bytes, ended + len(b"</head>"))
+                break
+            ceiling = head_cap
+            if total >= head_cap:
+                break
+        body = b"".join(chunks)
+        return body[:ceiling], len(body) > ceiling
 
     @staticmethod
     def _is_textual(content_type: str) -> bool:

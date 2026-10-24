@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import IO, Any, Callable, Coroutine, Mapping, Optional
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from web_scraper import __version__
 from web_scraper.api_models import (
@@ -31,8 +31,17 @@ _PROTOCOL_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
 _SERVER_NAME = "web-research"
 _TOOL_CONCURRENCY = 8
 # The search parameters a request may add; each is passed on only when it is set.
-_SEARCH_PARAMETERS = {"region", "language", "sites", "exclude_sites", "date_from", "date_to"}
-_SEARCH_READ_PARAMETERS = {"read", "read_chars", "archive"}
+_SEARCH_PARAMETERS = {
+    "region",
+    "language",
+    "sites",
+    "exclude_sites",
+    "date_from",
+    "date_to",
+    "resolve_dates",
+    "primary_first",
+}
+_SEARCH_READ_PARAMETERS = {"read", "read_chars", "archive", "strict_dates", "debug"}
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _GIT_TIMEOUT_SECONDS = 1
 
@@ -97,6 +106,20 @@ class _CrawlResultsArguments(BaseModel):
     limit: int = Field(default=20, ge=1, le=1000)
 
 
+class _NoArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+async def _health(service: WebToolsService, arguments: dict[str, Any]) -> dict[str, Any]:
+    _NoArguments.model_validate(arguments)
+    return service.health()
+
+
+def _compact(on: bool) -> dict[str, Any]:
+    """``compact`` for the service, passed on only when it is on (the service answers in full)."""
+    return {"compact": True} if on else {}
+
+
 async def _search(service: WebToolsService, arguments: dict[str, Any]) -> dict[str, Any]:
     request = WebSearchRequest.model_validate(arguments)
     return await service.search(
@@ -104,6 +127,8 @@ async def _search(service: WebToolsService, arguments: dict[str, Any]) -> dict[s
         limit=request.limit,
         provider=request.provider,
         depth=request.depth,
+        # A model pays for every character it reads: the answer is compact unless it says not.
+        **_compact(request.compact is not False),
         **request.model_dump(include=_SEARCH_PARAMETERS, exclude_none=True),
         **request.model_dump(include=_SEARCH_READ_PARAMETERS, exclude_defaults=True),
     )
@@ -111,7 +136,14 @@ async def _search(service: WebToolsService, arguments: dict[str, Any]) -> dict[s
 
 async def _scrape(service: WebToolsService, arguments: dict[str, Any]) -> dict[str, Any]:
     request = WebScrapeRequest.model_validate(arguments)
-    options = request.model_dump(include={"links", "max_links"}, exclude_defaults=True)
+    if request.content_id:
+        return await service.scrape_content(
+            request.content_id,
+            offset=request.offset,
+            max_chars=request.max_chars,
+            lean=request.lean is not False,
+        )
+    options = request.service_options()
     if request.urls:
         return await service.scrape_many(
             request.urls,
@@ -191,26 +223,26 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
             {
                 "name": "web_search",
                 "description": (
-                    "Discover result URLs with a replaceable search provider. depth=discover "
-                    "(default) runs base, current-year, and historical queries; depth=deep adds "
-                    "an official or primary-source angle; depth=fast sends one query. Ranking "
-                    "uses field-weighted BM25, weighted cross-angle consensus, source authority, "
-                    "inferred recency, and near-duplicate/domain diversity. Explicit freshness "
-                    "queries get provider date filters; responses are cached per query. region, "
-                    "language, sites, exclude_sites, date_from and date_to narrow a search. read "
-                    "N (0 to 5) also reads the top N results: content or content_error on each; "
-                    "it costs seconds. A refused or timed-out call goes on to DuckDuckGo lite, "
-                    "Yahoo, then Google; provider names who answered. With nothing relevant, results is "
-                    "empty and warnings holds no_relevant_results; low_relevance_results says "
-                    "every result holds under half of the query's words. Results carry "
-                    "source_type (official, academic, news, press_release, social, reference, "
-                    "code, community, other), year, recency (by year: current is this year or "
-                    "last), date (day or month, from the address, snippet or title, with "
-                    "date_source and age_days), freshness (this_week ... undated, by that date "
-                    "first), kind (article, listing, front, page; a news query ranks articles "
-                    "before listings and front pages), angles, relevance, bm25, score, and "
-                    "cache_hit, with coverage facets. Search discovers URLs only; use "
-                    "web_scrape to read a result."
+                    "Discover result URLs. depth: fast (one query), discover (default: base, "
+                    "current-year and historical angles), deep (adds an official or "
+                    "primary-source angle, which gets the longer time budget). Ranked by BM25, "
+                    "cross-angle consensus, source authority and freshness, cached per query; "
+                    "official sites and mainstream news lead news queries, aggregators rank "
+                    "low. The answer is compact: per result title, url, domain, date, "
+                    "date_confidence (0 to 1; a result whose dates conflict is named in "
+                    "run.warnings), source_type (official, academic, news, press_release, "
+                    "social, reference, code, community, aggregator, other), snippet, score, and "
+                    "run {provider, warnings, fallback}; debug adds facets, queries, timings and "
+                    "score parts, compact: false returns everything. A refused or timed-out "
+                    "provider falls to the next: Brave or Serper first when their key is set, "
+                    "then DuckDuckGo, its lite page, Yahoo, Google (web_health says who is "
+                    "cooling). No relevant result: results is empty and warnings holds "
+                    "no_relevant_results. region, language, sites, exclude_sites, date_from and "
+                    "date_to narrow it. resolve_dates reads the heads of the top pages for their "
+                    "dates (default on for news and date ranges); strict_dates drops results "
+                    "with no date or a low date_confidence, and warnings says how many. read N "
+                    "(0 to 5) also reads the top N pages: content or content_error; it costs "
+                    "seconds. Search discovers URLs only; web_scrape reads one."
                 ),
                 "inputSchema": WebSearchRequest.model_json_schema(),
                 "annotations": _annotations(
@@ -224,19 +256,22 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
                 "name": "web_scrape",
                 "description": (
                     "Fetch one public URL HTTP-first and return clean Markdown, title, "
-                    "description, canonical URL, status, links from the page content (50 by "
-                    "default; max_links 0 to 200, links: false for none; menus, headers, "
-                    "footers, and sidebars left out; links_truncated says more exist, web_map "
-                    "lists them all), metadata, content hash, and stage timings. max_chars "
-                    "bounds the Markdown only. urls (2 to 10) instead of url reads pages in "
-                    "one call: pages, in order, each an answer or {url, error}; max_total_chars "
-                    "(60,000) bounds the whole answer. A shared headless browser is used only "
-                    "for JavaScript shells or access interstitials; CAPTCHA and login walls "
-                    "fail fast, their error's hint saying what to try next: archive: true reads "
-                    "the Internet Archive's newest copy that is not itself a wall "
-                    "(fetched_with archive, archived_at, archive_skipped). A PDF comes back as "
-                    "Markdown text with content_type application/pdf and its page count in "
-                    "pages."
+                    "canonical URL, status, content links (50; max_links 0 to 200, links: "
+                    "false for none), metadata, date with "
+                    "date_source, date_confidence and date_conflicts (every date signal of the "
+                    "page weighed), content hash and timings; the Markdown follows the JSON as a "
+                    "block of its own. max_chars cuts it: truncated, total_chars, next_offset "
+                    "and content_id then let content_id with offset read the rest from the "
+                    "cache (5 minutes, no request); lean returns only the text, date and cut "
+                    "info. urls (2 to 10) reads pages in one call, max_total_chars (60,000) "
+                    "bounding the answer. A headless browser is used only for JavaScript shells "
+                    "and access interstitials. A walled page (captcha, 401/403/429, bot wall) is "
+                    "read another way: the Internet Archive's copy, the site's AMP or print "
+                    "form, its feed, or another outlet's report found by title. recovered_from "
+                    "says which, the text starts with a line saying whose it is, alternates and "
+                    "next_action follow; if nothing reads, the error carries them. archive: "
+                    "true alone asks only for the archive; recover: false for none. A PDF is "
+                    "Markdown with its page count in pages."
                 ),
                 "inputSchema": WebScrapeRequest.model_json_schema(),
                 "annotations": _annotations(
@@ -283,6 +318,22 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
                 ),
             },
             _extract,
+        ),
+        (
+            {
+                "name": "web_health",
+                "description": (
+                    "Each search provider's state in this process: ok, degraded, cooling "
+                    "(cooldown_remaining_s) or no_key (key_env names the variable), its calls, "
+                    "block_rate (captchas and refusals), mean_latency_ms and last_error; order "
+                    "is the order the next search asks them in. Cheap: no request is made."
+                ),
+                "inputSchema": _NoArguments.model_json_schema(),
+                "annotations": _annotations(
+                    read_only=True, destructive=False, idempotent=True, open_world=False
+                ),
+            },
+            _health,
         ),
         (
             {
@@ -336,13 +387,29 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
     ]
 
 
+def _without_null(node: dict[str, Any]) -> dict[str, Any]:
+    """``{"anyOf": [X, {"type": "null"}], "default": null}`` as X: an optional argument is one a
+    caller leaves out, and a model told that null is allowed would send it."""
+    options = node.get("anyOf")
+    if isinstance(options, list) and len(options) == 2:
+        kept = [option for option in options if option != {"type": "null"}]
+        if len(kept) == 1:
+            rest = {key: value for key, value in node.items() if key != "anyOf"}
+            if rest.get("default") is None:
+                rest.pop("default", None)
+            return {**kept[0], **rest}
+    return node
+
+
 def _lean(node: Any, names: bool = False) -> Any:
-    """A JSON schema without its ``title`` labels, which only repeat a property's name.
+    """A JSON schema without its ``title`` labels, which only repeat a property's name, and
+    without the null that an optional argument also allows.
 
     Dot sends every tool's schema with each model request, so what says nothing is left out.
     ``names`` marks a mapping of property names, whose keys are kept whatever they are.
     """
     if isinstance(node, dict):
+        node = _without_null(node)
         return {
             key: _lean(value, key in {"properties", "$defs"})
             for key, value in node.items()
@@ -369,6 +436,55 @@ def _text_result(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _scrape_result(payload: dict[str, Any]) -> dict[str, Any]:
+    """A page's answer with its Markdown in a text block of its own, after the JSON of the rest.
+
+    A client that keeps a long answer in a file (Dot does, past a size) wrote the whole answer as
+    one line, the page's newlines escaped inside the JSON string; with the page in a block of its
+    own the file is the JSON on its first line and then the page as Markdown with its own line
+    breaks. The JSON says ``(below)`` where the Markdown was, and a batch marks each page's block
+    with a line that names it.
+    """
+    pages = payload.get("pages")
+    if isinstance(pages, list):
+        total = sum(1 for page in pages if _has_markdown(page))
+        heads: list[Any] = []
+        texts: list[str] = []
+        for page in pages:
+            if not _has_markdown(page):
+                heads.append(page)
+                continue
+            number = len(texts) + 1
+            heads.append({**page, "markdown": f"(page {number} of {total}, below)"})
+            texts.append(
+                f"<!-- page {number} of {total}: {page.get('url')} -->\n{page['markdown']}"
+            )
+        return _text_blocks({**payload, "pages": heads}, texts)
+    if _has_markdown(payload):
+        return _text_blocks({**payload, "markdown": "(below)"}, [payload["markdown"]])
+    return _text_result(payload)
+
+
+def _has_markdown(page: Any) -> bool:
+    return (
+        isinstance(page, dict) and isinstance(page.get("markdown"), str) and bool(page["markdown"])
+    )
+
+
+def _text_blocks(head: dict[str, Any], texts: list[str]) -> dict[str, Any]:
+    first = json.dumps(head, ensure_ascii=False, separators=(",", ":"))
+    return {
+        "content": [{"type": "text", "text": text} for text in [first, *texts]],
+        "isError": False,
+    }
+
+
+# The tools whose answer is more than one block of text: how each shapes its answer.
+_RESULT_SHAPES: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+    "web_scrape": _scrape_result,
+}
+
+
 def _error_result(code: str, message: str, **extra: Any) -> dict[str, Any]:
     error = {"code": code, "message": message}
     error.update(extra)
@@ -393,7 +509,12 @@ def _dispatch_error(exc: Exception) -> dict[str, Any]:
     if isinstance(exc, _ArgumentError):
         return _error_result("invalid_arguments", str(exc))
     if isinstance(exc, WebToolError):
-        extra = {"hint": exc.hint} if exc.hint else {}
+        said = exc.to_dict()
+        extra = {
+            key: value
+            for key, value in said.items()
+            if key not in {"code", "message", "url", "status_code", "detail"}
+        }
         return _error_result(
             exc.code,
             str(exc),
@@ -470,7 +591,8 @@ class McpServer:
             "instructions": (
                 "Local web research tools. Search discovers URLs; scrape, map, and extract "
                 "read pages HTTP-first with a shared headless browser fallback; crawl runs "
-                "as a background job with explicit status, results, and cancellation."
+                "as a background job with explicit status, results, and cancellation; "
+                "web_health says which search providers are cooling."
             ),
         }
 
@@ -492,7 +614,7 @@ class McpServer:
             raise
         except Exception as exc:  # noqa: BLE001 - tool failures become tool results
             return _dispatch_error(exc)
-        return _text_result(payload)
+        return _RESULT_SHAPES.get(name, _text_result)(payload)
 
     def _cancel(self, request_id: Any) -> None:
         if request_id is None:

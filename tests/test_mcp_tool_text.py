@@ -7,7 +7,10 @@ import json
 from web_scraper.mcp_server import _lean, _tools
 
 # The eight tools were 9,236 characters (compact JSON) at 727ec4f; the round's fourteen items
-# added parameters and fields to four of them. A new parameter shortens something else.
+# added parameters and fields to four of them; round A (1.3.0) adds web_health and the parameters
+# of dates, recovery and compact output, and takes back what the schemas say for nothing (the null
+# every optional argument also allows, the titles, the repeated descriptions). A new parameter
+# shortens something else.
 BUDGET = 12_000
 
 
@@ -19,7 +22,7 @@ def test_the_tool_text_stays_within_its_budget() -> None:
     }
 
     assert sum(sizes.values()) <= BUDGET, sizes
-    assert sizes["web_search"] <= 3_600 and sizes["web_scrape"] <= 2_500
+    assert sizes["web_search"] <= 3_600 and sizes["web_scrape"] <= 2_800
 
 
 def test_a_schema_carries_no_title_labels() -> None:

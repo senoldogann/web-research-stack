@@ -173,8 +173,8 @@ class TestValidation:
 
         # A client that does not follow $ref still reads both names from the description.
         assert {"max_items", "offset"} <= set(field)
-        options = {option.get("type"): option for option in field["max_items"]["anyOf"]}
-        assert options["integer"]["maximum"] == 1000
+        # What a model reads has no null union: an optional argument is one it leaves out.
+        assert field["max_items"]["type"] == "integer" and field["max_items"]["maximum"] == 1000
         assert "max_items" in tool["description"] and "offset" in tool["description"]
         assert "next_offset" in tool["description"]
 

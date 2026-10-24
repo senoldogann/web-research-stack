@@ -215,6 +215,25 @@ def find_field(
     return None
 
 
+def _iso_moment(text: str) -> str:
+    """A moment as ``datetime.fromisoformat`` of every supported Python reads it.
+
+    Before Python 3.11 it reads neither the zone "Z", an offset without its colon (``+0300``,
+    which cloud.google.com writes) or only hours (``+03``), nor a fraction of other than three or
+    six digits (``.12Z``); a space for the ``T`` it reads on every version.
+    """
+    if not re.search(r"\d{2}:\d{2}", text):
+        return text
+    moment = re.sub(r"[Zz]$", "+00:00", text)
+    moment = re.sub(r"([+-]\d{2})(\d{2})$", r"\1:\2", moment)
+    moment = re.sub(r"(\d{2}:\d{2}(?::\d{2})?[.]?\d*)([+-]\d{2})$", r"\1\2:00", moment)
+    return re.sub(
+        r"([.,])(\d{1,9})(?=[+-]|$)",
+        lambda match: "." + match.group(2)[:6].ljust(6, "0"),
+        moment,
+    )
+
+
 def normalize_date(text: str) -> Optional[str]:
     """A date or a moment as written on a page, in ISO 8601; None when it cannot be read."""
     cleaned = _date_text(text)
@@ -223,8 +242,7 @@ def normalize_date(text: str) -> Optional[str]:
     try:
         if re.fullmatch(r"\d{4}-\d{2}-\d{2}", cleaned):
             return date.fromisoformat(cleaned).isoformat()
-        # Before Python 3.11 fromisoformat does not read the zone "Z", which pages write most.
-        return datetime.fromisoformat(re.sub(r"[Zz]$", "+00:00", cleaned)).isoformat()
+        return datetime.fromisoformat(_iso_moment(cleaned)).isoformat()
     except ValueError:
         pass
     if re.match(r"^(?:[A-Za-z]{3},\s*)?\d{1,2}\s+[A-Za-z]{3}\s+\d{4}\s+\d", cleaned):
@@ -331,7 +349,8 @@ def _lookup(item: dict[str, Any], path: str) -> Any:
     return value.get(rest) if isinstance(value, dict) else None
 
 
-def _is_article(item: dict[str, Any]) -> bool:
+def is_article_item(item: dict[str, Any]) -> bool:
+    """Whether a JSON-LD item is an article, a posting, a report or a page: what a page is about."""
     kinds = item.get("@type")
     names = kinds if isinstance(kinds, list) else [kinds]
     return any(
@@ -343,8 +362,8 @@ def _is_article(item: dict[str, Any]) -> bool:
 def _ordered(json_ld: list[dict[str, Any]], field: str) -> list[dict[str, Any]]:
     if field not in _ARTICLE_FIELDS:
         return json_ld
-    return [item for item in json_ld if _is_article(item)] + [
-        item for item in json_ld if not _is_article(item)
+    return [item for item in json_ld if is_article_item(item)] + [
+        item for item in json_ld if not is_article_item(item)
     ]
 
 

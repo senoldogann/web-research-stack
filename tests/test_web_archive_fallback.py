@@ -94,10 +94,12 @@ def _iso(stamp: str) -> str:
 
 @pytest.mark.asyncio
 async def test_a_walled_page_says_what_to_try_next() -> None:
+    # recover: false is the call that does nothing about the wall; by default the server tries
+    # every way round it first (tests/test_web_scrape_recover.py).
     service = _service(FakeFetcher({URL: _captcha()}))
 
     with pytest.raises(WebToolError) as exc:
-        await service.scrape(URL)
+        await service.scrape(URL, recover=False)
 
     assert exc.value.code == "blocked" and exc.value.detail == "captcha"
     assert "archive: true" in exc.value.hint

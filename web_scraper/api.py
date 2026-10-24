@@ -1273,12 +1273,15 @@ def create_app(settings: Optional[Config] = None) -> FastAPI:
         _: str = Depends(require_web_access),
     ) -> WebSearchResponse:
         web_tools: WebToolsService = request.app.state.web_tools
+        shape: dict[str, Any] = {"compact": True} if payload.compact else {}
         async with app.state.concurrency_gate.acquire():
             result = await web_tools.search(
                 payload.query,
                 limit=payload.limit,
                 provider=payload.provider,
                 depth=payload.depth,
+                # REST answers in full unless it asks for the compact shape (MCP is the other way).
+                **shape,
                 **payload.model_dump(
                     include={
                         "region",
@@ -1287,13 +1290,19 @@ def create_app(settings: Optional[Config] = None) -> FastAPI:
                         "exclude_sites",
                         "date_from",
                         "date_to",
+                        "resolve_dates",
+                        "primary_first",
                     },
                     exclude_none=True,
                 ),
                 **payload.model_dump(
-                    include={"read", "read_chars", "archive"}, exclude_defaults=True
+                    include={"read", "read_chars", "archive", "strict_dates", "debug"},
+                    exclude_defaults=True,
                 ),
             )
+        if payload.compact:
+            # The compact shape is not the response model's: it is returned as it is.
+            return JSONResponse(content=result)  # type: ignore[return-value]
         return WebSearchResponse(**result)
 
     @app.post(
@@ -1307,8 +1316,16 @@ def create_app(settings: Optional[Config] = None) -> FastAPI:
         _: str = Depends(require_web_access),
     ) -> Union[WebScrapeResponse, WebScrapeBatchResponse]:
         web_tools: WebToolsService = request.app.state.web_tools
-        options = payload.model_dump(include={"links", "max_links"}, exclude_defaults=True)
+        options = payload.service_options()
         async with app.state.concurrency_gate.acquire():
+            if payload.content_id:
+                result = await web_tools.scrape_content(
+                    payload.content_id,
+                    offset=payload.offset,
+                    max_chars=payload.max_chars,
+                    lean=payload.lean is not False,
+                )
+                return WebScrapeResponse(**result)
             if payload.urls:
                 batch = await web_tools.scrape_many(
                     payload.urls,
@@ -1425,6 +1442,14 @@ def create_app(settings: Optional[Config] = None) -> FastAPI:
         web_tools: WebToolsService = request.app.state.web_tools
         jobs = await web_tools.list_crawls()
         return {"jobs": jobs, "count": len(jobs)}
+
+    @app.get("/api/v1/web/health", tags=["Web Tools"])
+    async def web_tool_health(
+        request: Request,
+        _: str = Depends(require_web_access),
+    ) -> dict[str, Any]:
+        web_tools: WebToolsService = request.app.state.web_tools
+        return web_tools.health()
 
     @app.get("/api/v1/web/stats", tags=["Web Tools"])
     async def web_tool_stats(

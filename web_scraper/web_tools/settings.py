@@ -130,11 +130,36 @@ class WebToolsSettings:
         default_factory=lambda: list(DEFAULT_FALLBACK_PROVIDERS)
     )
     search_fallback_timeout_seconds: float = 60.0
-    search_provider_cooldown_seconds: int = 5
-    search_provider_max_cooldown_seconds: int = 300
+    # A provider that meets a wall (a captcha, a bot check), or fails search_provider_failure_limit
+    # times in a row, is skipped for search_provider_cooldown_seconds (10 minutes); a provider that
+    # comes back and is refused again cools down twice as long, up to the maximum (an hour). The
+    # window is how far back the recent calls that order the providers reach.
+    search_provider_cooldown_seconds: int = 600
+    search_provider_max_cooldown_seconds: int = 3_600
+    search_provider_failure_limit: int = 3
+    search_provider_window_seconds: int = 1_800
+    # A deep search's primary-source angle is the one worth waiting for: it may run this long when
+    # the side angles are cut at search_angle_budget_ms (0 gives it the same budget).
+    search_primary_budget_ms: int = 15_000
     default_search_limit: int = 5
     max_search_limit: int = 20
     max_query_length: int = 500
+
+    # Dating results by reading the head of their pages (web_search resolve_dates). "auto" does it
+    # for a search that asks for news or a date range, "on" for every search that does not say
+    # resolve_dates: false, "off" never, whatever a call says: the server then reads no page of a
+    # search result on its own. It reads the first search_resolve_dates_bytes of at most the top
+    # search_resolve_dates_top results (strict_dates may widen that to search_resolve_dates_max),
+    # four at a time, and stops when search_resolve_dates_budget_ms is spent.
+    search_resolve_dates: str = "auto"
+    search_resolve_dates_top: int = 6
+    search_resolve_dates_max: int = 12
+    search_resolve_dates_budget_ms: int = 4_000
+    search_resolve_dates_bytes: int = 65_536
+    # A head that has not ended by then is read on to its end, up to this (cloud.google.com's are
+    # 170 KB, their dates at 140 KB).
+    search_resolve_dates_head_cap: int = 262_144
+    search_resolve_dates_concurrency: int = 4
 
     fetch_timeout_seconds: float = 20.0
     fetch_retries: int = 1
@@ -185,6 +210,21 @@ class WebToolsSettings:
     # How long the walk through the Internet Archive's copies of a walled page may take.
     archive_budget_seconds: float = 20.0
 
+    # Hosts added to the tables of first-party sites (official) and of aggregators (ranked below
+    # the report they copy); each a host or a host and a path (apple.com/newsroom), a subdomain
+    # included. The built-in tables are in sources.py.
+    official_hosts: list[str] = field(default_factory=list)
+    aggregator_hosts: list[str] = field(default_factory=list)
+
+    # Reading a walled page another way (web_scrape recover): "on" does it for a page that answers
+    # a captcha, a 401, 403 or 429 or a bot wall, unless the call says recover: false; "off" never
+    # does, whatever a call says, so the server reads no page of its own choosing for a scrape.
+    # The whole attempt (archive, AMP and print forms, feeds, other outlets' copies) stops after
+    # recover_budget_seconds; recover_max_alternates is the most candidate addresses it lists.
+    scrape_recover: str = "on"
+    recover_budget_seconds: float = 30.0
+    recover_max_alternates: int = 6
+
     # Where crawl jobs are kept so a restart does not lose them; empty keeps nothing on disk
     # (what a settings made by hand does: only from_env, the server's own, names a folder).
     data_dir: str = ""
@@ -220,9 +260,28 @@ class WebToolsSettings:
             self.search_provider_max_cooldown_seconds,
             self.search_provider_cooldown_seconds,
         )
+        self.search_provider_failure_limit = max(self.search_provider_failure_limit, 1)
+        self.search_provider_window_seconds = max(self.search_provider_window_seconds, 60)
+        self.search_primary_budget_ms = min(max(self.search_primary_budget_ms, 0), 300_000)
         self.default_search_limit = max(self.default_search_limit, 1)
         self.max_search_limit = max(self.max_search_limit, self.default_search_limit)
         self.max_query_length = max(self.max_query_length, 1)
+        mode = (self.search_resolve_dates or "auto").strip().lower()
+        self.search_resolve_dates = mode if mode in {"auto", "on", "off"} else "auto"
+        self.search_resolve_dates_top = min(max(self.search_resolve_dates_top, 1), 20)
+        self.search_resolve_dates_max = min(
+            max(self.search_resolve_dates_max, self.search_resolve_dates_top), 20
+        )
+        self.search_resolve_dates_budget_ms = min(
+            max(self.search_resolve_dates_budget_ms, 0), 60_000
+        )
+        self.search_resolve_dates_bytes = min(max(self.search_resolve_dates_bytes, 4_096), 262_144)
+        self.search_resolve_dates_head_cap = min(
+            max(self.search_resolve_dates_head_cap, self.search_resolve_dates_bytes), 1_048_576
+        )
+        self.search_resolve_dates_concurrency = min(
+            max(self.search_resolve_dates_concurrency, 1), 8
+        )
         self.fetch_timeout_seconds = max(self.fetch_timeout_seconds, 1.0)
         self.fetch_retries = max(self.fetch_retries, 0)
         self.max_response_bytes = max(self.max_response_bytes, 1024)
@@ -277,6 +336,21 @@ class WebToolsSettings:
         self.max_crawl_jobs = max(self.max_crawl_jobs, 1)
         self.max_crawl_errors = max(self.max_crawl_errors, 1)
         self.archive_budget_seconds = max(self.archive_budget_seconds, 0.1)
+        self.scrape_recover = (
+            "off"
+            if (self.scrape_recover or "on").strip().lower()
+            in {
+                "off",
+                "false",
+                "0",
+                "no",
+            }
+            else "on"
+        )
+        self.recover_budget_seconds = min(max(self.recover_budget_seconds, 1.0), 300.0)
+        self.recover_max_alternates = min(max(self.recover_max_alternates, 1), 20)
+        self.official_hosts = [host for host in self.official_hosts if host and host.strip()]
+        self.aggregator_hosts = [host for host in self.aggregator_hosts if host and host.strip()]
         self.max_extract_fields = max(self.max_extract_fields, 1)
         self.extract_max_items = min(max(self.extract_max_items, 1), EXTRACT_MAX_ITEMS_CEILING)
         self.extract_max_chars = min(
@@ -310,15 +384,25 @@ class WebToolsSettings:
             ),
             search_provider_cooldown_seconds=_int(
                 "WEB_TOOLS_SEARCH_PROVIDER_COOLDOWN_SECONDS",
-                5,
+                600,
             ),
             search_provider_max_cooldown_seconds=_int(
                 "WEB_TOOLS_SEARCH_PROVIDER_MAX_COOLDOWN_SECONDS",
-                300,
+                3_600,
             ),
+            search_provider_failure_limit=_int("WEB_TOOLS_SEARCH_PROVIDER_FAILURE_LIMIT", 3),
+            search_provider_window_seconds=_int("WEB_TOOLS_SEARCH_PROVIDER_WINDOW_SECONDS", 1_800),
+            search_primary_budget_ms=_int("WEB_TOOLS_SEARCH_PRIMARY_BUDGET_MS", 15_000),
             default_search_limit=_int("WEB_TOOLS_DEFAULT_SEARCH_LIMIT", 5),
             max_search_limit=_int("WEB_TOOLS_MAX_SEARCH_LIMIT", 20),
             max_query_length=_int("WEB_TOOLS_MAX_QUERY_LENGTH", 500),
+            search_resolve_dates=os.getenv("WEB_TOOLS_SEARCH_RESOLVE_DATES", "auto"),
+            search_resolve_dates_top=_int("WEB_TOOLS_SEARCH_RESOLVE_DATES_TOP", 6),
+            search_resolve_dates_max=_int("WEB_TOOLS_SEARCH_RESOLVE_DATES_MAX", 12),
+            search_resolve_dates_budget_ms=_int("WEB_TOOLS_SEARCH_RESOLVE_DATES_BUDGET_MS", 4_000),
+            search_resolve_dates_bytes=_int("WEB_TOOLS_SEARCH_RESOLVE_DATES_BYTES", 65_536),
+            search_resolve_dates_head_cap=_int("WEB_TOOLS_SEARCH_RESOLVE_DATES_HEAD_CAP", 262_144),
+            search_resolve_dates_concurrency=_int("WEB_TOOLS_SEARCH_RESOLVE_DATES_CONCURRENCY", 4),
             fetch_timeout_seconds=_float("WEB_TOOLS_FETCH_TIMEOUT_SECONDS", 20.0),
             fetch_retries=_int("WEB_TOOLS_FETCH_RETRIES", 1),
             max_response_bytes=_int("WEB_TOOLS_MAX_RESPONSE_BYTES", 5_000_000),
@@ -359,6 +443,11 @@ class WebToolsSettings:
             max_crawl_jobs=_int("WEB_TOOLS_MAX_CRAWL_JOBS", 32),
             max_crawl_errors=_int("WEB_TOOLS_MAX_CRAWL_ERRORS", 100),
             archive_budget_seconds=_float("WEB_TOOLS_ARCHIVE_BUDGET_SECONDS", 20.0),
+            scrape_recover=os.getenv("WEB_TOOLS_SCRAPE_RECOVER", "on"),
+            recover_budget_seconds=_float("WEB_TOOLS_RECOVER_BUDGET_SECONDS", 30.0),
+            recover_max_alternates=_int("WEB_TOOLS_RECOVER_MAX_ALTERNATES", 6),
+            official_hosts=_csv("WEB_TOOLS_OFFICIAL_HOSTS"),
+            aggregator_hosts=_csv("WEB_TOOLS_AGGREGATOR_HOSTS"),
             data_dir=_data_dir_from_env(),
             max_extract_fields=_int("WEB_TOOLS_MAX_EXTRACT_FIELDS", 50),
             extract_max_items=_int("WEB_TOOLS_EXTRACT_MAX_ITEMS", 100),

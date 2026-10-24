@@ -122,6 +122,9 @@ class ParsedPage:
     # What every date signal of the page comes to (see dates.py); None for a document that is not
     # a web page (a PDF).
     dates: Optional[DateResolution] = None
+    # The length of the page's whole Markdown, of which ``markdown`` is the first part when it was
+    # cut to a cap; None when it is not known (a PDF is read only as far as the cap).
+    total_chars: Optional[int] = None
 
 
 @dataclass
@@ -310,6 +313,15 @@ def _normalise_markdown(text: str) -> str:
 
 def html_to_markdown(html: str, base_url: str, max_chars: int = 50_000) -> str:
     """Convert readable page HTML to compact Markdown, excluding page chrome."""
+    return markdown_of(html, base_url)[:max_chars]
+
+
+def markdown_of(html: str, base_url: str) -> str:
+    """The whole Markdown of a page, however long: what ``html_to_markdown`` cuts to a cap.
+
+    Deterministic for a given page, so a slice of it taken later (``content_id`` with an
+    ``offset``) is a slice of the same text the first read cut.
+    """
     soup = _soup(html)
     for tag in soup(_STRIP_TAGS):
         tag.decompose()
@@ -323,8 +335,7 @@ def html_to_markdown(html: str, base_url: str, max_chars: int = 50_000) -> str:
         or soup.find("body")
         or soup
     )
-    markdown = _normalise_markdown(_render_children(root, base_url))
-    return markdown[:max_chars]
+    return _normalise_markdown(_render_children(root, base_url))
 
 
 def _extract_title(soup: BeautifulSoup) -> str:
@@ -427,18 +438,25 @@ def extract_page(
     base_url: str,
     max_links: int = 200,
     max_chars: int = 50_000,
+    offset: int = 0,
 ) -> ParsedPage:
-    """Extract a page's readable Markdown plus metadata, outgoing links and publication date."""
+    """Extract a page's readable Markdown plus metadata, outgoing links and publication date.
+
+    ``markdown`` is the part of the page's whole Markdown that starts at *offset* and holds at
+    most *max_chars*; ``total_chars`` is the length of the whole.
+    """
     soup = _soup(html)
     metadata = _extract_metadata(soup, base_url)
+    whole = markdown_of(html, base_url)
     return ParsedPage(
         title=_extract_title(soup),
         description=_extract_description(soup),
         canonical_url=_extract_canonical(soup, base_url),
-        markdown=html_to_markdown(html, base_url, max_chars=max_chars),
+        markdown=whole[offset : offset + max_chars],
         links=_extract_links(soup, base_url, max_links),
         metadata=metadata,
         dates=resolve_page(soup, metadata.get("json_ld") or [], base_url),
+        total_chars=len(whole),
     )
 
 

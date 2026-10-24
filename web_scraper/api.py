@@ -1279,6 +1279,8 @@ def create_app(settings: Optional[Config] = None) -> FastAPI:
                 limit=payload.limit,
                 provider=payload.provider,
                 depth=payload.depth,
+                # REST answers in full unless it asks for the compact shape (MCP is the other way).
+                **({"compact": True} if payload.compact else {}),
                 **payload.model_dump(
                     include={
                         "region",
@@ -1292,10 +1294,13 @@ def create_app(settings: Optional[Config] = None) -> FastAPI:
                     exclude_none=True,
                 ),
                 **payload.model_dump(
-                    include={"read", "read_chars", "archive", "strict_dates"},
+                    include={"read", "read_chars", "archive", "strict_dates", "debug"},
                     exclude_defaults=True,
                 ),
             )
+        if payload.compact:
+            # The compact shape is not the response model's: it is returned as it is.
+            return JSONResponse(content=result)  # type: ignore[return-value]
         return WebSearchResponse(**result)
 
     @app.post(
@@ -1309,10 +1314,16 @@ def create_app(settings: Optional[Config] = None) -> FastAPI:
         _: str = Depends(require_web_access),
     ) -> Union[WebScrapeResponse, WebScrapeBatchResponse]:
         web_tools: WebToolsService = request.app.state.web_tools
-        options = payload.model_dump(
-            include={"links", "max_links", "recover"}, exclude_defaults=True
-        )
+        options = payload.service_options()
         async with app.state.concurrency_gate.acquire():
+            if payload.content_id:
+                result = await web_tools.scrape_content(
+                    payload.content_id,
+                    offset=payload.offset,
+                    max_chars=payload.max_chars,
+                    lean=payload.lean is not False,
+                )
+                return WebScrapeResponse(**result)
             if payload.urls:
                 batch = await web_tools.scrape_many(
                     payload.urls,

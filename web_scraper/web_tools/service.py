@@ -6,6 +6,7 @@ import asyncio
 import json
 import re
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -225,6 +226,7 @@ class WebToolsService:
         self._crawl: Optional[CrawlManager] = None
         self._provider_gates: dict[str, ProviderGate] = {}
         self._provider_health: dict[str, ProviderHealth] = {}
+        self._content_urls: OrderedDict[str, str] = OrderedDict()
 
     @classmethod
     def from_env(
@@ -314,7 +316,17 @@ class WebToolsService:
         archive: bool = False,
         resolve_dates: Optional[bool] = None,
         strict_dates: bool = False,
+        compact: bool = False,
+        debug: bool = False,
     ) -> dict[str, Any]:
+        """Discover URLs for a query: ranked results, and what it took to get them.
+
+
+        ``compact`` shapes the answer for a model that pays for every character (see
+        ``_present_search``); the search cache keeps the whole answer, so a compact call and a
+        full one share it. ``debug`` adds the facets, the queries, the timings and the score
+        parts to a compact answer; a full answer (``compact`` false) holds them anyway.
+        """
         cleaned = (query or "").strip()
         if not cleaned:
             raise WebToolError("invalid_request", "Query must not be empty")
@@ -379,7 +391,7 @@ class WebToolsService:
             self.metrics.count("cache_hits_total", operation="search")
             answer = _from_cache(cached, started)
             await self._read_results(answer, reading, archive)
-            return answer
+            return _present_search(answer, compact=compact, debug=debug)
 
         # Every angle carries the operators and the parameters; the operators take room
         # from the query, never from the limit the provider has.
@@ -638,7 +650,7 @@ class WebToolsService:
             ttl_seconds=self.settings.search_cache_ttl_seconds,
         )
         await self._read_results(payload, reading, archive)
-        return payload
+        return _present_search(payload, compact=compact, debug=debug)
 
     def _dates_plan(
         self,
@@ -1157,8 +1169,13 @@ class WebToolsService:
         links: bool = True,
         max_links: Optional[int] = None,
         recover: Optional[bool] = None,
+        lean: bool = False,
     ) -> dict[str, Any]:
         """Read one page. A page that answers a wall may be read another way (see ``_recover``).
+
+        ``lean`` returns the text without the metadata blocks (see ``_lean_view``). A page whose
+        Markdown was cut says so (``truncated``, ``total_chars``, ``next_offset``) and, when the
+        page cache keeps it, gives a ``content_id`` that ``scrape_content`` reads the rest with.
 
         ``recover`` unset reads a walled page every way there is, unless ``archive`` alone was
         asked for (then only the archive, as it has always been); ``recover: true`` is every way
@@ -1181,9 +1198,12 @@ class WebToolsService:
 
         started = time.perf_counter()
         cached = await self.cache.get(cache_key)
-        if cached is not None:
+        # A cut page's content_id lives as long as the page cache keeps the page (5 minutes), the
+        # answer cache a little longer: an answer whose id has gone is read again, not repeated.
+        if cached is not None and not self._content_gone(cached):
             self.metrics.count("cache_hits_total", operation="scrape")
-            return _from_cache(cached, started)
+            answer = _from_cache(cached, started)
+            return _lean_view(answer) if lean else answer
 
         recovery: Optional[_Recovery] = None
         try:
@@ -1209,18 +1229,91 @@ class WebToolsService:
                 everything=recovering and walled,
             )
             document = recovery.document
-        payload = self._page_payload(document, requested, links=links, max_links=link_cap)
+        content_id = self._content_id_of(fetch_target) if recovery is None else None
+        payload = self._page_payload(
+            document, requested, links=links, max_links=link_cap, content_id=content_id
+        )
         if recovery is not None:
             payload.update(recovery.fields)
             payload["recovered_from"] = recovery.recovered_from
             payload["alternates"] = recovery.alternates
             payload["next_action"] = recovery.next_action
+        elif payload.get("content_id"):
+            self._remember_content(payload["content_id"], requested)
         total_ms = (time.perf_counter() - started) * 1000
         payload["timings"]["total_ms"] = round(total_ms, 2)
         self.metrics.observe("total", total_ms, operation="scrape")
         self.metrics.count("scrapes_total", mode=payload["fetched_with"])
         await self.cache.set(cache_key, _for_cache(payload))
-        return payload
+        return _lean_view(payload) if lean else payload
+
+    async def scrape_content(
+        self,
+        content_id: str,
+        *,
+        offset: int = 0,
+        max_chars: Optional[int] = None,
+        lean: bool = True,
+    ) -> dict[str, Any]:
+        """Read on in a page a scrape cut: the part of its Markdown from *offset*, by ``content_id``.
+
+        The page is read from the page cache, never fetched again, so what comes is the text the
+        first scrape cut. The answer is the scrape's own (``next_offset`` and the same
+        ``content_id`` while more is left), lean unless ``lean`` is false. An id the cache no
+        longer holds is an error that names the page to scrape again.
+        """
+        limit = self._markdown_limit(max_chars)
+        started = time.perf_counter()
+        stored = self._pages.get_by_id(content_id)
+        if stored is None:
+            address = self._content_urls.get(content_id)
+            raise WebToolError(
+                "content_expired",
+                f"The content {content_id} is no longer held (pages are kept for "
+                f"{self.settings.page_cache_ttl_seconds} s)",
+                url=address,
+                hint=(
+                    f"Scrape {address} again; its answer gives a new content_id."
+                    if address
+                    else "Scrape the page again; its answer gives a new content_id."
+                ),
+            )
+        document = self._document_from_cache(stored, limit, started, offset=offset)
+        total = document.page.total_chars or 0
+        if offset > total:
+            raise WebToolError(
+                "invalid_request",
+                "offset is past the end of the content",
+                detail=f"offset {offset}, total_chars {total}",
+            )
+        payload = self._page_payload(
+            document,
+            self._canonical(stored.final_url),
+            links=False,
+            max_links=0,
+            content_id=content_id,
+            offset=offset,
+        )
+        payload["cache_hit"] = True
+        self.metrics.count("content_reads_total")
+        return _lean_view(payload) if lean else payload
+
+    def _content_id_of(self, url: str) -> Optional[str]:
+        """The content id of the page the page cache keeps for an address, if it keeps it."""
+        key = self._page_key(url)
+        return self._pages.id_for(key) if key is not None else None
+
+    def _content_gone(self, answer: Mapping[str, Any]) -> bool:
+        """Whether a cached answer names a content_id the page cache no longer holds."""
+        content_id = answer.get("content_id")
+        return bool(content_id) and self._pages.get_by_id(str(content_id)) is None
+
+    def _remember_content(self, content_id: str, address: str) -> None:
+        """Which page a content id was given for, so that its expiry can say what to scrape again."""
+        self._content_urls[content_id] = address
+        self._content_urls.move_to_end(content_id)
+        while len(self._content_urls) > _CONTENT_URLS_KEPT:
+            self._content_urls.popitem(last=False)
 
     def _recovering(self, recover: Optional[bool], archive: bool) -> bool:
         """Whether a walled page is read every way there is: the setting allows it and the call
@@ -1241,6 +1334,7 @@ class WebToolsService:
         max_links: Optional[int] = None,
         max_total_chars: Optional[int] = None,
         recover: Optional[bool] = None,
+        lean: bool = False,
     ) -> dict[str, Any]:
         """Read 2 to 10 pages in one call: ``{"pages": [...], "timings": {...}}``.
 
@@ -1266,6 +1360,7 @@ class WebToolsService:
             links=links,
             max_links=max_links,
             recover=recover,
+            lean=lean,
         )
         total_ms = round((time.perf_counter() - started) * 1000, 2)
         answer: dict[str, Any] = {"pages": pages, "timings": {"total_ms": total_ms}}
@@ -1282,6 +1377,7 @@ class WebToolsService:
         links: bool,
         max_links: Optional[int],
         recover: Optional[bool] = None,
+        lean: bool = False,
     ) -> list[dict[str, Any]]:
         """Scrape pages together, in the order given: each answer, or ``{"url", "error"}``.
 
@@ -1304,6 +1400,7 @@ class WebToolsService:
                         links=links,
                         max_links=max_links,
                         recover=recover,
+                        lean=lean,
                     )
                 except WebToolError as exc:
                     return {"url": url, "error": exc.to_dict()}
@@ -1537,7 +1634,10 @@ class WebToolsService:
             complete=recovery.complete,
         )
         room = max(limit - len(header) - 2, 0)
-        document.page.markdown = f"{header}\n\n{document.page.markdown[:room]}"
+        body = document.page.markdown
+        whole = document.page.total_chars if document.page.total_chars is not None else len(body)
+        recovery.fields.update(truncated=whole > min(len(body), room), total_chars=whole)
+        document.page.markdown = f"{header}\n\n{body[:room]}"
         if recovery.kind == "archive":
             document.warnings.append("archived_copy")
             self.metrics.count("archive_copies_total")
@@ -2097,7 +2197,7 @@ class WebToolsService:
             return None
 
     def _document_from_cache(
-        self, stored: CachedDocument, max_chars: int, started: float
+        self, stored: CachedDocument, max_chars: int, started: float, *, offset: int = 0
     ) -> LoadedDocument:
         """A stored document read again: parsed for this call, its timings this call's own."""
         parsing = time.perf_counter()
@@ -2106,6 +2206,7 @@ class WebToolsService:
             stored.final_url,
             max_links=self.settings.max_links,
             max_chars=max_chars,
+            offset=offset,
         )
         extract_ms = (time.perf_counter() - parsing) * 1000
         self.metrics.observe("extraction", extract_ms, mode="cached")
@@ -2405,6 +2506,8 @@ class WebToolsService:
         *,
         links: bool = True,
         max_links: Optional[int] = None,
+        content_id: Optional[str] = None,
+        offset: int = 0,
     ) -> dict[str, Any]:
         # The page's own links, without menus, banners, footers, and sidebars,
         # capped; map and crawl still see every link. ``links=False`` returns none,
@@ -2435,6 +2538,20 @@ class WebToolsService:
         payload.update(_date_fields(document.page.dates))
         if document.pages is not None:
             payload["pages"] = document.pages
+        # Whether the Markdown is the whole of the page, and how to read the rest: from where the
+        # next part starts, and (for a page the page cache keeps) the id to ask for it with.
+        total = document.page.total_chars
+        end = offset + len(document.page.markdown)
+        truncated = total > end if total is not None else "pdf_truncated" in document.warnings
+        payload["truncated"] = truncated
+        if total is not None:
+            payload["total_chars"] = total
+        if offset:
+            payload["offset"] = offset
+        if truncated and total is not None:
+            payload["next_offset"] = end
+            if content_id:
+                payload["content_id"] = content_id
         return payload
 
     def _links_limit(self, value: Optional[int]) -> int:
@@ -2745,6 +2862,143 @@ def _storable(document: LoadedDocument) -> bool:
             for warning in document.warnings
         )
     )
+
+
+# A compact search result: these and nothing else, apart from what a read asked for.
+_COMPACT_RESULT_KEYS = (
+    "title",
+    "url",
+    "domain",
+    "date",
+    "date_confidence",
+    "source_type",
+    "snippet",
+    "score",
+)
+_READ_KEYS = ("content", "content_truncated", "content_error")
+# What debug adds to each compact result: how the date was read and the parts of the score.
+_DEBUG_RESULT_KEYS = (
+    "source",
+    "year",
+    "recency",
+    "date_source",
+    "date_conflicts",
+    "date_modified",
+    "age_days",
+    "freshness",
+    "kind",
+    "angles",
+    "relevance",
+    "bm25",
+)
+_DEBUG_RUN_KEYS = (
+    "requested_provider",
+    "depth",
+    "facets",
+    "queries",
+    "timings",
+    "dates",
+    "cached_timings",
+    "cached_at",
+)
+
+
+def _present_search(answer: dict[str, Any], *, compact: bool, debug: bool) -> dict[str, Any]:
+    """A search answer as the caller asked for it.
+
+    Full (``compact`` false) is the whole answer. Compact is, per result, ``title, url, domain,
+    date, date_confidence, source_type, snippet`` and ``score`` (and ``content`` or
+    ``content_error`` where a read asked for them), and a small ``run`` block that keeps what a
+    reader needs to trust the list: the ``provider`` that answered, the ``warnings`` and the
+    ``fallback`` taken. A result whose date has conflicts is named in ``warnings`` by its position
+    (``date_conflict:2``). ``debug`` adds ``facets``, ``queries``, ``timings`` and the rest in a
+    ``debug`` block, and the date's source and the parts of the score under each result's own.
+    """
+    if not compact:
+        return answer
+    warnings = list(answer.get("warnings") or [])
+    results: list[dict[str, Any]] = []
+    for position, item in enumerate(answer.get("results") or [], start=1):
+        row = {key: item.get(key) for key in _COMPACT_RESULT_KEYS}
+        row.update({key: item[key] for key in _READ_KEYS if key in item})
+        if item.get("date_conflicts"):
+            warnings.append(f"date_conflict:{position}")
+        if debug:
+            row["debug"] = {key: item[key] for key in _DEBUG_RESULT_KEYS if key in item}
+        results.append(row)
+    run: dict[str, Any] = {
+        "provider": answer.get("provider"),
+        "warnings": warnings,
+        "fallback": _run_fallback(answer),
+    }
+    if answer.get("cache_hit"):
+        run["cache_hit"] = True
+    shaped: dict[str, Any] = {"query": answer.get("query"), "results": results, "run": run}
+    if debug:
+        shaped["debug"] = {key: answer[key] for key in _DEBUG_RUN_KEYS if key in answer}
+    return shaped
+
+
+def _run_fallback(answer: Mapping[str, Any]) -> Optional[dict[str, Any]]:
+    """The fallback the search took, from its first angle that took one: who gave way, who stood in, why."""
+    for report in answer.get("queries") or []:
+        record = report.get("fallback")
+        if record:
+            return {key: record.get(key) for key in ("from", "to", "reason", "tried")}
+    return None
+
+
+# How many content ids the service remembers the page of, to say what to scrape again when one expires.
+_CONTENT_URLS_KEPT = 256
+
+
+def _lean_view(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """A page's answer without its metadata blocks (``lean``): the text, and what is needed to
+    trust and to continue it.
+
+    Left out: description, canonical address, status, metadata, content hash, timings and cache
+    fields, and the links unless some were asked for. Kept: url and title, the date and how far it
+    is trusted, the Markdown, whether it
+    was cut and where to read on (``next_offset``, ``content_id``), and, when they are the case,
+    the conflicts of the date, a fetch that was not plain HTTP, the PDF page count, warnings, and
+    everything that says the text was recovered another way and whose it is.
+    """
+    lean: dict[str, Any] = {
+        key: payload[key]
+        for key in (
+            "url",
+            "title",
+            "date",
+            "date_confidence",
+            "markdown",
+            "truncated",
+            "total_chars",
+            "offset",
+            "next_offset",
+            "content_id",
+            "pages",
+        )
+        if key in payload
+    }
+    if payload.get("date_conflicts"):
+        lean["date_conflicts"] = payload["date_conflicts"]
+    if payload.get("links"):
+        # Asked for by name (links, max_links): a lean answer has none otherwise.
+        lean["links"] = payload["links"]
+        lean["links_truncated"] = payload.get("links_truncated", False)
+    if payload.get("fetched_with") not in (None, "http"):
+        lean["fetched_with"] = payload["fetched_with"]
+    recovered = payload.get("recovered_from")
+    if recovered:
+        lean["recovered_from"] = recovered
+        if recovered.get("kind") == "other_source":
+            lean["requested_url"] = payload.get("requested_url")
+        if payload.get("alternates"):
+            lean["alternates"] = payload["alternates"]
+        lean["next_action"] = payload.get("next_action")
+    if payload.get("warnings"):
+        lean["warnings"] = payload["warnings"]
+    return lean
 
 
 def _date_fields(dates: Optional[DateResolution]) -> dict[str, Any]:

@@ -40,7 +40,7 @@ _SEARCH_PARAMETERS = {
     "date_to",
     "resolve_dates",
 }
-_SEARCH_READ_PARAMETERS = {"read", "read_chars", "archive", "strict_dates"}
+_SEARCH_READ_PARAMETERS = {"read", "read_chars", "archive", "strict_dates", "debug"}
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _GIT_TIMEOUT_SECONDS = 1
 
@@ -121,6 +121,8 @@ async def _search(service: WebToolsService, arguments: dict[str, Any]) -> dict[s
         limit=request.limit,
         provider=request.provider,
         depth=request.depth,
+        # A model pays for every character it reads: the answer is compact unless it says not.
+        **({"compact": True} if request.compact is not False else {}),
         **request.model_dump(include=_SEARCH_PARAMETERS, exclude_none=True),
         **request.model_dump(include=_SEARCH_READ_PARAMETERS, exclude_defaults=True),
     )
@@ -128,7 +130,14 @@ async def _search(service: WebToolsService, arguments: dict[str, Any]) -> dict[s
 
 async def _scrape(service: WebToolsService, arguments: dict[str, Any]) -> dict[str, Any]:
     request = WebScrapeRequest.model_validate(arguments)
-    options = request.model_dump(include={"links", "max_links", "recover"}, exclude_defaults=True)
+    if request.content_id:
+        return await service.scrape_content(
+            request.content_id,
+            offset=request.offset,
+            max_chars=request.max_chars,
+            lean=request.lean is not False,
+        )
+    options = request.service_options()
     if request.urls:
         return await service.scrape_many(
             request.urls,
@@ -210,22 +219,24 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
                 "description": (
                     "Discover result URLs. depth: fast (one query), discover (default: base, "
                     "current-year and historical angles), deep (adds an official or "
-                    "primary-source angle). Ranked by BM25, cross-angle consensus, source "
-                    "authority and freshness; cached per query. region, language, sites, "
-                    "exclude_sites, date_from and date_to narrow it. read N (0 to 5) also reads "
-                    "the top N pages: content or content_error on each; it costs seconds. A "
-                    "refused or timed-out provider falls to DuckDuckGo lite, Yahoo, then Google; "
-                    "provider names who answered. No relevant result: results is empty and "
-                    "warnings holds no_relevant_results (low_relevance_results: every result "
-                    "holds under half of the query's words). Each result has source_type "
-                    "(official, academic, news, press_release, social, reference, code, "
-                    "community, other), year, recency, kind (article, listing, front, page), "
-                    "freshness, date (day or month) with date_source, date_confidence (0 to 1) "
-                    "and date_conflicts, relevance, bm25, score, angles. resolve_dates reads the "
-                    "first 64 KB of the top pages for their dates (default on for news and "
-                    "date-range queries); strict_dates drops results with no date or a low "
-                    "date_confidence, and warnings says how many. Search discovers URLs only; "
-                    "web_scrape reads one."
+                    "primary-source angle, which gets the longer time budget). Ranked by BM25, "
+                    "cross-angle consensus, source authority and freshness, cached per query; "
+                    "official sites and mainstream news lead news queries, aggregators rank "
+                    "low. The answer is compact: per result title, url, domain, date, "
+                    "date_confidence (0 to 1; a result whose dates conflict is named in "
+                    "run.warnings), source_type (official, academic, news, press_release, "
+                    "social, reference, code, community, aggregator, other), snippet, score, and "
+                    "run {provider, warnings, fallback}; debug adds facets, queries, timings and "
+                    "score parts, compact: false returns everything. A refused or timed-out "
+                    "provider falls to the next: Brave or Serper first when their key is set, "
+                    "then DuckDuckGo, its lite page, Yahoo, Google (web_health says who is "
+                    "cooling). No relevant result: results is empty and warnings holds "
+                    "no_relevant_results. region, language, sites, exclude_sites, date_from and "
+                    "date_to narrow it. resolve_dates reads the heads of the top pages for their "
+                    "dates (default on for news and date ranges); strict_dates drops results "
+                    "with no date or a low date_confidence, and warnings says how many. read N "
+                    "(0 to 5) also reads the top N pages: content or content_error; it costs "
+                    "seconds. Search discovers URLs only; web_scrape reads one."
                 ),
                 "inputSchema": WebSearchRequest.model_json_schema(),
                 "annotations": _annotations(
@@ -239,21 +250,22 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
                 "name": "web_scrape",
                 "description": (
                     "Fetch one public URL HTTP-first and return clean Markdown, title, "
-                    "description, canonical URL, status, content links (50; max_links 0 to 200, "
-                    "links: false for none; links_truncated says more exist), metadata, date "
-                    "with date_source, date_confidence and date_conflicts (all the page's date "
-                    "signals weighed), content hash and timings. max_chars bounds the Markdown "
-                    "only. urls (2 to 10) instead of url reads pages in one call: pages in "
-                    "order, each an answer or {url, error}; max_total_chars (60,000) bounds the "
-                    "answer. A headless browser is used only for JavaScript shells and access "
-                    "interstitials. A walled page (captcha, 401/403/429, bot wall) is read "
-                    "another way: the Internet Archive's copy, the site's AMP or print form, its "
-                    "feed, then another outlet's report found by the title. recovered_from "
-                    "says which, the text starts with a line saying whose it is, alternates "
-                    "lists other addresses and next_action what to do; if nothing reads, the "
-                    "error carries both. archive: true alone asks only for the archive; "
-                    "recover: false for none. A PDF is Markdown text with its page count in "
-                    "pages."
+                    "canonical URL, status, content links (50; max_links 0 to 200, links: "
+                    "false for none), metadata, date with "
+                    "date_source, date_confidence and date_conflicts (every date signal of the "
+                    "page weighed), content hash and timings; the Markdown follows the JSON as a "
+                    "block of its own. max_chars cuts it: truncated, total_chars, next_offset "
+                    "and content_id then let content_id with offset read the rest from the "
+                    "cache (5 minutes, no request); lean returns only the text, date and cut "
+                    "info. urls (2 to 10) reads pages in one call, max_total_chars (60,000) "
+                    "bounding the answer. A headless browser is used only for JavaScript shells "
+                    "and access interstitials. A walled page (captcha, 401/403/429, bot wall) is "
+                    "read another way: the Internet Archive's copy, the site's AMP or print "
+                    "form, its feed, or another outlet's report found by title. recovered_from "
+                    "says which, the text starts with a line saying whose it is, alternates and "
+                    "next_action follow; if nothing reads, the error carries them. archive: "
+                    "true alone asks only for the archive; recover: false for none. A PDF is "
+                    "Markdown with its page count in pages."
                 ),
                 "inputSchema": WebScrapeRequest.model_json_schema(),
                 "annotations": _annotations(
@@ -369,13 +381,29 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
     ]
 
 
+def _without_null(node: dict[str, Any]) -> dict[str, Any]:
+    """``{"anyOf": [X, {"type": "null"}], "default": null}`` as X: an optional argument is one a
+    caller leaves out, and a model told that null is allowed would send it."""
+    options = node.get("anyOf")
+    if isinstance(options, list) and len(options) == 2:
+        kept = [option for option in options if option != {"type": "null"}]
+        if len(kept) == 1:
+            rest = {key: value for key, value in node.items() if key != "anyOf"}
+            if rest.get("default") is None:
+                rest.pop("default", None)
+            return {**kept[0], **rest}
+    return node
+
+
 def _lean(node: Any, names: bool = False) -> Any:
-    """A JSON schema without its ``title`` labels, which only repeat a property's name.
+    """A JSON schema without its ``title`` labels, which only repeat a property's name, and
+    without the null that an optional argument also allows.
 
     Dot sends every tool's schema with each model request, so what says nothing is left out.
     ``names`` marks a mapping of property names, whose keys are kept whatever they are.
     """
     if isinstance(node, dict):
+        node = _without_null(node)
         return {
             key: _lean(value, key in {"properties", "$defs"})
             for key, value in node.items()
@@ -400,6 +428,55 @@ def _text_result(payload: dict[str, Any]) -> dict[str, Any]:
         ],
         "isError": False,
     }
+
+
+def _scrape_result(payload: dict[str, Any]) -> dict[str, Any]:
+    """A page's answer with its Markdown in a text block of its own, after the JSON of the rest.
+
+    A client that keeps a long answer in a file (Dot does, past a size) wrote the whole answer as
+    one line, the page's newlines escaped inside the JSON string; with the page in a block of its
+    own the file is the JSON on its first line and then the page as Markdown with its own line
+    breaks. The JSON says ``(below)`` where the Markdown was, and a batch marks each page's block
+    with a line that names it.
+    """
+    pages = payload.get("pages")
+    if isinstance(pages, list):
+        total = sum(1 for page in pages if _has_markdown(page))
+        heads: list[Any] = []
+        texts: list[str] = []
+        for page in pages:
+            if not _has_markdown(page):
+                heads.append(page)
+                continue
+            number = len(texts) + 1
+            heads.append({**page, "markdown": f"(page {number} of {total}, below)"})
+            texts.append(
+                f"<!-- page {number} of {total}: {page.get('url')} -->\n{page['markdown']}"
+            )
+        return _text_blocks({**payload, "pages": heads}, texts)
+    if _has_markdown(payload):
+        return _text_blocks({**payload, "markdown": "(below)"}, [payload["markdown"]])
+    return _text_result(payload)
+
+
+def _has_markdown(page: Any) -> bool:
+    return (
+        isinstance(page, dict) and isinstance(page.get("markdown"), str) and bool(page["markdown"])
+    )
+
+
+def _text_blocks(head: dict[str, Any], texts: list[str]) -> dict[str, Any]:
+    first = json.dumps(head, ensure_ascii=False, separators=(",", ":"))
+    return {
+        "content": [{"type": "text", "text": text} for text in [first, *texts]],
+        "isError": False,
+    }
+
+
+# The tools whose answer is more than one block of text: how each shapes its answer.
+_RESULT_SHAPES: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+    "web_scrape": _scrape_result,
+}
 
 
 def _error_result(code: str, message: str, **extra: Any) -> dict[str, Any]:
@@ -530,7 +607,7 @@ class McpServer:
             raise
         except Exception as exc:  # noqa: BLE001 - tool failures become tool results
             return _dispatch_error(exc)
-        return _text_result(payload)
+        return _RESULT_SHAPES.get(name, _text_result)(payload)
 
     def _cancel(self, request_id: Any) -> None:
         if request_id is None:

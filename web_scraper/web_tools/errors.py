@@ -20,6 +20,7 @@ _STATUS_CODES = {
     "empty_content": 502,
     "search_failed": 502,
     "job_not_found": 404,
+    "content_expired": 410,
     "crawl_capacity": 429,
     "internal_error": 500,
 }

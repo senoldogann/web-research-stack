@@ -46,6 +46,7 @@ from web_scraper.web_tools.discovery import (
     annotate_candidates,
     build_facets,
     build_search_angles,
+    classify_source_type,
     rank_candidates,
     relevant_results,
     wants_news,
@@ -59,6 +60,21 @@ from web_scraper.web_tools.pagecache import CachedDocument, PageCache
 from web_scraper.web_tools.paid_search import PAID_PROVIDERS, build_paid_adapters
 from web_scraper.web_tools.pdf import PDF_CONTENT_TYPE, PdfError, extract_pdf
 from web_scraper.web_tools.providers import ProviderGate, ProviderHealth, failure_kind
+from web_scraper.web_tools.recover import (
+    MIN_RECOVERED_CHARS,
+    amp_candidates,
+    feed_candidates,
+    feed_document_html,
+    find_feed_item,
+    host_of,
+    is_wall,
+    parse_feed,
+    recovery_header,
+    same_site,
+    same_story,
+    title_from_url,
+    wall_title,
+)
 from web_scraper.web_tools.robots import RobotsPolicy
 from web_scraper.web_tools.search import (
     DuckDuckGoLiteSearchAdapter,
@@ -118,6 +134,38 @@ class LoadedDocument:
     # ``cached_timings`` what the fetch cost when it was made.
     cache_hit: bool = False
     cached_timings: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass
+class _Recovery:
+    """A walled page read another way, and how: whose text it is, and what to do with it.
+
+    *kind* is archive, amp, print, feed or other_source; *source_url* is where the text was read
+    (for the same page's own forms the page's address stays the answer's ``url``; for another
+    outlet's copy the answer's ``url`` is that outlet's).
+    """
+
+    kind: str
+    document: LoadedDocument
+    source_url: str
+    taken: Optional[str] = None
+    complete: bool = True
+    title: str = ""
+    fields: dict[str, Any] = field(default_factory=dict)
+    alternates: list[dict[str, Any]] = field(default_factory=list)
+    next_action: str = ""
+
+    @property
+    def recovered_from(self) -> dict[str, Any]:
+        info: dict[str, Any] = {"kind": self.kind, "url": self.source_url}
+        if self.taken:
+            info["at"] = self.taken
+        if self.kind == "feed":
+            info["partial"] = not self.complete
+        if self.kind == "other_source":
+            info["domain"] = host_of(self.source_url)
+            info["title"] = self.title
+        return info
 
 
 @dataclass
@@ -657,12 +705,15 @@ class WebToolsService:
         if not top:
             return
         started = time.perf_counter()
+        # A search that reads its top pages is quick: a walled one is read from the archive when
+        # asked, not hunted for in other forms and other outlets (web_scrape does that).
         pages = await self._read_pages(
             [item["url"] for item in top],
             max_chars=chars,
             archive=archive,
             links=False,
             max_links=None,
+            recover=False,
         )
         read: list[dict[str, Any]] = []
         for item, page in zip(top, pages):
@@ -1105,14 +1156,26 @@ class WebToolsService:
         archive: bool = False,
         links: bool = True,
         max_links: Optional[int] = None,
+        recover: Optional[bool] = None,
     ) -> dict[str, Any]:
+        """Read one page. A page that answers a wall may be read another way (see ``_recover``).
+
+        ``recover`` unset reads a walled page every way there is, unless ``archive`` alone was
+        asked for (then only the archive, as it has always been); ``recover: true`` is every way
+        whatever else is asked, ``recover: false`` none but the archive when ``archive`` is set.
+        The text of a page read another way begins with a line that says whose it is, and the
+        answer's ``recovered_from`` says how; a page that could not be read any way raises the
+        wall's error with ``alternates`` and ``next_action``.
+        """
         requested = self._canonical(url)
         fetch_target = self._request_url(url)
         limit = self._markdown_limit(max_chars)
         link_cap = self._links_limit(max_links)
+        recovering = self._recovering(recover, archive)
         cache_key = (
             f"scrape:{requested}:{limit}"
             + (":archive" if archive else "")
+            + (":recover" if recovering else "")
             + (f":links{link_cap}" if links else ":nolinks")
         )
 
@@ -1122,27 +1185,51 @@ class WebToolsService:
             self.metrics.count("cache_hits_total", operation="scrape")
             return _from_cache(cached, started)
 
-        archived: Optional[tuple[str, str]] = None
-        skipped: list[dict[str, str]] = []
+        recovery: Optional[_Recovery] = None
         try:
             document = await self._load_page(fetch_target, max_chars=limit)
         except WebToolError as exc:
             if exc.code not in _ARCHIVABLE:
                 raise
-            if not archive:
-                exc.hint = _ARCHIVE_HINT
+            walled = is_wall(exc)
+            if not archive and not (recovering and walled):
+                if walled and self.settings.scrape_recover == "off" and recover is not False:
+                    exc.hint = _RECOVER_SETTING_HINT
+                elif walled and recover is False:
+                    exc.hint = _RECOVER_OFF_HINT
+                else:
+                    exc.hint = _ARCHIVE_HINT
                 raise
-            document, archived, skipped = await self._archived_copy(fetch_target, limit, exc)
+            recovery = await self._recover(
+                fetch_target,
+                requested,
+                limit,
+                exc,
+                archive=archive,
+                everything=recovering and walled,
+            )
+            document = recovery.document
         payload = self._page_payload(document, requested, links=links, max_links=link_cap)
-        if archived is not None:
-            payload["archived_at"], payload["archive_url"] = archived
-            payload["archive_skipped"] = skipped
+        if recovery is not None:
+            payload.update(recovery.fields)
+            payload["recovered_from"] = recovery.recovered_from
+            payload["alternates"] = recovery.alternates
+            payload["next_action"] = recovery.next_action
         total_ms = (time.perf_counter() - started) * 1000
         payload["timings"]["total_ms"] = round(total_ms, 2)
         self.metrics.observe("total", total_ms, operation="scrape")
         self.metrics.count("scrapes_total", mode=payload["fetched_with"])
         await self.cache.set(cache_key, _for_cache(payload))
         return payload
+
+    def _recovering(self, recover: Optional[bool], archive: bool) -> bool:
+        """Whether a walled page is read every way there is: the setting allows it and the call
+        asked for it, or did not narrow the way to the archive."""
+        if self.settings.scrape_recover == "off":
+            return False
+        if recover is None:
+            return not archive
+        return recover
 
     async def scrape_many(
         self,
@@ -1153,6 +1240,7 @@ class WebToolsService:
         links: bool = True,
         max_links: Optional[int] = None,
         max_total_chars: Optional[int] = None,
+        recover: Optional[bool] = None,
     ) -> dict[str, Any]:
         """Read 2 to 10 pages in one call: ``{"pages": [...], "timings": {...}}``.
 
@@ -1172,7 +1260,12 @@ class WebToolsService:
         cap = self._batch_total(max_total_chars)
         started = time.perf_counter()
         pages = await self._read_pages(
-            targets, max_chars=max_chars, archive=archive, links=links, max_links=max_links
+            targets,
+            max_chars=max_chars,
+            archive=archive,
+            links=links,
+            max_links=max_links,
+            recover=recover,
         )
         total_ms = round((time.perf_counter() - started) * 1000, 2)
         answer: dict[str, Any] = {"pages": pages, "timings": {"total_ms": total_ms}}
@@ -1188,6 +1281,7 @@ class WebToolsService:
         archive: bool,
         links: bool,
         max_links: Optional[int],
+        recover: Optional[bool] = None,
     ) -> list[dict[str, Any]]:
         """Scrape pages together, in the order given: each answer, or ``{"url", "error"}``.
 
@@ -1209,6 +1303,7 @@ class WebToolsService:
                         archive=archive,
                         links=links,
                         max_links=max_links,
+                        recover=recover,
                     )
                 except WebToolError as exc:
                     return {"url": url, "error": exc.to_dict()}
@@ -1331,6 +1426,328 @@ class WebToolsService:
             "WEB_TOOLS_ARCHIVE_BUDGET_SECONDS); try archive: true again later, or find the "
             "story elsewhere with web_search."
         )
+
+    async def _recover(
+        self,
+        fetch_target: str,
+        requested: str,
+        limit: int,
+        cause: WebToolError,
+        *,
+        archive: bool,
+        everything: bool,
+    ) -> _Recovery:
+        """Read a walled page another way, or raise its error with what was found.
+
+        With ``everything`` false only the Internet Archive is asked (``archive: true`` alone).
+        Otherwise, within ``recover_budget_seconds``: the archive, the page's AMP and print
+        forms, and its feed are tried together; the text that comes of them, the page's own, is
+        the answer (the freshest form that holds nearly as much as the longest, the archive's copy
+        first when ``archive`` was asked for). A feed that carries only a summary, or nothing
+        found, goes on to another outlet's report of the same story, found by searching the page's
+        title (from the wall, else from the address). Whatever the way, the text begins with a line
+        that says whose it is. With nothing readable, the wall's error is raised with
+        ``alternates`` (candidate addresses, each with its domain, title, date, source type and why)
+        and a ``next_action`` the agent can act on.
+        """
+        if not everything:
+            document, archived, skipped = await self._archived_copy(fetch_target, limit, cause)
+            only = _Recovery(
+                "archive",
+                document,
+                archived[1],
+                taken=archived[0],
+                fields={
+                    "archived_at": archived[0],
+                    "archive_url": archived[1],
+                    "archive_skipped": skipped,
+                },
+            )
+            return self._finish_recovery(only, requested, limit, [])
+
+        deadline = time.monotonic() + self.settings.recover_budget_seconds
+        tried: dict[str, str] = {}
+
+        async def run(method: str, work: Any) -> list[_Recovery]:
+            try:
+                made, reason = await asyncio.wait_for(work, timeout=_remaining(deadline))
+            except asyncio.TimeoutError:
+                tried[method] = "out of time"
+                return []
+            except Exception as error:  # noqa: BLE001 - one way failing never fails the others
+                tried[method] = type(error).__name__
+                return []
+            tried[method] = "read" if made else reason
+            return list(made)
+
+        archived_copies, forms, feeds = await asyncio.gather(
+            run("archive", self._try_archive(fetch_target, limit, cause)),
+            run("amp/print", self._try_forms(fetch_target, limit, cause)),
+            run("feed", self._try_feed(fetch_target, limit, cause)),
+        )
+        pages = [*archived_copies, *forms]
+        chosen = _best_of_the_page(pages, prefer_archive=archive)
+        partial_feed: Optional[_Recovery] = None
+        if chosen is None and feeds:
+            if feeds[0].complete:
+                chosen = feeds[0]
+            else:
+                partial_feed = feeds[0]
+        alternates: list[dict[str, Any]] = []
+        if chosen is None:
+            made_other, alternates, reason = await self._try_other_sources(
+                fetch_target, requested, limit, cause, deadline
+            )
+            tried["other sources"] = "read" if made_other else reason
+            chosen = made_other or partial_feed
+        else:
+            alternates = [
+                self._form_alternate(other) for other in [*pages, *feeds] if other is not chosen
+            ]
+        self.metrics.count("recoveries_total", kind=chosen.kind if chosen else "none")
+        if chosen is None:
+            summary = "; ".join(
+                f"{method}: {tried.get(method, 'not tried')}"
+                for method in ("archive", "amp/print", "feed", "other sources")
+            )
+            cause.hint = (
+                "The page is walled and no other way of reading it gave a text "
+                f"({summary}). Read the story elsewhere: see alternates and next_action."
+            )
+            cause.extra["alternates"] = alternates
+            cause.extra["next_action"] = _next_action(None, requested, alternates)
+            cause.extra["recovery_tried"] = [
+                {"method": method, "result": tried.get(method, "not tried")}
+                for method in ("archive", "amp/print", "feed", "other sources")
+            ]
+            raise cause
+        return self._finish_recovery(chosen, requested, limit, alternates)
+
+    def _finish_recovery(
+        self, recovery: _Recovery, requested: str, limit: int, alternates: list[dict[str, Any]]
+    ) -> _Recovery:
+        """Put on a recovered text the line that says whose it is, and fill in what is said of it."""
+        document = recovery.document
+        header = recovery_header(
+            recovery.kind,
+            requested_url=requested,
+            source_url=recovery.source_url,
+            taken=recovery.taken,
+            title=recovery.title or document.page.title,
+            complete=recovery.complete,
+        )
+        room = max(limit - len(header) - 2, 0)
+        document.page.markdown = f"{header}\n\n{document.page.markdown[:room]}"
+        if recovery.kind == "archive":
+            document.warnings.append("archived_copy")
+            self.metrics.count("archive_copies_total")
+        else:
+            document.warnings.append(f"recovered_{recovery.kind}")
+        if recovery.kind == "feed" and not recovery.complete:
+            document.warnings.append("feed_summary_only")
+        recovery.alternates = alternates[: self.settings.recover_max_alternates]
+        recovery.next_action = _next_action(recovery, requested, recovery.alternates)
+        return recovery
+
+    @staticmethod
+    def _form_alternate(recovery: _Recovery) -> dict[str, Any]:
+        page = recovery.document.page
+        why = {
+            "archive": f"the Internet Archive's copy of the same page, taken {recovery.taken}",
+            "amp": "the site's AMP version of the same page",
+            "print": "the site's print version of the same page",
+            "feed": "the page's entry in the site's feed"
+            + ("" if recovery.complete else " (a summary only)"),
+        }.get(recovery.kind, "another form of the same page")
+        return {
+            "url": recovery.source_url,
+            "domain": host_of(recovery.source_url),
+            "title": page.title,
+            "date": page.dates.date if page.dates is not None else None,
+            "source_type": classify_source_type(recovery.source_url),
+            "why": why,
+        }
+
+    async def _try_archive(
+        self, fetch_target: str, limit: int, cause: WebToolError
+    ) -> tuple[list[_Recovery], str]:
+        probe = WebToolError(
+            cause.code,
+            str(cause),
+            url=cause.url,
+            status_code=cause.status_code,
+            detail=cause.detail,
+        )
+        try:
+            document, archived, skipped = await self._archived_copy(fetch_target, limit, probe)
+        except WebToolError as failed:
+            return [], _archive_reason(failed.hint or "")
+        return [
+            _Recovery(
+                "archive",
+                document,
+                archived[1],
+                taken=archived[0],
+                fields={
+                    "archived_at": archived[0],
+                    "archive_url": archived[1],
+                    "archive_skipped": skipped,
+                },
+            )
+        ], ""
+
+    async def _try_forms(
+        self, fetch_target: str, limit: int, cause: WebToolError
+    ) -> tuple[list[_Recovery], str]:
+        """The page's AMP and print forms: the wall's own ``amphtml`` link and the usual spellings."""
+        candidates = amp_candidates(fetch_target, cause.body)
+
+        async def read(kind: str, address: str) -> Optional[_Recovery]:
+            try:
+                document = await self._load_page(
+                    address, max_chars=limit, browser=False, cache=False
+                )
+            except WebToolError:
+                return None
+            if len(document.page.markdown.strip()) < MIN_RECOVERED_CHARS:
+                return None
+            document.final_url = fetch_target
+            document.fetched_with = kind
+            return _Recovery(kind, document, address)
+
+        read_all = [
+            made
+            for made in await asyncio.gather(*(read(kind, address) for kind, address in candidates))
+            if made is not None
+        ]
+        best: dict[str, _Recovery] = {}
+        for made in read_all:
+            held = best.get(made.kind)
+            if held is None or len(made.document.page.markdown) > len(held.document.page.markdown):
+                best[made.kind] = made
+        return list(best.values()), "none of the usual forms is served"
+
+    async def _try_feed(
+        self, fetch_target: str, limit: int, cause: WebToolError
+    ) -> tuple[list[_Recovery], str]:
+        """The page's entry in the site's RSS or Atom feed, when a feed carries it."""
+        title = wall_title(cause.body) or title_from_url(fetch_target)
+
+        async def read(feed_url: str) -> Optional[_Recovery]:
+            try:
+                fetched = await self.fetcher.fetch(feed_url)
+            except Exception:  # noqa: BLE001 - a feed that is not there is not an error
+                return None
+            item = find_feed_item(parse_feed(fetched.html), fetch_target, title)
+            if item is None:
+                return None
+            html, complete = feed_document_html(item)
+            page = extract_page(
+                html, fetch_target, max_links=self.settings.max_links, max_chars=limit
+            )
+            if len(page.markdown.strip()) < MIN_FEED_CHARS:
+                return None
+            return _Recovery(
+                "feed",
+                LoadedDocument(
+                    final_url=fetch_target,
+                    status_code=200,
+                    content_type="text/html",
+                    html=html,
+                    page=page,
+                    fetched_with="feed",
+                    timings={},
+                ),
+                feed_url,
+                complete=complete,
+            )
+
+        found = [
+            made
+            for made in await asyncio.gather(
+                *(read(feed_url) for feed_url in feed_candidates(fetch_target, cause.body))
+            )
+            if made is not None
+        ]
+        found.sort(key=lambda made: (not made.complete, -len(made.document.page.markdown)))
+        return found[:1], "no feed carries the page"
+
+    async def _try_other_sources(
+        self,
+        fetch_target: str,
+        requested: str,
+        limit: int,
+        cause: WebToolError,
+        deadline: float,
+    ) -> tuple[Optional[_Recovery], list[dict[str, Any]], str]:
+        """Another outlet's report of the same story: search the page's title away from its site.
+
+        The title is what the wall still shows, else what the address spells. Results of another
+        site whose title holds the story's words are the candidates, outlets and official pages
+        first; the first two are read, the first that reads is the answer, the rest are
+        ``alternates`` with why each is offered.
+        """
+        title = wall_title(cause.body) or title_from_url(fetch_target)
+        if not title:
+            return None, [], "the address and the wall give no title to search"
+        site = host_of(fetch_target)
+        try:
+            found = await asyncio.wait_for(
+                self.search(
+                    title,
+                    depth="fast",
+                    limit=10,
+                    exclude_sites=[site] if site else None,
+                    resolve_dates=False,
+                ),
+                timeout=_remaining(deadline),
+            )
+        except (WebToolError, asyncio.TimeoutError):
+            return None, [], "no search provider answered"
+        matches: list[tuple[float, dict[str, Any]]] = []
+        for item in found.get("results", []):
+            if same_site(item["url"], fetch_target) or item.get("kind") in {"front", "listing"}:
+                continue
+            share = same_story(title, item["title"])
+            if share is not None:
+                matches.append((share, item))
+        if not matches:
+            return None, [], "no other site has the story's title"
+        order = {"official": 0, "news": 1, "academic": 2, "reference": 3}
+        matches.sort(
+            key=lambda pair: (order.get(pair[1]["source_type"], 9), -pair[0], -(pair[1]["score"]))
+        )
+        alternates = [
+            {
+                "url": item["url"],
+                "domain": item["domain"],
+                "title": item["title"],
+                "date": item.get("date"),
+                "source_type": item["source_type"],
+                "why": f"{share:.0%} of this story's title words, on {item['domain']}",
+            }
+            for share, item in matches[: self.settings.recover_max_alternates]
+        ]
+        readable = [pair for pair in matches if pair[1]["source_type"] not in _NOT_A_REPORT]
+        for _, item in readable[:2]:
+            try:
+                document = await asyncio.wait_for(
+                    self._load_page(item["url"], max_chars=limit, browser=False),
+                    timeout=_remaining(deadline),
+                )
+            except (WebToolError, asyncio.TimeoutError):
+                continue
+            if len(document.page.markdown.strip()) < MIN_RECOVERED_CHARS:
+                continue
+            for alternate in alternates:
+                if alternate["url"] == item["url"]:
+                    alternate["why"] += " (read)"
+            return (
+                _Recovery("other_source", document, document.final_url, title=item["title"]),
+                alternates,
+                "",
+            )
+        return None, alternates, "the candidates could not be read either"
 
     async def extract(
         self,
@@ -1901,6 +2318,7 @@ class WebToolsService:
                 url=url,
                 status_code=rendered.status_code or None,
                 detail=interstitial,
+                body=rendered.html[:30_000],
             )
 
         extraction_started = time.perf_counter()
@@ -1951,6 +2369,7 @@ class WebToolsService:
                 url=document.final_url,
                 status_code=rendered.status_code or None,
                 detail=interstitial,
+                body=rendered.html[:30_000],
             )
 
         extraction_started = time.perf_counter()
@@ -2114,6 +2533,7 @@ class WebToolsService:
             url=exc.url,
             status_code=exc.status_code,
             detail=exc.detail,
+            body=exc.body,
         )
 
     @staticmethod
@@ -2156,6 +2576,96 @@ _ARCHIVE_HINT = (
     "Ask web_scrape again with archive: true for the Internet Archive's latest copy "
     "(it may be days old), or find the same story elsewhere with web_search."
 )
+
+
+_RECOVER_OFF_HINT = (
+    "This page is walled and recover is false. Ask again without it, or with archive: true for "
+    "the Internet Archive's copy, or find the story elsewhere with web_search."
+)
+_RECOVER_SETTING_HINT = (
+    "This page is walled and the server does not read walled pages another way "
+    "(WEB_TOOLS_SCRAPE_RECOVER=off). Ask with archive: true for the Internet Archive's copy, "
+    "or find the story elsewhere with web_search."
+)
+# A feed's text must hold at least this to be given as the page.
+MIN_FEED_CHARS = 120
+# Results of these kinds are listed as alternates, never read as another outlet's report of the
+# story: a post, a forum thread, a repository, an aggregator's copy.
+_NOT_A_REPORT = frozenset({"social", "community", "code", "aggregator"})
+
+
+def _best_of_the_page(pages: list[_Recovery], *, prefer_archive: bool) -> Optional[_Recovery]:
+    """Of the page's own forms that read, the one to give: the freshest of those nearly as long as
+    the longest (an AMP or print form, then the archive's copy); the archive's first if asked."""
+    if not pages:
+        return None
+    if prefer_archive:
+        for page in pages:
+            if page.kind == "archive":
+                return page
+    longest = max(len(page.document.page.markdown) for page in pages)
+    for kind in ("amp", "print", "archive"):
+        for page in pages:
+            if page.kind == kind and len(page.document.page.markdown) >= 0.8 * longest:
+                return page
+    return pages[0]
+
+
+def _archive_reason(hint: str) -> str:
+    lowered = hint.lower()
+    if "no archived copy" in lowered:
+        return "no archived copy"
+    if "walls too" in lowered:
+        return "its newest copies are walls too"
+    if "429" in lowered:
+        return "the archive is rate limiting"
+    if "longer than the time budget" in lowered:
+        return "the archive took too long"
+    return "the archive did not answer"
+
+
+def _next_action(
+    recovery: Optional[_Recovery], requested: str, alternates: list[dict[str, Any]]
+) -> str:
+    """One sentence an agent can act on, after a walled page was (or was not) read another way."""
+    site = host_of(requested)
+    best = alternates[0] if alternates else None
+    if recovery is None:
+        if best is not None:
+            return (
+                f"{site} would not serve the page and no other way of reading it worked: scrape "
+                f"{best['url']} ({best['domain']}), the nearest report of the story, or another of "
+                "alternates."
+            )
+        return (
+            f"{site} would not serve the page and no other way of reading it worked, and no other "
+            "site was found with the story: search for it with different words (web_search), or "
+            "ask the owner to open the page."
+        )
+    if recovery.kind == "archive":
+        return (
+            f"This is the Internet Archive's copy taken {recovery.taken}, not the live page at "
+            f"{site}: check the date before relying on it"
+            + (f", or cross-check with {best['url']}." if best else ".")
+        )
+    if recovery.kind in {"amp", "print"}:
+        return (
+            f"This is {site}'s own {recovery.kind.upper() if recovery.kind == 'amp' else 'print'} "
+            "form of the page: its text is the page's, without the live page's extras."
+        )
+    if recovery.kind == "feed":
+        if recovery.complete:
+            return f"This is the article as {site}'s feed carries it, without the page's extras."
+        return (
+            f"{site}'s feed carries only a summary of the article: scrape "
+            + (f"{best['url']}" if best else "another source")
+            + " for the rest, or ask again later."
+        )
+    return (
+        f"The text is {host_of(recovery.source_url)}'s report, not {site}'s: cross-check it with "
+        + (f"{best['url']} or " if best and best["url"] != recovery.source_url else "")
+        + f"scrape {requested} again later."
+    )
 
 
 # The Internet Archive: how many of the newest copies of a walled page are read, and how many

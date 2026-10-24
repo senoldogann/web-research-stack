@@ -207,6 +207,15 @@ class WebToolsSettings:
     # How long the walk through the Internet Archive's copies of a walled page may take.
     archive_budget_seconds: float = 20.0
 
+    # Reading a walled page another way (web_scrape recover): "on" does it for a page that answers
+    # a captcha, a 401, 403 or 429 or a bot wall, unless the call says recover: false; "off" never
+    # does, whatever a call says, so the server reads no page of its own choosing for a scrape.
+    # The whole attempt (archive, AMP and print forms, feeds, other outlets' copies) stops after
+    # recover_budget_seconds; recover_max_alternates is the most candidate addresses it lists.
+    scrape_recover: str = "on"
+    recover_budget_seconds: float = 30.0
+    recover_max_alternates: int = 6
+
     # Where crawl jobs are kept so a restart does not lose them; empty keeps nothing on disk
     # (what a settings made by hand does: only from_env, the server's own, names a folder).
     data_dir: str = ""
@@ -315,6 +324,19 @@ class WebToolsSettings:
         self.max_crawl_jobs = max(self.max_crawl_jobs, 1)
         self.max_crawl_errors = max(self.max_crawl_errors, 1)
         self.archive_budget_seconds = max(self.archive_budget_seconds, 0.1)
+        self.scrape_recover = (
+            "off"
+            if (self.scrape_recover or "on").strip().lower()
+            in {
+                "off",
+                "false",
+                "0",
+                "no",
+            }
+            else "on"
+        )
+        self.recover_budget_seconds = min(max(self.recover_budget_seconds, 1.0), 300.0)
+        self.recover_max_alternates = min(max(self.recover_max_alternates, 1), 20)
         self.max_extract_fields = max(self.max_extract_fields, 1)
         self.extract_max_items = min(max(self.extract_max_items, 1), EXTRACT_MAX_ITEMS_CEILING)
         self.extract_max_chars = min(
@@ -406,6 +428,9 @@ class WebToolsSettings:
             max_crawl_jobs=_int("WEB_TOOLS_MAX_CRAWL_JOBS", 32),
             max_crawl_errors=_int("WEB_TOOLS_MAX_CRAWL_ERRORS", 100),
             archive_budget_seconds=_float("WEB_TOOLS_ARCHIVE_BUDGET_SECONDS", 20.0),
+            scrape_recover=os.getenv("WEB_TOOLS_SCRAPE_RECOVER", "on"),
+            recover_budget_seconds=_float("WEB_TOOLS_RECOVER_BUDGET_SECONDS", 30.0),
+            recover_max_alternates=_int("WEB_TOOLS_RECOVER_MAX_ALTERNATES", 6),
             data_dir=_data_dir_from_env(),
             max_extract_fields=_int("WEB_TOOLS_MAX_EXTRACT_FIELDS", 50),
             extract_max_items=_int("WEB_TOOLS_EXTRACT_MAX_ITEMS", 100),

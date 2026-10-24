@@ -21,6 +21,9 @@ from web_scraper.web_tools.pdf import PDF_CONTENT_TYPE, looks_like_pdf
 from web_scraper.web_tools.urls import UnsafeUrlError, normalize_request_url
 
 _RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504}
+# How much of a refusing page a FetchError keeps: its head, where the title and the page's other
+# forms (AMP, feeds) are named.
+_REFUSAL_BODY_KEPT = 30_000
 _TEXTUAL_TYPES = {
     "application/atom+xml",
     "application/json",
@@ -55,6 +58,7 @@ class FetchError(Exception):
         status_code: Optional[int] = None,
         detail: Optional[str] = None,
         retryable: bool = False,
+        body: str = "",
     ) -> None:
         super().__init__(message)
         self.code = code
@@ -62,6 +66,9 @@ class FetchError(Exception):
         self.status_code = status_code
         self.detail = detail
         self.retryable = retryable
+        # The first bytes of the page that refused (a wall's own head), kept for the code that
+        # tries to read the page another way; it is not part of ``to_dict``.
+        self.body = body
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise the error without leaking request headers or bodies."""
@@ -311,6 +318,7 @@ class SafeFetcher:
                                     url=current,
                                     status_code=status,
                                     detail=interstitial,
+                                    body=html[:_REFUSAL_BODY_KEPT],
                                 )
                             raise FetchError(
                                 "http_error",
@@ -318,6 +326,9 @@ class SafeFetcher:
                                 url=current,
                                 status_code=status,
                                 retryable=status in _RETRYABLE_STATUS,
+                                body=html[:_REFUSAL_BODY_KEPT]
+                                if self._is_textual(content_type)
+                                else "",
                             )
 
                         safe_headers = {
@@ -363,6 +374,7 @@ class SafeFetcher:
                                 url=current,
                                 status_code=status,
                                 detail=interstitial,
+                                body=html[:_REFUSAL_BODY_KEPT],
                             )
 
                         return FetchResult(

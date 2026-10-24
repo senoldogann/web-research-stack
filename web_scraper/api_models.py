@@ -508,9 +508,13 @@ class WebScrapeRequest(BaseModel):
     archive: bool = Field(
         default=False,
         description=(
-            "A walled or gone page: read the Internet Archive's newest copy that is not itself "
-            "a wall, marked as such (may be days or months old)"
+            "Read the Internet Archive's newest copy that is not a wall (may be old); alone, "
+            "this asks only for that"
         ),
+    )
+    recover: Optional[bool] = Field(
+        default=None,
+        description="A walled page: false does not look for it elsewhere (default on)",
     )
 
     @field_validator("url")
@@ -600,6 +604,21 @@ class WebScrapeResponse(BaseModel):
             "With archive, the newer copies that were not read (a captcha or a login wall the "
             "archive's crawler met, an empty page), newest first"
         ),
+    )
+    recovered_from: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Set when the page was walled and read another way: kind (archive, amp, print, feed, "
+            "other_source) and url of where the text came from; the text begins with a line "
+            "saying so. For other_source, url is that outlet's, not the page's"
+        ),
+    )
+    alternates: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        description="With recovered_from: other addresses (url, domain, title, date, source_type, why)",
+    )
+    next_action: Optional[str] = Field(
+        default=None, description="With recovered_from: one sentence on what to do with the text"
     )
     warnings: List[str] = Field(default_factory=list)
     timings: Dict[str, float]

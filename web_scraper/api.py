@@ -1309,7 +1309,9 @@ def create_app(settings: Optional[Config] = None) -> FastAPI:
         _: str = Depends(require_web_access),
     ) -> Union[WebScrapeResponse, WebScrapeBatchResponse]:
         web_tools: WebToolsService = request.app.state.web_tools
-        options = payload.model_dump(include={"links", "max_links"}, exclude_defaults=True)
+        options = payload.model_dump(
+            include={"links", "max_links", "recover"}, exclude_defaults=True
+        )
         async with app.state.concurrency_gate.acquire():
             if payload.urls:
                 batch = await web_tools.scrape_many(

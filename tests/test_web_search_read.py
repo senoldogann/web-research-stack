@@ -157,7 +157,10 @@ class TestAnswer:
         with_archive = await service.search(
             QUERY + " a", depth="fast", limit=1, read=1, archive=True
         )
-        assert with_archive["results"][0]["content"].startswith("# Page")
+        content = with_archive["results"][0]["content"]
+        # The archive's copy says it is the archive's before it says anything of the page.
+        assert content.startswith("> Recovered from the Internet Archive's copy of ")
+        assert "\n\n# Page" in content
         assert snapshot in fetcher.calls
 
     @pytest.mark.asyncio

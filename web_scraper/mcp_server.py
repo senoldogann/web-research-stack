@@ -128,7 +128,7 @@ async def _search(service: WebToolsService, arguments: dict[str, Any]) -> dict[s
 
 async def _scrape(service: WebToolsService, arguments: dict[str, Any]) -> dict[str, Any]:
     request = WebScrapeRequest.model_validate(arguments)
-    options = request.model_dump(include={"links", "max_links"}, exclude_defaults=True)
+    options = request.model_dump(include={"links", "max_links", "recover"}, exclude_defaults=True)
     if request.urls:
         return await service.scrape_many(
             request.urls,
@@ -239,18 +239,20 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
                 "name": "web_scrape",
                 "description": (
                     "Fetch one public URL HTTP-first and return clean Markdown, title, "
-                    "description, canonical URL, status, links from the page content (50 by "
-                    "default; max_links 0 to 200, links: false for none; menus, headers, "
-                    "footers, and sidebars left out; links_truncated says more exist, web_map "
-                    "lists them all), metadata, content hash, and stage timings. max_chars "
-                    "bounds the Markdown only. urls (2 to 10) instead of url reads pages in "
-                    "one call: pages, in order, each an answer or {url, error}; max_total_chars "
-                    "(60,000) bounds the whole answer. A shared headless browser is used only "
-                    "for JavaScript shells or access interstitials; CAPTCHA and login walls "
-                    "fail fast, their error's hint saying what to try next: archive: true reads "
-                    "the Internet Archive's newest copy that is not itself a wall "
-                    "(fetched_with archive, archived_at, archive_skipped). A PDF comes back as "
-                    "Markdown text with content_type application/pdf and its page count in "
+                    "description, canonical URL, status, content links (50; max_links 0 to 200, "
+                    "links: false for none; links_truncated says more exist), metadata, date "
+                    "with date_source, date_confidence and date_conflicts (all the page's date "
+                    "signals weighed), content hash and timings. max_chars bounds the Markdown "
+                    "only. urls (2 to 10) instead of url reads pages in one call: pages in "
+                    "order, each an answer or {url, error}; max_total_chars (60,000) bounds the "
+                    "answer. A headless browser is used only for JavaScript shells and access "
+                    "interstitials. A walled page (captcha, 401/403/429, bot wall) is read "
+                    "another way: the Internet Archive's copy, the site's AMP or print form, its "
+                    "feed, then another outlet's report found by the title. recovered_from "
+                    "says which, the text starts with a line saying whose it is, alternates "
+                    "lists other addresses and next_action what to do; if nothing reads, the "
+                    "error carries both. archive: true alone asks only for the archive; "
+                    "recover: false for none. A PDF is Markdown text with its page count in "
                     "pages."
                 ),
                 "inputSchema": WebScrapeRequest.model_json_schema(),
@@ -424,7 +426,12 @@ def _dispatch_error(exc: Exception) -> dict[str, Any]:
     if isinstance(exc, _ArgumentError):
         return _error_result("invalid_arguments", str(exc))
     if isinstance(exc, WebToolError):
-        extra = {"hint": exc.hint} if exc.hint else {}
+        said = exc.to_dict()
+        extra = {
+            key: value
+            for key, value in said.items()
+            if key not in {"code", "message", "url", "status_code", "detail"}
+        }
         return _error_result(
             exc.code,
             str(exc),

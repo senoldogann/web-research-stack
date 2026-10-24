@@ -161,7 +161,9 @@ class TestAnswer:
         assert missing["error"]["status_code"] == 404
         assert set(walled) == {"url", "error"}
         assert walled["error"]["code"] == "blocked" and walled["error"]["detail"] == "captcha"
-        assert "archive: true" in walled["error"]["hint"]  # the envelope keeps its hint
+        # The envelope keeps its hint, and says what to do next: the page was tried every way.
+        assert "walled" in walled["error"]["hint"] and walled["error"]["next_action"]
+        assert walled["error"]["alternates"] == []
 
     @pytest.mark.asyncio
     async def test_an_unexpected_failure_is_an_internal_error_entry(self) -> None:

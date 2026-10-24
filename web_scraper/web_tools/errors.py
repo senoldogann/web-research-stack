@@ -37,6 +37,8 @@ class WebToolError(Exception):
         status_code: Optional[int] = None,
         detail: Optional[str] = None,
         hint: Optional[str] = None,
+        extra: Optional[dict[str, Any]] = None,
+        body: str = "",
     ) -> None:
         super().__init__(message)
         self.code = code
@@ -45,6 +47,10 @@ class WebToolError(Exception):
         self.detail = detail
         # What a caller can try next; only in the error when there is something to try.
         self.hint = hint
+        # More the error says when it has more to say (a walled page's alternates and next_action).
+        self.extra: dict[str, Any] = dict(extra or {})
+        # The refusing page's first bytes, for the code that tries to get round it. Never serialised.
+        self.body = body
 
     @property
     def http_status(self) -> int:
@@ -60,4 +66,6 @@ class WebToolError(Exception):
         }
         if self.hint:
             payload["hint"] = self.hint
+        for key, value in self.extra.items():
+            payload.setdefault(key, value)
         return payload

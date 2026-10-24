@@ -10,6 +10,7 @@ from typing import Any, Optional
 from urllib.parse import urljoin, urlsplit
 
 from bs4 import BeautifulSoup, NavigableString, Tag
+from bs4.element import PreformattedString
 from defusedxml import ElementTree
 
 from web_scraper.web_tools.dates import DISAGREEMENT_DAYS, DateResolution, resolve_page
@@ -188,7 +189,20 @@ def _resolve(base_url: str, href: str) -> Optional[str]:
         return None
 
 
+def _is_markup(node: Any) -> bool:
+    """Whether a node of the parse tree is markup that a visitor never sees: a comment, a CDATA section, a
+    processing instruction, a declaration, a doctype.
+
+    The parser makes each of them a ``NavigableString`` like the text of the page, and the reader took
+    every one of those for text: ``<!-- Loading animation while page loads -->`` was the whole "page" of a
+    shell whose app had not started, and a Google Tag Manager comment was a line of the Markdown.
+    """
+    return isinstance(node, PreformattedString)
+
+
 def _inline(node: Any, base_url: str) -> str:
+    if _is_markup(node):
+        return ""
     if isinstance(node, NavigableString):
         return re.sub(r"\s+", " ", str(node))
     if not isinstance(node, Tag):
@@ -281,6 +295,8 @@ def _render_children(node: Tag, base_url: str) -> str:
 
 
 def _render_node(node: Any, base_url: str) -> str:
+    if _is_markup(node):
+        return ""
     if isinstance(node, NavigableString):
         text = _clean_text(str(node))
         return text

@@ -465,8 +465,10 @@ def _tool_manifest(settings: Config) -> ToolsManifest:
                 description=(
                     "List URLs from robots.txt sitemaps, nested sitemap indexes, and page "
                     "links with domain scope, search, include/exclude filters, and a limit. "
-                    "A site whose address redirects (apex to www, http to https) is mapped at "
-                    "the host it lands on, named in host, with redirected_from."
+                    "A site whose address redirects within the site (apex to www, http to "
+                    "https) is mapped at the host it lands on, named in host, with "
+                    "redirected_from; an address that leads to another site is not mapped "
+                    "there (urls is its own page) and says where in redirected_to."
                 ),
                 method="POST",
                 path="/api/v1/web/map",

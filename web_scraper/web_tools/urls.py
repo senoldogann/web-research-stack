@@ -10,6 +10,7 @@ from typing import Any, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from web_scraper.network_safety import host_problem
+from web_scraper.web_tools.sources import registrable_domain
 
 _TRACKING_PARAMS = {
     "fbclid",
@@ -245,14 +246,37 @@ def url_in_scope(url: str, base_url: str, include_subdomains: bool) -> bool:
     return include_subdomains and target_host.endswith("." + base_host)
 
 
-def site_scopes(requested: str, site: str, include_subdomains: bool) -> list[str]:
+def same_registrable_domain(first: str, second: str) -> bool:
+    """Whether two addresses are one site: the same host, the host with or without its ``www.``, or two hosts
+    of one registrable domain (``docs.example.com`` and ``www.example.com``). The scheme and the port are not
+    the site (``http`` to ``https``). An address that leads anywhere else is another site's, and what it
+    serves is not this site's robots.txt, sitemap or page."""
+    try:
+        hosts = [
+            (urlsplit(canonicalize_url(address)).hostname or "").lower()
+            for address in (first, second)
+        ]
+    except (UnsafeUrlError, ValueError):
+        return False
+    if not all(hosts):
+        return False
+    bare = [host[4:] if host.startswith("www.") else host for host in hosts]
+    return bare[0] == bare[1] or registrable_domain(hosts[0]) == registrable_domain(hosts[1])
+
+
+def site_scopes(requested: str, site: str, include_subdomains: bool = False) -> list[str]:
     """The addresses that stand for one site, for ``url_in_scope``.
 
-    The address a caller asked for, the one it landed on after its redirects (``senoldogan.dev`` to
-    ``www.senoldogan.dev``: the host it lands on is the site's own), and, with subdomains, the host
-    without its ``www.`` (the site's other subdomains are its siblings, not the ``www`` host's).
+    The address a caller asked for, the one it landed on after its redirects when that is the same site
+    (``senoldogan.dev`` to ``www.senoldogan.dev``: the host it lands on is the site's own;
+    ``same_registrable_domain``),
+    and, with subdomains, the host without its ``www.`` (the site's other subdomains are its siblings, not
+    the ``www`` host's). Where an address led to another site, that site is not a scope: whoever hands the
+    landing over, a redirect does not decide which site is read.
     """
-    scopes = [requested] if requested == site else [requested, site]
+    scopes = [requested]
+    if site != requested and same_registrable_domain(requested, site):
+        scopes.append(site)
     if include_subdomains:
         for address in list(scopes):
             parts = urlsplit(address)

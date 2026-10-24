@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import IO, Any, Callable, Coroutine, Mapping, Optional
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from web_scraper import __version__
 from web_scraper.api_models import (
@@ -103,6 +103,15 @@ class _CrawlResultsArguments(BaseModel):
     job_id: str = Field(..., min_length=1, max_length=128)
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=20, ge=1, le=1000)
+
+
+class _NoArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+async def _health(service: WebToolsService, arguments: dict[str, Any]) -> dict[str, Any]:
+    _NoArguments.model_validate(arguments)
+    return service.health()
 
 
 async def _search(service: WebToolsService, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -289,6 +298,22 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
                 ),
             },
             _extract,
+        ),
+        (
+            {
+                "name": "web_health",
+                "description": (
+                    "Each search provider's state in this process: ok, degraded, cooling "
+                    "(cooldown_remaining_s) or no_key (key_env names the variable), its calls, "
+                    "block_rate (captchas and refusals), mean_latency_ms and last_error; order "
+                    "is the order the next search asks them in. Cheap: no request is made."
+                ),
+                "inputSchema": _NoArguments.model_json_schema(),
+                "annotations": _annotations(
+                    read_only=True, destructive=False, idempotent=True, open_world=False
+                ),
+            },
+            _health,
         ),
         (
             {

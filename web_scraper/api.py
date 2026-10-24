@@ -1428,6 +1428,14 @@ def create_app(settings: Optional[Config] = None) -> FastAPI:
         jobs = await web_tools.list_crawls()
         return {"jobs": jobs, "count": len(jobs)}
 
+    @app.get("/api/v1/web/health", tags=["Web Tools"])
+    async def web_tool_health(
+        request: Request,
+        _: str = Depends(require_web_access),
+    ) -> dict[str, Any]:
+        web_tools: WebToolsService = request.app.state.web_tools
+        return web_tools.health()
+
     @app.get("/api/v1/web/stats", tags=["Web Tools"])
     async def web_tool_stats(
         request: Request,

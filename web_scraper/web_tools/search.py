@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -15,7 +16,12 @@ from web_scraper.duckduckgo_search import (
 )
 from web_scraper.google_search import GoogleSearchBlocked, GoogleSearcher
 from web_scraper.web_tools.errors import WebToolError
-from web_scraper.yahoo_search import YahooBlocked, YahooSearcher, close_yahoo_session
+from web_scraper.yahoo_search import (
+    YahooBlocked,
+    YahooHttpError,
+    YahooSearcher,
+    close_yahoo_session,
+)
 
 
 @dataclass
@@ -183,11 +189,7 @@ class DuckDuckGoSearchAdapter:
                 detail="bot_detected",
             ) from exc
         except Exception as exc:  # noqa: BLE001 - surface a stable error
-            raise WebToolError(
-                "search_failed",
-                f"{self.label} search failed",
-                detail=type(exc).__name__,
-            ) from exc
+            raise _failure(self.label, exc) from exc
         return _from_dicts(raw)
 
     async def aclose(self) -> None:
@@ -237,10 +239,15 @@ class YahooSearchAdapter:
             raise WebToolError(
                 "search_failed", "Yahoo refused the search", detail="bot_detected"
             ) from exc
-        except Exception as exc:  # noqa: BLE001 - surface a stable error
+        except YahooHttpError as exc:
             raise WebToolError(
-                "search_failed", "Yahoo search failed", detail=type(exc).__name__
+                "search_failed",
+                f"Yahoo answered HTTP {exc.status}",
+                status_code=exc.status,
+                detail=f"http_{exc.status}",
             ) from exc
+        except Exception as exc:  # noqa: BLE001 - surface a stable error
+            raise _failure("Yahoo", exc) from exc
         return _from_dicts(raw)
 
     async def aclose(self) -> None:
@@ -281,8 +288,15 @@ class GoogleSearchAdapter:
         try:
             raw = await self._searcher.search(query, num_results=limit, **extra)
         except GoogleSearchBlocked as exc:
+            said = str(exc)
+            wall = any(
+                mark in said.lower()
+                for mark in ("bot check", "captcha", "unusual traffic", "consent")
+            )
             raise WebToolError(
-                "search_failed", "Google refused the search", detail=str(exc)
+                "search_failed",
+                f"Google refused the search: {said[:160]}",
+                detail="bot_detected" if wall else said[:160],
             ) from exc
         except Exception as exc:  # noqa: BLE001 - surface a stable error
             raise WebToolError(
@@ -291,6 +305,33 @@ class GoogleSearchAdapter:
                 detail=type(exc).__name__,
             ) from exc
         return _from_dicts(raw)
+
+
+def _failure(label: str, exc: Exception) -> WebToolError:
+    """A provider's exception as a stable error: a timeout, an HTTP status, or its class name.
+
+    A status that refuses (403, 429, 999) is a wall (``bot_detected``); any other error status is
+    ``http_<status>``; an exception that says nothing of that keeps its class name.
+    """
+    name = type(exc).__name__
+    if isinstance(exc, asyncio.TimeoutError) or "timeout" in name.lower():
+        return WebToolError("timeout", f"{label} timed out", detail="search_timeout")
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if isinstance(status, int) and status >= 400:
+        if status in (403, 429, 999):
+            return WebToolError(
+                "search_failed",
+                f"{label} refused the search",
+                status_code=status,
+                detail="bot_detected",
+            )
+        return WebToolError(
+            "search_failed",
+            f"{label} answered HTTP {status}",
+            status_code=status,
+            detail=f"http_{status}",
+        )
+    return WebToolError("search_failed", f"{label} search failed", detail=name)
 
 
 def _from_dicts(raw: list[dict]) -> list[SearchResult]:

@@ -27,6 +27,14 @@ class YahooBlocked(RuntimeError):
     """Yahoo refused the search: a refusing status, a consent page, or a challenge."""
 
 
+class YahooHttpError(RuntimeError):
+    """Yahoo answered an error status that is not a refusal (a 5xx, a 404): its failure, not a wall."""
+
+    def __init__(self, status: int) -> None:
+        super().__init__(f"Yahoo answered HTTP {status}")
+        self.status = status
+
+
 _SESSION = SharedSession()
 
 
@@ -120,7 +128,7 @@ class YahooSearcher:
             if status in self._REFUSING_STATUSES:
                 raise YahooBlocked(f"Yahoo answered HTTP {status}")
             if status >= 400:
-                raise RuntimeError(f"Yahoo answered HTTP {status}")
+                raise YahooHttpError(status)
             return response
         raise YahooBlocked("Yahoo redirected the search too many times")
 

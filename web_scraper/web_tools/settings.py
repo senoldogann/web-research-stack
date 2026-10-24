@@ -130,8 +130,17 @@ class WebToolsSettings:
         default_factory=lambda: list(DEFAULT_FALLBACK_PROVIDERS)
     )
     search_fallback_timeout_seconds: float = 60.0
-    search_provider_cooldown_seconds: int = 5
-    search_provider_max_cooldown_seconds: int = 300
+    # A provider that meets a wall (a captcha, a bot check), or fails search_provider_failure_limit
+    # times in a row, is skipped for search_provider_cooldown_seconds (10 minutes); a provider that
+    # comes back and is refused again cools down twice as long, up to the maximum (an hour). The
+    # window is how far back the recent calls that order the providers reach.
+    search_provider_cooldown_seconds: int = 600
+    search_provider_max_cooldown_seconds: int = 3_600
+    search_provider_failure_limit: int = 3
+    search_provider_window_seconds: int = 1_800
+    # A deep search's primary-source angle is the one worth waiting for: it may run this long when
+    # the side angles are cut at search_angle_budget_ms (0 gives it the same budget).
+    search_primary_budget_ms: int = 15_000
     default_search_limit: int = 5
     max_search_limit: int = 20
     max_query_length: int = 500
@@ -233,6 +242,9 @@ class WebToolsSettings:
             self.search_provider_max_cooldown_seconds,
             self.search_provider_cooldown_seconds,
         )
+        self.search_provider_failure_limit = max(self.search_provider_failure_limit, 1)
+        self.search_provider_window_seconds = max(self.search_provider_window_seconds, 60)
+        self.search_primary_budget_ms = min(max(self.search_primary_budget_ms, 0), 300_000)
         self.default_search_limit = max(self.default_search_limit, 1)
         self.max_search_limit = max(self.max_search_limit, self.default_search_limit)
         self.max_query_length = max(self.max_query_length, 1)
@@ -336,12 +348,15 @@ class WebToolsSettings:
             ),
             search_provider_cooldown_seconds=_int(
                 "WEB_TOOLS_SEARCH_PROVIDER_COOLDOWN_SECONDS",
-                5,
+                600,
             ),
             search_provider_max_cooldown_seconds=_int(
                 "WEB_TOOLS_SEARCH_PROVIDER_MAX_COOLDOWN_SECONDS",
-                300,
+                3_600,
             ),
+            search_provider_failure_limit=_int("WEB_TOOLS_SEARCH_PROVIDER_FAILURE_LIMIT", 3),
+            search_provider_window_seconds=_int("WEB_TOOLS_SEARCH_PROVIDER_WINDOW_SECONDS", 1_800),
+            search_primary_budget_ms=_int("WEB_TOOLS_SEARCH_PRIMARY_BUDGET_MS", 15_000),
             default_search_limit=_int("WEB_TOOLS_DEFAULT_SEARCH_LIMIT", 5),
             max_search_limit=_int("WEB_TOOLS_MAX_SEARCH_LIMIT", 20),
             max_query_length=_int("WEB_TOOLS_MAX_QUERY_LENGTH", 500),

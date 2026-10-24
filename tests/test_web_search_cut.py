@@ -102,9 +102,9 @@ async def test_a_cut_starts_no_cooldown_and_a_refusal_does(
     failures: list[str] = []
     original = ProviderHealth.record_failure
 
-    def spy(self: ProviderHealth, base: float, ceiling: float) -> float:
+    def spy(self: ProviderHealth, base: float, ceiling: float, **kwargs: object) -> float:
         failures.append("failure")
-        return original(self, base, ceiling)
+        return original(self, base, ceiling, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(ProviderHealth, "record_failure", spy)
 

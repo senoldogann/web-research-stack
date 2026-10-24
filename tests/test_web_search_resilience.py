@@ -157,7 +157,7 @@ class TestProviderPacing:
         assert settings.search_provider_concurrency == 1
         assert (settings.search_jitter_min_ms, settings.search_jitter_max_ms) == (250, 500)
         assert settings.search_fallback_providers == ["duckduckgo_lite", "yahoo", "google"]
-        assert settings.search_provider_cooldown_seconds == 5
+        assert settings.search_provider_cooldown_seconds == 600  # 10 minutes
 
     def test_settings_read_pacing_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("WEB_TOOLS_SEARCH_PROVIDER_CONCURRENCY", "2")
@@ -331,7 +331,7 @@ class TestProviderCooldown:
         assert response["queries"][0]["fallback"]["reason"] == "provider_cooldown"
         snapshot = await service.metrics_snapshot()
         assert snapshot["search_providers"]["duckduckgo"]["consecutive_failures"] == 1
-        assert 0 < snapshot["search_providers"]["duckduckgo"]["cooldown_remaining_s"] <= 5
+        assert 0 < snapshot["search_providers"]["duckduckgo"]["cooldown_remaining_s"] <= 600
         assert snapshot["search_providers"]["google"]["consecutive_failures"] == 0
 
     @pytest.mark.asyncio

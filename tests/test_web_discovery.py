@@ -535,7 +535,16 @@ async def test_deep_runs_four_angles() -> None:
     result = await _service(search).search("python asyncio", limit=5, depth="deep")
 
     assert len(search.calls) == 4
-    assert search.calls[-1][0] == "python asyncio official documentation"
+    # The base first; then the primary-source angle, which is asked before the side angles so
+    # that it queues first at the provider's gate; the answer keeps the angles' order.
+    assert search.calls[0][0] == "python asyncio"
+    assert search.calls[1][0] == "python asyncio official documentation"
+    assert [report["angle"] for report in result["queries"]] == [
+        "base",
+        "current",
+        "background",
+        "primary",
+    ]
     assert result["depth"] == "deep"
 
 
@@ -730,7 +739,8 @@ async def test_repeated_failures_lengthen_only_that_providers_cooldown() -> None
     snapshot = await service.metrics_snapshot()
     assert len(search.calls) == 2
     assert snapshot["search_providers"]["fake"]["consecutive_failures"] == 2
-    assert 5 < snapshot["search_providers"]["fake"]["cooldown_remaining_s"] <= 10
+    # The first cooldown is 10 minutes (the default), the second twice as long.
+    assert 600 < snapshot["search_providers"]["fake"]["cooldown_remaining_s"] <= 1200
 
 
 @pytest.mark.asyncio

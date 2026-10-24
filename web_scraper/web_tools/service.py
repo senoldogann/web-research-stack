@@ -56,8 +56,9 @@ from web_scraper.web_tools.fetcher import FetchError, FetchResult, HostGate, Saf
 from web_scraper.web_tools.headdates import read_result_dates
 from web_scraper.web_tools.metrics import LatencyTracker, WebToolsMetrics
 from web_scraper.web_tools.pagecache import CachedDocument, PageCache
+from web_scraper.web_tools.paid_search import PAID_PROVIDERS, build_paid_adapters
 from web_scraper.web_tools.pdf import PDF_CONTENT_TYPE, PdfError, extract_pdf
-from web_scraper.web_tools.providers import ProviderGate, ProviderHealth
+from web_scraper.web_tools.providers import ProviderGate, ProviderHealth, failure_kind
 from web_scraper.web_tools.robots import RobotsPolicy
 from web_scraper.web_tools.search import (
     DuckDuckGoLiteSearchAdapter,
@@ -130,7 +131,11 @@ class _AngleOutcome:
 
 
 class _ProviderCoolingDown(Exception):
-    """A provider skipped for its cooldown while a healthy fallback exists."""
+    """A provider skipped while a better one exists: it is cooling down, or its record is worse."""
+
+    def __init__(self, name: str, reason: str = "provider_cooldown") -> None:
+        super().__init__(name)
+        self.reason = reason
 
 
 class WebToolsService:
@@ -216,6 +221,8 @@ class WebToolsService:
             "yahoo": YahooSearchAdapter(language=settings.search_language),
             "google": GoogleSearchAdapter(),
         }
+        # Brave and Serper exist only when their key is in the environment.
+        adapters.update(build_paid_adapters(timeout=settings.search_timeout_seconds))
         return cls(
             settings=settings,
             fetcher=fetcher,
@@ -277,8 +284,15 @@ class WebToolsService:
                 detail="Use 'fast', 'discover' or 'deep'",
             )
 
-        provider_name = (provider or self.settings.search_provider).strip().lower()
+        provider_name = self._primary_provider(provider)
         if provider_name not in self.search_adapters:
+            keyed = PAID_PROVIDERS.get(provider_name)
+            if keyed is not None:
+                raise WebToolError(
+                    "invalid_request",
+                    f"Search provider {provider_name} is off: it needs {keyed.env} in the environment",
+                    detail="no_key",
+                )
             raise WebToolError("invalid_request", f"Unknown search provider: {provider_name}")
         resolved_limit = min(
             max(limit or self.settings.default_search_limit, 1),
@@ -674,40 +688,61 @@ class WebToolsService:
         *,
         options: Optional[SearchOptions] = None,
     ) -> list[tuple[_AngleOutcome, float]]:
-        """The angles after the base, together, each cut once the angle budget ran out.
+        """The angles after the base, together, each cut once its time budget ran out.
 
         A refused angle can wait out the provider's cooldown or start the headless
         Google fallback (seconds to tens of seconds), so the base's answer is not
-        held for it. A cut angle is reported as a ``timeout`` with the detail
-        ``angle_budget``; being the search's own limit, it marks no provider as
-        failed.
+        held for it. The side angles (current, background) are cut at
+        ``search_angle_budget_ms``; the primary-source angle of a deep search, the one worth
+        waiting for, is asked first (it queues first at the provider's gate) and goes on to
+        ``search_primary_budget_ms`` while the side angles are already cut. A cut angle is
+        reported as a ``timeout`` with the detail ``angle_budget``; being the search's own
+        limit, it marks no provider as failed. The answers are returned in the angles' order.
         """
         if not angles:
             return []
         delay = self.settings.search_angle_delay_ms / 1000
-        tasks = [
-            asyncio.create_task(
-                self._timed_angle(provider, angle, limit, stagger=delay * position, options=options)
-            )
-            for position, angle in enumerate(angles, start=1)
-        ]
         budget = self.settings.search_angle_budget_ms / 1000
+        primary_budget = max(self.settings.search_primary_budget_ms / 1000, budget)
+        # The primary angle is scheduled first: it is the last angle in the order of the answer
+        # and would otherwise queue behind the side angles at a gate of one call at a time.
+        schedule = sorted(range(len(angles)), key=lambda index: angles[index].name != "primary")
+        tasks: list[Optional[asyncio.Task[tuple[_AngleOutcome, float]]]] = [None] * len(angles)
+        for position, index in enumerate(schedule, start=1):
+            tasks[index] = asyncio.create_task(
+                self._timed_angle(
+                    provider, angles[index], limit, stagger=delay * position, options=options
+                )
+            )
+        running = [task for task in tasks if task is not None]  # in the angles' order
+        primaries = {tasks[index] for index, angle in enumerate(angles) if angle.name == "primary"}
+        pending: set[asyncio.Task[tuple[_AngleOutcome, float]]] = set()
         try:
-            _, pending = await asyncio.wait(tasks, timeout=budget or None)
+            if budget:
+                _, pending = await asyncio.wait(running, timeout=budget)
+                for task in pending - primaries:
+                    task.cancel()
+                waiting = pending & primaries
+                if waiting:
+                    _, waiting = await asyncio.wait(waiting, timeout=primary_budget - budget)
+                pending = (pending - primaries) | waiting
+            else:
+                await asyncio.wait(running)
         finally:
-            for task in tasks:
+            for task in running:
                 task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(*running, return_exceptions=True)
 
         answered: list[tuple[_AngleOutcome, float]] = []
-        for task in tasks:
+        for task in running:
+            allowed = primary_budget if task in primaries else budget
             if task in pending:
                 cut = WebToolError(
                     "timeout",
-                    "The angle ran past the search's time budget",
+                    f"The angle ran past the search's time budget ({allowed:g} s)",
                     detail="angle_budget",
                 )
-                answered.append((_AngleOutcome(provider, error=cut), budget * 1000))
+                answered.append((_AngleOutcome(provider, error=cut), allowed * 1000))
             elif task.exception() is not None:
                 failed = WebToolError(
                     "search_failed",
@@ -772,8 +807,8 @@ class WebToolsService:
         primary_error: Optional[WebToolError] = None
         try:
             results = await self._call_provider(primary, query, limit, date_filter, yield_to=chain)
-        except _ProviderCoolingDown:
-            reason = "provider_cooldown"
+        except _ProviderCoolingDown as skipped:
+            reason = skipped.reason
             tried.append({"provider": primary, "status": "skipped", "reason": reason})
         except WebToolError as exc:
             if all(self._provider_health_for(name).cooling_down() for name in chain):
@@ -848,20 +883,26 @@ class WebToolsService:
         adapter = self.search_adapters[name]
         health = self._provider_health_for(name)
         gate = self._provider_gate_for(name)
+        window = self.settings.search_provider_window_seconds
 
         def should_yield() -> bool:
-            return (
-                bool(yield_to)
-                and health.cooling_down()
-                and any(not self._provider_health_for(name).cooling_down() for name in yield_to)
+            """Whether a provider in the list is in better standing than this one: not cooling
+            when this one is, or answering more of its calls."""
+            return bool(yield_to) and health.standing(window) > min(
+                self._provider_health_for(other).standing(window) for other in yield_to
+            )
+
+        def gave_way() -> _ProviderCoolingDown:
+            return _ProviderCoolingDown(
+                name, "provider_cooldown" if health.cooling_down() else "provider_unhealthy"
             )
 
         if should_yield():
-            raise _ProviderCoolingDown(name)
+            raise gave_way()
         async with gate.turn():
             # A call queued behind a failure re-checks before spending its turn.
             if should_yield():
-                raise _ProviderCoolingDown(name)
+                raise gave_way()
             await gate.pace()
             # An adapter is given the date filter and the options only when a caller asked for
             # them: with none, the call is what it always was, so an adapter written as
@@ -871,6 +912,7 @@ class WebToolsService:
                 extra["date_filter"] = date_filter
             if options:
                 extra["options"] = options
+            call_started = time.perf_counter()
             try:
                 results = await asyncio.wait_for(
                     adapter.search(query, limit, **extra),
@@ -885,22 +927,31 @@ class WebToolsService:
             except WebToolError as exc:
                 failure = exc
             except Exception as exc:  # noqa: BLE001 - provider boundary
+                # Whatever a provider raises (Yahoo's RuntimeError for an HTTP error status, a
+                # parser given a page it did not expect) is its failure, never the search's.
                 failure = WebToolError(
                     "search_failed",
                     "Search provider failed",
                     detail=type(exc).__name__,
                 )
             else:
-                health.record_success()
+                health.record_success((time.perf_counter() - call_started) * 1000)
                 return results
             finally:
                 gate.finish()
 
-        health.record_failure(
+        kind = failure_kind(failure)
+        cooldown = health.record_failure(
             self.settings.search_provider_cooldown_seconds,
             self.settings.search_provider_max_cooldown_seconds,
+            kind=kind,
+            limit=self.settings.search_provider_failure_limit,
+            error=failure,
+            latency_ms=(time.perf_counter() - call_started) * 1000,
         )
-        self.metrics.count("search_provider_failures_total", provider=name)
+        self.metrics.count("search_provider_failures_total", provider=name, kind=kind)
+        if cooldown:
+            self.metrics.count("search_provider_cooldowns_total", provider=name, kind=kind)
         raise failure
 
     @staticmethod
@@ -938,22 +989,107 @@ class WebToolsService:
         """
         names = [
             name
-            for name in self.settings.search_fallback_providers
+            for name in self._route_after(primary)
             if name != primary and name in self.search_adapters
         ]
-        if fast:
-            names.sort(
-                key=lambda name: bool(getattr(self.search_adapters[name], "headless", False))
-            )
+        window = self.settings.search_provider_window_seconds
+        healths = {name: self._provider_health_for(name) for name in names}
+
+        def key(name: str) -> tuple[int, bool]:
+            headless = fast and bool(getattr(self.search_adapters[name], "headless", False))
+            return healths[name].standing(window), headless
+
+        # Healthier providers first, by how their recent calls went; ties keep the configured
+        # order (the sort is stable). A cooling provider keeps its place: it is skipped there
+        # without a call, and the answer records it.
+        slots = [index for index, name in enumerate(names) if not healths[name].cooling_down()]
+        movers = sorted((names[index] for index in slots), key=key)
+        for index, name in zip(slots, movers):
+            names[index] = name
         return names
+
+    def _route_after(self, primary: str) -> list[str]:
+        """The providers a search falls to when *primary* fails, before their health orders them.
+
+        The configured fallback chain; and the providers with a key, which a call that names its
+        own provider reaches last and an unnamed call reaches first (see ``_primary_provider``);
+        DuckDuckGo stays a fallback of a keyed provider.
+        """
+        paid = [name for name in PAID_PROVIDERS if name in self.search_adapters]
+        configured = self.settings.search_fallback_providers
+        if primary in paid:
+            rest = [*paid, self.settings.search_provider, *configured]
+        else:
+            rest = [*configured, *paid]
+        return list(dict.fromkeys(rest))
+
+    def _primary_provider(self, requested: Optional[str]) -> str:
+        """The provider a search asks first: the one a call names, else the first with a key, else the setting.
+
+        A provider with a key (Brave, Serper) is used first when the call names none; none of them
+        is on without its key.
+        """
+        name = (requested or "").strip().lower()
+        if name:
+            return name
+        for paid in PAID_PROVIDERS:
+            if paid in self.search_adapters:
+                return paid
+        return self.settings.search_provider
+
+    def health(self) -> dict[str, Any]:
+        """Each search provider's state in this process, for ``web_health``.
+
+        Cheap: it reads the record the calls left (no request is made). A provider is ``ok``,
+        ``degraded`` (it answered under 4 of 5 of its recent calls), ``cooling`` (with the time
+        left) or ``no_key`` (Brave and Serper without their key, with the variable they read; the
+        key itself is never in an answer). Each has its calls in this process, the share that met
+        a wall (``block_rate``), the mean latency of its calls and its last error. ``order`` is the
+        order the next search would ask them in.
+        """
+        names = list(self.search_adapters)
+        names += [name for name in PAID_PROVIDERS if name not in names]
+        providers: list[dict[str, Any]] = []
+        for name in names:
+            if name not in self.search_adapters:
+                providers.append(
+                    {"name": name, "state": "no_key", "key_env": PAID_PROVIDERS[name].env}
+                )
+                continue
+            known = self._provider_health.get(name)
+            providers.append({"name": name, **(known or ProviderHealth()).report()})
+        return {
+            "providers": providers,
+            "order": self._ask_order(),
+            "calls": sum(entry.get("calls", 0) for entry in providers),
+            "cooldown_seconds": self.settings.search_provider_cooldown_seconds,
+            "failures_before_cooldown": self.settings.search_provider_failure_limit,
+        }
+
+    def _ask_order(self) -> list[str]:
+        """The providers in the order the next unnamed search would ask them: the cooling ones last."""
+        primary = self._primary_provider(None)
+        if primary not in self.search_adapters:
+            return []
+        route = [primary, *self._fallback_chain(primary)]
+        window = self.settings.search_provider_window_seconds
+        healths = {name: self._provider_health_for(name) for name in route}
+        active = sorted(
+            (name for name in route if not healths[name].cooling_down()),
+            key=lambda name: healths[name].standing(window),
+        )
+        return active + [name for name in route if healths[name].cooling_down()]
 
     def _provider_gate_for(self, name: str) -> ProviderGate:
         gate = self._provider_gates.get(name)
         if gate is None:
+            # A provider that states a rate (Brave's free plan: one call a second) is never paced
+            # faster than it.
+            floor = int(getattr(self.search_adapters.get(name), "min_gap_ms", 0) or 0)
             gate = ProviderGate(
                 self.settings.search_provider_concurrency,
-                self.settings.search_jitter_min_ms,
-                self.settings.search_jitter_max_ms,
+                max(self.settings.search_jitter_min_ms, floor),
+                max(self.settings.search_jitter_max_ms, floor),
             )
             self._provider_gates[name] = gate
         return gate

@@ -60,6 +60,7 @@ def test_initialize_list_and_ping_without_protocol_noise() -> None:
         "web_scrape",
         "web_map",
         "web_extract",
+        "web_health",
         "web_crawl_start",
         "web_crawl_status",
         "web_crawl_results",

@@ -291,7 +291,7 @@ class WebSearchRequest(BaseModel):
     )
     primary_first: Optional[bool] = Field(
         default=None,
-        description="Official sites and mainstream news lead, aggregators lower (default: news)",
+        description="Official sites lead (default: news, specification and docs queries)",
     )
     compact: Optional[bool] = Field(
         default=None,
@@ -347,6 +347,14 @@ def _describe_read_fields(schema: Dict[str, Any]) -> None:
             "content_error": {
                 "type": "object",
                 "description": "With read: why the page was not read (code, message, hint)",
+            },
+            "content_warnings": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "With read: soft_404, rendered_shell or needs_javascript, when the text is "
+                    "not to be taken for the page"
+                ),
             },
         }
     )

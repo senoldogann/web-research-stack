@@ -795,7 +795,21 @@ class WebToolsService:
                 read.append({**item, "content_error": page["error"]})
             else:
                 text = page["markdown"]
-                read.append({**item, "content": text, "content_truncated": len(text) >= chars})
+                said = {
+                    "content_warnings": [
+                        warning
+                        for warning in page.get("warnings") or []
+                        if warning in {SOFT_404, RENDERED_SHELL, NEEDS_JAVASCRIPT}
+                    ]
+                }
+                read.append(
+                    {
+                        **item,
+                        "content": text,
+                        "content_truncated": len(text) >= chars,
+                        **(said if said["content_warnings"] else {}),
+                    }
+                )
         read_ms = (time.perf_counter() - started) * 1000
         timings = dict(answer["timings"])
         timings["read_ms"] = round(read_ms, 2)
@@ -1313,7 +1327,10 @@ class WebToolsService:
         payload["timings"]["total_ms"] = round(total_ms, 2)
         self.metrics.observe("total", total_ms, operation="scrape")
         self.metrics.count("scrapes_total", mode=payload["fetched_with"])
-        await self.cache.set(cache_key, _for_cache(payload))
+        # An answer that is a page still drawing itself is not kept: asked again, the page is read again
+        # (it may have filled by then), as the page cache does not keep it either.
+        if not {RENDERED_SHELL, NEEDS_JAVASCRIPT} & set(payload["warnings"]):
+            await self.cache.set(cache_key, _for_cache(payload))
         return _lean_view(payload) if lean else payload
 
     async def scrape_content(
@@ -2370,8 +2387,9 @@ class WebToolsService:
         if fallback.kind != "page" or fallback.page is None:
             return
         text = markdown_of(document.html, document.final_url)
-        if same_page(fingerprint(title, text), fallback.page):
+        if same_page(fingerprint(title, text, parts.path), fallback.page):
             document.warnings.append(SOFT_404)
+            self.metrics.count("soft_404_total")
 
     async def _fallback_of(self, origin: str) -> _Fallback:
         """What *origin* answers an address that cannot exist with: asked once, kept for the session.
@@ -2408,7 +2426,11 @@ class WebToolsService:
             found = _Fallback("unknown", at=now)
         else:
             text = markdown_of(answered.html, answered.final_url)
-            found = _Fallback("page", fingerprint(answered.page.title, text), at=now)
+            found = _Fallback(
+                "page",
+                fingerprint(answered.page.title, text, urlsplit(answered.final_url).path),
+                at=now,
+            )
         self._fallbacks[origin] = found
         self._fallbacks.move_to_end(origin)
         while len(self._fallbacks) > _FALLBACKS_KEPT:
@@ -2577,7 +2599,9 @@ class WebToolsService:
             document.html, document.page.markdown, self.settings.browser_render_min_chars
         )
         if reason is not None:
-            document.warnings.append(RENDERED_SHELL if rendered_in_browser else NEEDS_JAVASCRIPT)
+            flag = RENDERED_SHELL if rendered_in_browser else NEEDS_JAVASCRIPT
+            document.warnings.append(flag)
+            self.metrics.count("shell_pages_total", kind=flag, reason=reason)
 
     async def _pdf_document(
         self,
@@ -3151,7 +3175,7 @@ _COMPACT_RESULT_KEYS = (
     "snippet",
     "score",
 )
-_READ_KEYS = ("content", "content_truncated", "content_error")
+_READ_KEYS = ("content", "content_truncated", "content_error", "content_warnings")
 # What debug adds to each compact result: how the date was read and the parts of the score.
 _DEBUG_RESULT_KEYS = (
     "source",

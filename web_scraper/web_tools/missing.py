@@ -14,9 +14,9 @@ The comparison, and why it is this one:
 * **The same title is required.** A site that knows a page (a post, a product) writes its own
   ``<title>`` into the HTML; a fallback carries the fallback's. A real page whose script never filled
   it has the text of a shell but its own title, and is not taken for a missing one.
-* **The same text, or nearly.** The same hash of the text (whitespace and case aside), or nine in ten
-  of the words alike: a fallback that names the address it was asked for ("Nothing at /x") is still the
-  fallback.
+* **The same text, or nearly.** The same words in the same order (whitespace and case aside), or nine
+  in ten of the words alike: a fallback that names the address it was asked for ("Nothing at /x") is
+  still the fallback, and the words of the two addresses are left out of both texts.
 * **Only a page that may be one is compared** (``suspect``): not the root, which is what a fallback
   shows, and one that does not say it is itself (no ``<link rel=canonical>``, or one that names
   another address) or whose title is the root's. A page that names itself is a page the site
@@ -25,12 +25,11 @@ The comparison, and why it is this one:
 
 from __future__ import annotations
 
-import hashlib
 import re
 import secrets
 import unicodedata
 from dataclasses import dataclass
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from web_scraper.web_tools.urls import UnsafeUrlError, canonicalize_url
 
@@ -43,11 +42,12 @@ _WORD = re.compile(r"[^\W_]+", re.UNICODE)
 
 @dataclass(frozen=True)
 class Fingerprint:
-    """A page as the comparison sees it: its title, its text's hash, and the words of its text."""
+    """A page as the comparison sees it: its title, the words of its text in order, and the words of
+    its own address (which a fallback may repeat, and which say nothing of the page)."""
 
     title: str
-    text_hash: str
-    words: frozenset[str]
+    words: tuple[str, ...]
+    path_words: frozenset[str]
 
 
 def _key(text: str) -> str:
@@ -60,27 +60,30 @@ def title_key(title: str) -> str:
     return _key(title)
 
 
-def fingerprint(title: str, text: str) -> Fingerprint:
-    """The fingerprint of a page's title and the start of its readable text."""
-    key = _key(text[:COMPARED_CHARS])
+def fingerprint(title: str, text: str, path: str = "") -> Fingerprint:
+    """The fingerprint of a page's title and the start of its readable text; *path* is its address's path."""
     return Fingerprint(
         title=_key(title),
-        text_hash=hashlib.sha256(key.encode("utf-8")).hexdigest(),
-        words=frozenset(_WORD.findall(key)),
+        words=tuple(_WORD.findall(_key(text[:COMPARED_CHARS]))),
+        path_words=frozenset(_WORD.findall(_key(unquote(path)))),
     )
 
 
 def same_page(left: Fingerprint, right: Fingerprint) -> bool:
     """Whether two documents of one host are one page that the site gave twice.
 
-    The same title, and the same text or nine in ten of its words (see the module's note).
+    The same title, and the same text or nine in ten of its words, the words of either address not
+    counted (see the module's note).
     """
     if left.title != right.title:
         return False
-    if left.text_hash == right.text_hash:
+    ignored = left.path_words | right.path_words
+    first = tuple(word for word in left.words if word not in ignored)
+    second = tuple(word for word in right.words if word not in ignored)
+    if first == second:
         return True
-    union = left.words | right.words
-    return bool(union) and len(left.words & right.words) / len(union) >= SAME_WORDS
+    union = set(first) | set(second)
+    return bool(union) and len(set(first) & set(second)) / len(union) >= SAME_WORDS
 
 
 def _names_itself(final_url: str, declared_canonical: str) -> bool:

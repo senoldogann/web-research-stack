@@ -227,8 +227,8 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
                     "current-year and historical angles), deep (adds an official or "
                     "primary-source angle, which gets the longer time budget). Ranked by BM25, "
                     "cross-angle consensus, source authority and freshness, cached per query; "
-                    "official sites and mainstream news lead news queries, aggregators rank "
-                    "low. The answer is compact: per result title, url, domain, date, "
+                    "official sites lead news, specification and documentation queries, "
+                    "aggregators rank low. The answer is compact: per result title, url, domain, date, "
                     "date_confidence (0 to 1; a result whose dates conflict is named in "
                     "run.warnings), source_type (official, academic, news, press_release, "
                     "social, reference, code, community, aggregator, other), snippet, score, and "
@@ -264,8 +264,10 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
                     "and content_id then let content_id with offset read the rest from the "
                     "cache (5 minutes, no request); lean returns only the text, date and cut "
                     "info. urls (2 to 10) reads pages in one call, max_total_chars (60,000) "
-                    "bounding the answer. A headless browser is used only for JavaScript shells "
-                    "and access interstitials. A walled page (captcha, 401/403/429, bot wall) is "
+                    "bounding the answer. A page drawn by scripts is read in a headless browser "
+                    "once it has settled; one that stays empty has warnings rendered_shell, one the "
+                    "site gives for any address soft_404 and looks_missing; hint says what to do. "
+                    "A walled page (captcha, 401/403/429, bot wall) is "
                     "read another way: the Internet Archive's copy, the site's AMP or print "
                     "form, its feed, or another outlet's report found by title. recovered_from "
                     "says which, the text starts with a line saying whose it is, alternates and "
@@ -287,8 +289,9 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
                     "List URLs from robots.txt sitemaps, nested sitemap indexes, and page "
                     "links with domain scope, substring search, include/exclude glob filters, "
                     "and a limit. total counts every matching URL, returned those in urls, "
-                    "and truncated says the limit cut some. A site no request reached lists "
-                    "nothing and says why in errors."
+                    "and truncated says the limit cut some. A site's address that redirects "
+                    "(apex to www) is mapped at the host it lands on, named in host. A site no "
+                    "request reached lists nothing and says why in errors."
                 ),
                 "inputSchema": WebMapRequest.model_json_schema(),
                 "annotations": _annotations(
@@ -310,7 +313,8 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
                     "returns up to max_items matches (100 by default); offset skips the first N "
                     "to page on (provenance gives total, returned, offset, truncated, and "
                     "next_offset when values were left out). The whole answer stays under "
-                    "max_chars (20,000 by default), its truncated flag set when anything was cut."
+                    "max_chars (20,000 by default), its truncated flag set when anything was cut. "
+                    "A page the site gives for any address (soft_404, looks_missing) yields no field."
                 ),
                 "inputSchema": WebExtractRequest.model_json_schema(by_alias=True),
                 "annotations": _annotations(
@@ -354,7 +358,11 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
         (
             {
                 "name": "web_crawl_status",
-                "description": "Read crawl progress, counters, and collected errors by job id.",
+                "description": (
+                    "Read crawl progress, counters and errors by job id. Once it ended, stopped_by "
+                    "(max_pages, max_depth, done, cancelled) says why and progress.not_visited "
+                    "how many links were left."
+                ),
                 "inputSchema": _JobIdArguments.model_json_schema(),
                 "annotations": _annotations(
                     read_only=True, destructive=False, idempotent=True, open_world=False

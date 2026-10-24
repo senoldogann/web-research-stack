@@ -1,0 +1,207 @@
+{
+ "query": "Model Context Protocol specification",
+ "depth": "discover",
+ "recorded_on": "2026-10-24",
+ "provider": "yahoo",
+ "note": "What Yahoo answered, per angle of a discover search, before any ranking: DuckDuckGo and its lite page were answering bot_detected at the time. The official specification page is modelcontextprotocol.io/specification/2026-07-28; modelcontextprotocol.info is a copy of the site.",
+ "angles": {
+  "base": {
+   "query": "Model Context Protocol specification",
+   "date_filter": null,
+   "results": [
+    {
+     "title": "Specification - Model Context Protocol",
+     "url": "https://modelcontextprotocol.io/specification/2025-03-26",
+     "snippet": "Mar 26, 2025 · Model Context Protocol (MCP) is an open protocol that enables seamless integration between LLM applications and external data sources and tools. Whether you’re building an AI-powered IDE, enhancing a chat interface, or creating custom AI workflows, MCP provides a standardized way to c",
+     "source": "modelcontextprotocol"
+    },
+    {
+     "title": "Specification – Model Context Protocol （MCP）",
+     "url": "https://modelcontextprotocol.info/specification/",
+     "snippet": "Jul 28, 2026 · Learn how to integrate LLM applications with external data sources and tools using the Model Context Protocol (MCP), an open protocol under development. Find the latest and draft specifications, implementation guides, examples, and more on modelcontextprotocol.info.",
+     "source": "modelcontextprotocol"
+    },
+    {
+     "title": "Overview - Model Context Protocol",
+     "url": "https://modelcontextprotocol.io/specification/2025-06-18/basic",
+     "snippet": "Jun 18, 2025 · The Model Context Protocol consists of several key components that work together: Base Protocol: Core JSON-RPC message types Lifecycle Management: Connection initialization, capability negotiation, and session control Authorization: Authentication and authorization framework for HTTP-",
+     "source": "modelcontextprotocol"
+    },
+    {
+     "title": "The 2026-07-28 Specification | Model Context Protocol Blog",
+     "url": "https://blog.modelcontextprotocol.io/posts/2026-07-28/",
+     "snippet": "Jul 28, 2026 · The 2026-07-28 Model Context Protocol specification is out, bringing a stateless protocol core, Multi Round-Trip Requests, header-based routing, cacheable list results, authorization hardening, a formal extensions framework, and updated Tier 1 SDKs.",
+     "source": "blog"
+    },
+    {
+     "title": "Model Context Protocol （MCP）",
+     "url": "https://modelcontextprotocol.info/",
+     "snippet": "Model Context Protocol (MCP) - The open standard that connects AI models to data sources and tools. Build secure, scalable AI applications with standardized context integration.",
+     "source": "modelcontextprotocol"
+    },
+    {
+     "title": "Model Context Protocol - Wikipedia",
+     "url": "https://en.wikipedia.org/wiki/Model_Context_Protocol",
+     "snippet": "The Model Context Protocol (MCP) is an open standard and open-source framework introduced by Anthropic in November 2024 to standardize the way artificial intelligence (AI) systems like large language models (LLMs) integrate and share data with external tools, systems, and data sources. [1]",
+     "source": "en"
+    },
+    {
+     "title": "GitHub - modelcontextprotocol/modelcontextprotocol ...",
+     "url": "https://github.com/modelcontextprotocol/modelcontextprotocol",
+     "snippet": "Model Context Protocol (MCP) Just heard of MCP and not sure where to start? Check out our documentation website. This repo contains the: MCP specification MCP protocol schema Official MCP documentation The schema is defined in TypeScript first, but made available as JSON Schema as well, for wider co",
+     "source": "github"
+    },
+    {
+     "title": "Specification - Model Context Protocol",
+     "url": "https://modelcontextprotocol.io/specification/2025-06-18",
+     "snippet": "Jun 18, 2025 · Model Context Protocol (MCP) is an open protocol that enables seamless integration between LLM applications and external data sources and tools. Whether you’re building an AI-powered IDE, enhancing a chat interface, or creating custom AI workflows, MCP provides a standardized way to c",
+     "source": "modelcontextprotocol"
+    },
+    {
+     "title": "Introducing the Model Context Protocol \\ Anthropic",
+     "url": "https://www.anthropic.com/news/model-context-protocol",
+     "snippet": "Nov 25, 2024 · Today, we're open-sourcing the Model Context Protocol (MCP), a new standard for connecting AI assistants to the systems where data lives, including content repositories, business tools, and development environments. Its aim is to help frontier models produce better, more relevant resp",
+     "source": "anthropic"
+    },
+    {
+     "title": "Specification - Model Context Protocol",
+     "url": "https://modelcontextprotocol.io/specification/2025-11-25",
+     "snippet": "Nov 25, 2025 · Model Context Protocol (MCP) is an open protocol that enables seamless integration between LLM applications and external data sources and tools. Whether you’re building an AI-powered IDE, enhancing a chat interface, or creating custom AI workflows, MCP provides a standardized way to c",
+     "source": "modelcontextprotocol"
+    }
+   ]
+  },
+  "current": {
+   "query": "Model Context Protocol specification 2026",
+   "date_filter": "year",
+   "results": [
+    {
+     "title": "Specification - Model Context Protocol",
+     "url": "https://modelcontextprotocol.io/specification/2026-07-28",
+     "snippet": "Jul 28, 2026 · Model Context Protocol (MCP) is an open protocol that enables seamless integration between LLM applications and external data sources and tools. Whether you’re building an AI-powered IDE, enhancing a chat interface, or creating custom AI workflows, MCP provides a standardized way to c",
+     "source": "modelcontextprotocol"
+    },
+    {
+     "title": "Model Context Protocol (MCP) 2026: Complete Production Guide ...",
+     "url": "https://thebiglearn.org/articles/en/model-context-protocol-mcp-complete-guide-2026",
+     "snippet": "Aug 24, 2026 · Artificial intelligence and integration Model Context Protocol (MCP): From First Principles to Production Architecture, tools, resources, security, enterprise integration, and a complete Python MCP Server tutorial Technical guide updated for MCP Specification 2026-07-28, with research",
+     "source": "thebiglearn"
+    },
+    {
+     "title": "Architecture - Model Context Protocol",
+     "url": "https://modelcontextprotocol.io/specification/2026-07-28/architecture",
+     "snippet": "Jul 28, 2026 · The Model Context Protocol (MCP) follows a client-host-server architecture where each host can run multiple client instances. MCP is a stateless protocol: every request is self-contained and carries its own protocol version and capabilities. This architecture enables users to integrat",
+     "source": "modelcontextprotocol"
+    },
+    {
+     "title": "The 2026-07-28 Specification | Model Context Protocol Blog",
+     "url": "https://blog.modelcontextprotocol.io/posts/2026-07-28/",
+     "snippet": "Jul 28, 2026 · The 2026-07-28 Model Context Protocol specification is out, bringing a stateless protocol core, Multi Round-Trip Requests, header-based routing, cacheable list results, authorization hardening, a formal extensions framework, and updated Tier 1 SDKs.",
+     "source": "blog"
+    },
+    {
+     "title": "Specification – Model Context Protocol （MCP）",
+     "url": "https://modelcontextprotocol.info/specification/",
+     "snippet": "Jul 28, 2026 · The Model Context Protocol (MCP) is an open protocol that enables seamless integration between LLM applications and external data sources and tools. This section contains the detailed technical specifications for implementing the protocol. Available Versions MCP is under active develo",
+     "source": "modelcontextprotocol"
+    },
+    {
+     "title": "modelcontextprotocol/docs/specification/2026-07-28 ... - GitHub",
+     "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/docs/specification/2026-07-28/index.mdx",
+     "snippet": "Jul 28, 2026 · The Model Context Protocol enables powerful capabilities through arbitrary data access and code execution paths. With this power comes important security and trust considerations that all implementors must carefully address.",
+     "source": "github"
+    },
+    {
+     "title": "The 2026-07-28 MCP Specification Release Candidate",
+     "url": "https://blog.modelcontextprotocol.io/posts/2026-07-28-release-candidate/",
+     "snippet": "May 21, 2026 · The 2026-07-28 MCP Specification Release Candidate The release candidate for the next Model Context Protocol (MCP) specification is now available: a stateless protocol core, the Extensions framework, Tasks, MCP Apps, authorization hardening, and a formal deprecation policy.",
+     "source": "blog"
+    },
+    {
+     "title": "The 2026 MCP Roadmap | Model Context Protocol Blog",
+     "url": "https://blog.modelcontextprotocol.io/posts/2026-mcp-roadmap/",
+     "snippet": "Mar 9, 2026 · The updated Model Context Protocol roadmap for 2026: transport scalability, agent communication, governance maturation, and enterprise readiness, plus guidance on SEP prioritization and how to get involved.",
+     "source": "blog"
+    },
+    {
+     "title": "Architecture overview - Model Context Protocol",
+     "url": "https://modelcontextprotocol.io/docs/2026-07-28/learn/architecture",
+     "snippet": "Jul 28, 2026 · The Model Context Protocol includes the following projects: MCP Specification: A specification of MCP that outlines the implementation requirements for clients and servers.",
+     "source": "modelcontextprotocol"
+    },
+    {
+     "title": "Model Context Protocol - Wikipedia",
+     "url": "https://en.wikipedia.org/wiki/Model_Context_Protocol",
+     "snippet": "The Model Context Protocol (MCP) is an open standard and open-source framework introduced by Anthropic in November 2024 to standardize the way artificial intelligence (AI) systems like large language models (LLMs) integrate and share data with external tools, systems, and data sources. [1]",
+     "source": "en"
+    }
+   ]
+  },
+  "background": {
+   "query": "Model Context Protocol specification history background",
+   "date_filter": null,
+   "results": [
+    {
+     "title": "Model Context Protocol - Wikipedia",
+     "url": "https://en.wikipedia.org/wiki/Model_Context_Protocol",
+     "snippet": "The Model Context Protocol (MCP) is an open standard and open-source framework introduced by Anthropic in November 2024 to standardize the way artificial intelligence (AI) systems like large language models (LLMs) integrate and share data with external tools, systems, and data sources. [1]",
+     "source": "en"
+    },
+    {
+     "title": "Model Context Protocol Specification Version Timeline ...",
+     "url": "https://hidekazu-konishi.com/entry/mcp_specification_version_timeline.html",
+     "snippet": "Jul 26, 2026 · Model Context Protocol specification version timeline covering every date-based revision - 2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25, and the current 2026-07-28 - with each version's changes, the version negotiation model, and the adoption milestones of major AI platforms, each l",
+     "source": "hidekazu-konishi"
+    },
+    {
+     "title": "History of the Model Context Protocol (MCP) (2026)",
+     "url": "https://www.taskade.com/blog/mcp-protocol-history",
+     "snippet": "Aug 1, 2026 · The definitive Model Context Protocol timeline: every spec revision, every host adoption date, and the 2026 stateless rewrite. Verified against primary sources.",
+     "source": "taskade"
+    },
+    {
+     "title": "Specification – Model Context Protocol （MCP）",
+     "url": "https://modelcontextprotocol.info/specification/",
+     "snippet": "Jul 28, 2026 · The Model Context Protocol (MCP) is an open protocol that enables seamless integration between LLM applications and external data sources and tools. This section contains the detailed technical specifications for implementing the protocol. Available Versions MCP is under active develo",
+     "source": "modelcontextprotocol"
+    },
+    {
+     "title": "Release History and Roadmap | modelcontextprotocol ...",
+     "url": "https://deepwiki.com/modelcontextprotocol/modelcontextprotocol/8.5-release-history-and-roadmap",
+     "snippet": "Jul 27, 2026 · This document chronicles the evolution of the Model Context Protocol through its major releases, documenting the key features and Specification Enhancement Proposals (SEPs) introduced in each version.",
+     "source": "deepwiki"
+    },
+    {
+     "title": "Specification - Model Context Protocol",
+     "url": "https://modelcontextprotocol.io/specification/2025-03-26",
+     "snippet": "Mar 26, 2025 · Model Context Protocol (MCP) is an open protocol that enables seamless integration between LLM applications and external data sources and tools. Whether you’re building an AI-powered IDE, enhancing a chat interface, or creating custom AI workflows, MCP provides a standardized way to c",
+     "source": "modelcontextprotocol"
+    },
+    {
+     "title": "Official MCP Specification | microsoft/mcp-for-beginners ...",
+     "url": "https://deepwiki.com/microsoft/mcp-for-beginners/10.1-official-mcp-specification",
+     "snippet": "Jan 14, 2026 · Relevant source files Purpose and Scope This page serves as a reference guide to the official Model Context Protocol (MCP) specification documentation, versioning system, and standards compliance resources. It provides technical documentation links, explains the specification's struct",
+     "source": "deepwiki"
+    },
+    {
+     "title": "The 2026-07-28 Specification | Model Context Protocol Blog",
+     "url": "https://blog.modelcontextprotocol.io/posts/2026-07-28/",
+     "snippet": "Jul 28, 2026 · The 2026-07-28 Model Context Protocol specification is out, bringing a stateless protocol core, Multi Round-Trip Requests, header-based routing, cacheable list results, authorization hardening, a formal extensions framework, and updated Tier 1 SDKs.",
+     "source": "blog"
+    },
+    {
+     "title": "About – Model Context Protocol （MCP）",
+     "url": "https://modelcontextprotocol.info/about/",
+     "snippet": "About ModelContextProtocol.Info ModelContextProtocol.Info is a comprehensive resource dedicated to the MCP (Model Context Protocol), providing detailed information about its background, architecture, and use cases. MCP (Model Context Protocol) is an open protocol that standardizes how applications p",
+     "source": "modelcontextprotocol"
+    },
+    {
+     "title": "Releases · modelcontextprotocol/modelcontextprotocol - GitHub",
+     "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/releases",
+     "snippet": "Jun 18, 2025 · This release marks the release candidate (RC) 2026-07-28 revision of the Model Context Protocol. The specification is available in draft form. For a detailed overview of changes, see 2026-07-28 draft changelog.",
+     "source": "github"
+    }
+   ]
+  }
+ }
+}

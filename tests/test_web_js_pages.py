@@ -16,6 +16,7 @@ browser's text was the shorter. Now:
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Optional
 
 import pytest
@@ -380,8 +381,6 @@ class TestOneLoader:
                 crawl = await service.get_crawl(job["job_id"])
                 if crawl["status"] != "running" and crawl["status"] != "queued":
                     break
-                import asyncio
-
                 await asyncio.sleep(0.02)
             crawled = await service.crawl_results(job["job_id"])
         finally:
@@ -411,8 +410,6 @@ class TestOneLoader:
                 crawl = await service.get_crawl(job["job_id"])
                 if crawl["status"] not in {"queued", "running"}:
                     break
-                import asyncio
-
                 await asyncio.sleep(0.02)
             crawled = await service.crawl_results(job["job_id"])
         finally:

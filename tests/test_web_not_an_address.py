@@ -23,19 +23,11 @@ from web_scraper.api_models import (
     normalize_url,
 )
 from web_scraper.mcp_server import McpServer
+from web_scraper.web_tools import urls
 from web_scraper.web_tools.errors import WebToolError
 from web_scraper.web_tools.fetcher import SafeFetcher
 from web_scraper.web_tools.service import WebToolsService
 from web_scraper.web_tools.settings import WebToolsSettings
-from web_scraper.web_tools.urls import (
-    EXAMPLE_ADDRESS,
-    NotAWebAddressError,
-    bare_host_address,
-    canonicalize_url,
-    has_scheme,
-    normalize_request_url,
-    not_a_web_address,
-)
 
 NOT_AN_ADDRESS = [
     "not a url at all",
@@ -101,7 +93,7 @@ class TestTheService:
         for error in errors:
             assert error.code == "invalid_request" and error.http_status == 422
             assert "is not a web address" in str(error)
-            assert EXAMPLE_ADDRESS in str(error)
+            assert urls.EXAMPLE_ADDRESS in str(error)
             assert "Blocked unsafe target" not in str(error)
 
     @pytest.mark.asyncio
@@ -161,9 +153,9 @@ class TestTheService:
         assert "is not a web address" in bad["error"]["message"]
 
     def test_the_text_is_quoted_on_one_line_and_not_longer_than_eighty_characters(self) -> None:
-        error = not_a_web_address("line one\nline two " + "x" * 200)
+        error = urls.not_a_web_address("line one\nline two " + "x" * 200)
 
-        assert isinstance(error, NotAWebAddressError) and "\n" not in str(error)
+        assert isinstance(error, urls.NotAWebAddressError) and "\n" not in str(error)
         assert str(error).startswith('"line one line two ') and "..." in str(error)
         assert len(str(error).split('" is not')[0]) <= 82
 
@@ -214,20 +206,24 @@ class TestTheModelsThatTookEveryTextForAHost:
         )
 
     def test_the_helpers(self) -> None:
-        assert has_scheme("https://x") and has_scheme("FTP://x") and has_scheme("mailto:a@b.co")
-        assert not has_scheme("example.com:8080") and not has_scheme("not a url")
-        assert bare_host_address("example.com") == "https://example.com"
-        assert bare_host_address("a b.com") is None and bare_host_address("foo") is None
-        assert bare_host_address("https://example.com") is None
+        assert (
+            urls.has_scheme("https://x")
+            and urls.has_scheme("FTP://x")
+            and urls.has_scheme("mailto:a@b.co")
+        )
+        assert not urls.has_scheme("example.com:8080") and not urls.has_scheme("not a url")
+        assert urls.bare_host_address("example.com") == "https://example.com"
+        assert urls.bare_host_address("a b.com") is None and urls.bare_host_address("foo") is None
+        assert urls.bare_host_address("https://example.com") is None
 
     def test_a_real_address_is_still_one(self) -> None:
         assert (
-            canonicalize_url("https://Example.com/a/?utm_source=x&b=1")
+            urls.canonicalize_url("https://Example.com/a/?utm_source=x&b=1")
             == "https://example.com/a?b=1"
         )
-        assert normalize_request_url("http://example.com") == "http://example.com/"
-        assert canonicalize_url("https://bücher.example/") == "https://xn--bcher-kva.example/"
-        assert canonicalize_url("https://a_b.example/") == "https://a_b.example/"
+        assert urls.normalize_request_url("http://example.com") == "http://example.com/"
+        assert urls.canonicalize_url("https://bücher.example/") == "https://xn--bcher-kva.example/"
+        assert urls.canonicalize_url("https://a_b.example/") == "https://a_b.example/"
 
 
 class TestOverMcp:
@@ -263,7 +259,8 @@ class TestOverMcp:
         for error in errors:
             assert error["code"] == "invalid_request"
             assert (
-                "is not a web address" in error["message"] and EXAMPLE_ADDRESS in error["message"]
+                "is not a web address" in error["message"]
+                and urls.EXAMPLE_ADDRESS in error["message"]
             )
 
     @pytest.mark.asyncio
@@ -312,7 +309,7 @@ class TestOverRest:
         assert response.status_code == 422
         error = response.json()["error"]
         assert error["code"] == "invalid_request" and "is not a web address" in error["message"]
-        assert EXAMPLE_ADDRESS in error["message"]
+        assert urls.EXAMPLE_ADDRESS in error["message"]
 
     def test_a_refused_address_is_still_a_400(self, monkeypatch: pytest.MonkeyPatch) -> None:
         client = rest_client(monkeypatch, _service())

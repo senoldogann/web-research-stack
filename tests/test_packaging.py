@@ -32,7 +32,7 @@ class TestMetadata:
 
         assert re.search(r'^name = "dotagent-web-research"$', project, re.M)
         assert re.search(rf'^version = "{re.escape(web_scraper.__version__)}"$', project, re.M)
-        assert web_scraper.__version__ == "1.3.1"
+        assert web_scraper.__version__ == "1.4.0"
 
     def test_the_import_package_stays_web_scraper(self) -> None:
         packages = _section("tool.setuptools.packages.find")

@@ -192,3 +192,66 @@ def test_a_photo_caption_in_a_carousel_is_not_the_lead() -> None:
     result = extract_structured(page, URL, {"lead": {}})
 
     assert result.data["lead"].startswith("WASHINGTON (AP) — The Federal Trade Commission")
+
+
+class TestTwoSignalsThatAgreeAreOneValue:
+    """senoldogan.dev's home page writes its og:title twice, and ``data.title`` came back as "X, X"."""
+
+    TITLE = "Web & Mobile Software Solutions — Senol Dogan | Oulu, Finland"
+
+    def test_a_title_written_twice_is_one_title(self) -> None:
+        head = (
+            f'<meta property="og:title" content="{self.TITLE.replace("&", "&amp;")}">'
+            f'<meta property="og:title" content="{self.TITLE.replace("&", "&amp;")}">'
+        )
+
+        result = extract_structured(_page(head), URL, {"title": {}})
+
+        assert result.data["title"] == self.TITLE
+        assert result.provenance["title"]["evidence"] == self.TITLE
+
+    def test_alike_is_the_same_words_whatever_the_spacing_and_the_case(self) -> None:
+        head = (
+            '<meta property="og:title" content="Big  News Happens">'
+            '<meta property="og:title" content="big news\nhappens">'
+        )
+
+        result = extract_structured(_page(head), URL, {"title": {}})
+
+        assert result.data["title"] == "Big News Happens"  # the first spelling stays
+
+    def test_two_different_values_are_still_both_there(self) -> None:
+        head = '<meta property="og:title" content="One title"><meta property="og:title" content="Another">'
+
+        result = extract_structured(_page(head), URL, {"title": {}})
+
+        assert result.data["title"] == "One title, Another"
+
+    def test_an_author_the_json_ld_and_the_meta_tags_name_is_named_once(self) -> None:
+        meta = '<meta name="author" content="Jane Roe"><meta name="author" content="Jane Roe">'
+
+        result = extract_structured(_page(JSON_LD + meta), URL, {"author": {}})
+
+        # (the JSON-LD names two authors; each is named once, the meta tags are not asked)
+        assert result.data["author"] == "Jane Roe, John Doe"
+        only_meta = extract_structured(_page(meta), URL, {"author": {}})
+        assert only_meta.data["author"] == "Jane Roe"
+
+    def test_a_list_field_drops_the_value_it_has_twice(self) -> None:
+        head = (
+            '<meta property="article:tag" content="news">'
+            '<meta property="article:tag" content="World">'
+            '<meta property="article:tag" content="world">'
+        )
+
+        result = extract_structured(_page(head), URL, {"tags": {"all": True}})
+
+        assert result.data["tags"] == ["news", "World"]
+        assert result.provenance["tags"]["total"] == 2
+
+    def test_a_name_the_module_does_not_know_is_deduplicated_too(self) -> None:
+        head = '<meta name="robots" content="index"><meta name="robots" content="index">'
+
+        result = extract_structured(_page(head), URL, {"robots": {}})
+
+        assert result.data["robots"] == "index"

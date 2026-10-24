@@ -32,13 +32,8 @@ from browser_support import (
 from rebinding_support import PUBLIC_A, Response, World, html
 
 from web_scraper.web_tools import browser as browser_module
+from web_scraper.web_tools import content
 from web_scraper.web_tools.browser import BrowserPage, BrowserRenderError, BrowserUnavailableError
-from web_scraper.web_tools.content import (
-    is_placeholder_text,
-    needs_browser_render,
-    shell_reason,
-    shell_text,
-)
 from web_scraper.web_tools.fetcher import SafeFetcher
 from web_scraper.web_tools.service import WebToolsService
 from web_scraper.web_tools.settings import WebToolsSettings
@@ -87,7 +82,7 @@ class TestWhatIsAShell:
     def test_a_page_with_little_text_and_scripts_is_read_again_in_the_browser(
         self, html_text: str, text: str
     ) -> None:
-        assert needs_browser_render(html_text, text) is True
+        assert content.needs_browser_render(html_text, text) is True
 
     @pytest.mark.parametrize(
         ("html_text", "text"),
@@ -104,14 +99,14 @@ class TestWhatIsAShell:
     def test_a_page_with_enough_text_or_without_scripts_is_not(
         self, html_text: str, text: str
     ) -> None:
-        assert needs_browser_render(html_text, text) is False
+        assert content.needs_browser_render(html_text, text) is False
 
     def test_the_bound_is_the_setting(self) -> None:
         text = "A few lines of text. " * 5  # 104 characters
         page = _shell("<main><p>" + text + "</p></main>")
 
-        assert needs_browser_render(page, text, min_chars=200) is True
-        assert needs_browser_render(page, text, min_chars=100) is False
+        assert content.needs_browser_render(page, text, min_chars=200) is True
+        assert content.needs_browser_render(page, text, min_chars=100) is False
 
     @pytest.mark.parametrize(
         "text",
@@ -126,8 +121,8 @@ class TestWhatIsAShell:
         ],
     )
     def test_a_placeholder_says_it_is_loading_or_needs_javascript(self, text: str) -> None:
-        assert is_placeholder_text(text) is True
-        assert shell_text(text) == "loading_placeholder"
+        assert content.is_placeholder_text(text) is True
+        assert content.shell_text(text) == "loading_placeholder"
 
     @pytest.mark.parametrize(
         "text",
@@ -139,24 +134,24 @@ class TestWhatIsAShell:
         ],
     )
     def test_a_text_with_something_of_its_own_to_say_is_not_a_placeholder(self, text: str) -> None:
-        assert is_placeholder_text(text) is False
+        assert content.is_placeholder_text(text) is False
 
     def test_a_loading_line_inside_a_short_text_makes_it_a_shell(self) -> None:
         text = f"### Cookie Settings\n\nWe use cookies to enhance your browsing experience.\n\n{LOADING}"
         html_text = _shell("<main>x</main>")
 
-        assert shell_text(text) == "loading_placeholder"
-        assert shell_reason(html_text, text) == "loading_placeholder"
+        assert content.shell_text(text) == "loading_placeholder"
+        assert content.shell_reason(html_text, text) == "loading_placeholder"
 
     def test_the_reason_a_page_is_a_shell(self) -> None:
-        assert shell_reason(_shell('<div id="root"></div>'), "") == "empty_app_root"
-        assert shell_reason(_shell("<main><p>Hi</p></main>"), "Hi") == "almost_empty"
-        assert shell_reason(_shell("<main><p>" + LONG + "</p></main>"), LONG) is None
+        assert content.shell_reason(_shell('<div id="root"></div>'), "") == "empty_app_root"
+        assert content.shell_reason(_shell("<main><p>Hi</p></main>"), "Hi") == "almost_empty"
+        assert content.shell_reason(_shell("<main><p>" + LONG + "</p></main>"), LONG) is None
         # A short page that says something of its own is short, not a shell.
         short = "Thank you for your message. We will reply within two business days."
-        assert shell_reason(_shell(f"<main><p>{short}</p></main>"), short) is None
+        assert content.shell_reason(_shell(f"<main><p>{short}</p></main>"), short) is None
         # No script, no shell: nothing is about to draw the page.
-        assert shell_reason("<html><body><p>Hi</p></body></html>", "Hi") is None
+        assert content.shell_reason("<html><body><p>Hi</p></body></html>", "Hi") is None
 
 
 class ScriptedBrowser:

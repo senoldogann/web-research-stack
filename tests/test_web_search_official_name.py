@@ -21,17 +21,15 @@ from typing import Any, Optional
 import pytest
 
 from web_scraper.api_runtime import InMemoryTTLCache
-from web_scraper.web_tools import discovery
+from web_scraper.web_tools import discovery, sources
 from web_scraper.web_tools.discovery import (
     DiscoveryCandidate,
     annotate_candidates,
-    asks_for_primary_source,
     classify_source_type,
 )
 from web_scraper.web_tools.search import SearchResult
 from web_scraper.web_tools.service import WebToolsService
 from web_scraper.web_tools.settings import WebToolsSettings
-from web_scraper.web_tools.sources import has_organization_suffix
 from web_scraper.web_tools.urls import canonicalize_url
 
 FIXTURE = Path(__file__).parent / "fixtures" / "search_model_context_protocol_specification.json"
@@ -327,7 +325,7 @@ class TestWhoIsOfficialByName:
         ],
     )
     def test_the_top_level_domains_an_organization_is_on(self, host: str, expected: bool) -> None:
-        assert has_organization_suffix(host) is expected
+        assert sources.has_organization_suffix(host) is expected
 
 
 class TestPrimaryFirstForDocumentQueries:
@@ -346,7 +344,7 @@ class TestPrimaryFirstForDocumentQueries:
         ],
     )
     def test_a_query_that_asks_for_the_thing_itself(self, query: str) -> None:
-        assert asks_for_primary_source(query) is True
+        assert discovery.asks_for_primary_source(query) is True
 
     @pytest.mark.parametrize(
         "query",
@@ -359,7 +357,7 @@ class TestPrimaryFirstForDocumentQueries:
         ],
     )
     def test_and_one_that_does_not(self, query: str) -> None:
-        assert asks_for_primary_source(query) is False
+        assert discovery.asks_for_primary_source(query) is False
 
     @staticmethod
     def _pool() -> list[DiscoveryCandidate]:
@@ -534,7 +532,9 @@ class TestPrimaryFirstForDocumentQueries:
             ).read_text(encoding="utf-8")
         )
         docs_like = [
-            row["query"] for row in recorded["results"] if asks_for_primary_source(row["query"])
+            row["query"]
+            for row in recorded["results"]
+            if discovery.asks_for_primary_source(row["query"])
         ]
 
         # The golden order of tests/test_web_search_sources.py holds because none asks for a document.

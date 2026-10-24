@@ -45,7 +45,8 @@ _DEADLINE_MARGIN_SECONDS = 0.5
 # The text a reader of the page would see: the Markdown reader's own choices in the page itself (the
 # first of main, article and role=main, else the body; no menus, banners, footers, sidebars, forms or
 # scripts), counted without laying the page out again and again. Returns how many characters there are
-# and the first ``limit`` of them, a line to each piece of text.
+# and the first ``limit`` of them, a line to each piece of text; it stops counting at 200,000 characters,
+# which no shell is.
 _VISIBLE_TEXT_JS = """(limit) => {
   const skip = 'script,style,noscript,template,nav,header,footer,aside,svg,canvas,form,iframe,dialog,' +
     'button,select,textarea,[role=navigation],[role=banner],[role=contentinfo],' +
@@ -61,6 +62,7 @@ _VISIBLE_TEXT_JS = """(limit) => {
     const parent = node.parentElement;
     if (parent && parent.closest(skip)) continue;
     chars += text.length + (chars ? 1 : 0);
+    if (chars > 200000) break;
     if (head.length < limit) head += (head ? '\\n' : '') + text;
   }
   return {chars: chars, head: head.slice(0, limit)};

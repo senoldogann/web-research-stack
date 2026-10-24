@@ -18,10 +18,10 @@ import pytest
 from rebinding_support import PUBLIC_A, PUBLIC_B, PUBLIC_C, Response, World, html
 from rest_support import HEADERS, rest_client
 
+from web_scraper.web_tools import urls
 from web_scraper.web_tools.fetcher import SafeFetcher
 from web_scraper.web_tools.service import WebToolsService
 from web_scraper.web_tools.settings import WebToolsSettings
-from web_scraper.web_tools.urls import site_scopes
 
 HOME = (
     "<html><head><title>Senol Dogan</title><link rel='canonical' href='https://www.apex.test/'></head>"
@@ -50,7 +50,6 @@ def _xml(body: str) -> Response:
 def _service(**settings: Any) -> WebToolsService:
     base: dict[str, Any] = {
         "browser_enabled": False,
-        "soft_404_check": False,
         "respect_robots": False,
         "crawl_concurrency": 1,
     }
@@ -276,17 +275,17 @@ class TestCrawl:
         assert "https://www.apex.test/blog/en/post-1" in urls  # a page only the sitemap lists
 
     def test_the_scope_of_a_site_that_moved(self) -> None:
-        assert site_scopes("https://a.test/", "https://a.test/", False) == ["https://a.test/"]
-        assert site_scopes("https://a.test/", "https://www.a.test/", False) == [
+        assert urls.site_scopes("https://a.test/", "https://a.test/", False) == ["https://a.test/"]
+        assert urls.site_scopes("https://a.test/", "https://www.a.test/", False) == [
             "https://a.test/",
             "https://www.a.test/",
         ]
         # With subdomains the apex is already one of them: the www host adds nothing it lacked.
-        assert site_scopes("https://a.test/", "https://www.a.test/", True) == [
+        assert urls.site_scopes("https://a.test/", "https://www.a.test/", True) == [
             "https://a.test/",
             "https://www.a.test/",
         ]
-        assert site_scopes("https://www.a.test/x", "https://www.a.test/x", True) == [
+        assert urls.site_scopes("https://www.a.test/x", "https://www.a.test/x", True) == [
             "https://www.a.test/x",
             "https://a.test/",
         ]

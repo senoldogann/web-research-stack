@@ -428,7 +428,8 @@ def _tool_manifest(settings: Config) -> ToolsManifest:
                     "BM25, weighted cross-angle consensus, source authority, inferred recency, "
                     "and near-duplicate/domain diversity. Explicit freshness queries get "
                     "provider date filters; responses are cached per query and a blocking "
-                    "provider is cooled down."
+                    "provider is cooled down. Official sites lead news queries and queries "
+                    "for a specification, documentation or an API reference (primary_first)."
                 ),
                 method="POST",
                 path="/api/v1/web/search",
@@ -445,8 +446,12 @@ def _tool_manifest(settings: Config) -> ToolsManifest:
                 name="web_scrape",
                 description=(
                     "Fetch one public URL HTTP-first and return Markdown, metadata, links, "
-                    "and per-stage timings. A shared headless browser is used only when "
-                    "JavaScript is required or the HTTP response is an access interstitial."
+                    "and per-stage timings. A shared headless browser reads a page whose HTTP "
+                    "text is a shell (little text, scripts, a loading placeholder or an empty "
+                    "app root) after waiting for it to settle, and a page that is an access "
+                    "interstitial. A page that stays a shell has warnings rendered_shell; one "
+                    "the site gives for any address has soft_404 and looks_missing; hint says "
+                    "what each means."
                 ),
                 method="POST",
                 path="/api/v1/web/scrape",
@@ -459,7 +464,9 @@ def _tool_manifest(settings: Config) -> ToolsManifest:
                 name="web_map",
                 description=(
                     "List URLs from robots.txt sitemaps, nested sitemap indexes, and page "
-                    "links with domain scope, search, include/exclude filters, and a limit."
+                    "links with domain scope, search, include/exclude filters, and a limit. "
+                    "A site whose address redirects (apex to www, http to https) is mapped at "
+                    "the host it lands on, named in host, with redirected_from."
                 ),
                 method="POST",
                 path="/api/v1/web/map",
@@ -477,7 +484,9 @@ def _tool_manifest(settings: Config) -> ToolsManifest:
                 name="web_extract",
                 description=(
                     "Extract structured fields from one page with CSS selectors and return "
-                    "per-field evidence, selector provenance, and missing-field errors."
+                    "per-field evidence, selector provenance, and missing-field errors. A "
+                    "page the site gives for any address (soft_404, looks_missing) yields no "
+                    "field."
                 ),
                 method="POST",
                 path="/api/v1/web/extract",
@@ -511,7 +520,12 @@ def _tool_manifest(settings: Config) -> ToolsManifest:
             ),
             ToolDescriptor(
                 name="web_crawl_status",
-                description="Read crawl progress, counters, and collected errors by job id.",
+                description=(
+                    "Read crawl progress, counters, and collected errors by job id. Once the "
+                    "crawl has ended, stopped_by says why (max_pages, max_depth, done, "
+                    "cancelled, interrupted or failed), queue_size is 0 and "
+                    "progress.not_visited counts the links it left."
+                ),
                 method="GET",
                 path="/api/v1/web/crawl/{job_id}",
                 auth=auth_info,

@@ -4,11 +4,10 @@ The package is `dotagent-web-research`; the MCP server is `web-research-mcp`
 (`web_scraper.mcp_server`). Behavior, settings and measurements are described in
 [docs/web-tools.md](docs/web-tools.md); this file says what a version changed.
 
-## Unreleased — after 1.4.0 was uploaded
+## 1.4.1 (2026-10-25)
 
-1.4.0 reached PyPI from the first complete state of this branch (`8d26b4b`), before the review and before the
-notes below were written; what follows is in the code since, and a release of it needs a number of its own
-(1.4.1: PyPI holds 1.4.0 for good).
+1.4.0 reached PyPI from the first complete state of round B (`8d26b4b`), before its review and before the notes
+below were written. 1.4.1 is round B as reviewed: what follows is in it and not in 1.4.0.
 
 ### Fixed
 

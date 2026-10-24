@@ -11,20 +11,28 @@ It is the same fetcher with another transport: the size cap, the timeouts, the r
 challenge and wall checks and the redirect validation are ``SafeFetcher``'s. What changes is
 what a request may reach: the host is fixed here, in code, to ``web.archive.org`` over https
 (a redirect out of it is refused like any other target), and the public-address check of the
-fetcher still runs on it.
+fetcher still runs on it. libcurl resolves the host name itself, so the transport does it first:
+it resolves the name once, checks every address and hands libcurl those addresses as the only ones
+the name has (``CURLOPT_RESOLVE``, ``web_scraper/curl_pins.py``), so a name that answers something
+else to a second lookup is never looked up again.
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import Any, AsyncIterator, Callable, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 from urllib.parse import urlsplit
 
 import httpx
 from curl_cffi import requests as curl_requests
 from curl_cffi.requests import exceptions as curl_exceptions
 
-from web_scraper.network_safety import UnsafeTargetError, validate_outbound_url
+from web_scraper.curl_pins import CurlPins, check_peer
+from web_scraper.network_safety import (
+    UnsafeTargetError,
+    resolve_checked_addresses,
+    validate_outbound_url_syntax,
+)
 from web_scraper.stealth import HeaderFactory
 from web_scraper.web_tools.fetcher import HostGate, SafeFetcher
 from web_scraper.web_tools.settings import WebToolsSettings
@@ -47,12 +55,13 @@ def archive_validator(
     url: str,
     allow_private_networks: bool = False,
     *,
-    public_check: Callable[..., str] = validate_outbound_url,
+    public_check: Callable[..., str] = validate_outbound_url_syntax,
 ) -> str:
-    """Accept ``https://web.archive.org`` and nothing else, then check it is a public address.
+    """Accept ``https://web.archive.org`` and nothing else, then check what the URL itself shows.
 
     The scheme, the host (exactly, so ``web.archive.org.evil.example`` is not it), the port and
-    the absence of credentials are fixed here; ``allow_private_networks`` is never honoured.
+    the absence of credentials are fixed here; ``allow_private_networks`` is never honoured. What
+    the host resolves to is checked by the transport, in the step that connects to it.
     """
     parts = urlsplit(url)
     try:
@@ -78,6 +87,11 @@ class ImpersonatingTransport(httpx.AsyncBaseTransport):
     (``SafeFetcher`` validates each hop), the body is streamed (so the byte cap stops a
     download), and the body arrives decoded: a ``Content-Encoding`` or ``Content-Length``
     that described the wire is left out of the answer, so httpx does not decode twice.
+
+    Each request resolves its host name once, checks that every address is public and pins
+    exactly those addresses in the session before libcurl connects, which keeps libcurl from
+    looking the name up again. The session ignores the proxy of the environment, which would
+    resolve the name itself.
     """
 
     def __init__(
@@ -86,10 +100,14 @@ class ImpersonatingTransport(httpx.AsyncBaseTransport):
         impersonate: Optional[str] = None,
         timeout: float = 20.0,
         session_factory: Optional[Callable[..., Any]] = None,
+        resolver: Optional[Callable[..., Awaitable[list[str]]]] = None,
     ) -> None:
         self._impersonate = impersonate or HeaderFactory.stable_impersonate_target()
         self._timeout = timeout
         self._factory = session_factory or curl_requests.AsyncSession
+        # Resolves a host and port to addresses that have been checked (a test gives its own).
+        self._resolve = resolver or resolve_checked_addresses
+        self._pins = CurlPins()
         self._session: Any = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
@@ -100,7 +118,22 @@ class ImpersonatingTransport(httpx.AsyncBaseTransport):
             for name, value in request.headers.items()
             if name.lower() not in _BROWSER_SETS
         }
-        timeout = (request.extensions.get("timeout") or {}).get("read") or self._timeout
+        timeouts = request.extensions.get("timeout") or {}
+        timeout = timeouts.get("read") or self._timeout
+        host = request.url.raw_host.decode("ascii")  # the ASCII form libcurl matches a pin by
+        port = request.url.port or (443 if request.url.scheme == "https" else 80)
+        try:
+            addresses = await self._resolve(
+                host,
+                port,
+                allow_private_networks=False,
+                timeout=timeouts.get("connect"),
+            )
+        except asyncio.TimeoutError as exc:
+            raise httpx.ConnectTimeout(
+                "The host name did not resolve in time", request=request
+            ) from exc
+        self._pins.pin(host, port, addresses)
         extra: dict[str, Any] = {"headers": headers} if headers else {}
         try:
             response = await session.request(
@@ -116,6 +149,11 @@ class ImpersonatingTransport(httpx.AsyncBaseTransport):
         except curl_exceptions.RequestException as exc:
             raise httpx.ConnectError(str(exc), request=request) from exc
 
+        try:
+            check_peer(response)
+        except UnsafeTargetError:
+            await response.aclose()
+            raise
         pairs = list(response.headers.multi_items())
         if any(name.lower() == "content-encoding" for name, _ in pairs):
             pairs = [
@@ -141,7 +179,9 @@ class ImpersonatingTransport(httpx.AsyncBaseTransport):
     def _session_for_this_loop(self) -> Any:
         loop = asyncio.get_running_loop()
         if self._session is None or self._loop is not loop:
-            self._session = self._factory(impersonate=self._impersonate)
+            self._session = self._factory(
+                impersonate=self._impersonate, curl_options=self._pins.options, trust_env=False
+            )
             self._loop = loop
         return self._session
 

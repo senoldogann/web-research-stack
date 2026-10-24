@@ -32,11 +32,11 @@ def _git_answering(stdout: str = "727ec4f\n", returncode: int = 0, raises: Excep
     return run
 
 
-def test_the_version_is_1_3_0_in_the_package_and_in_pyproject() -> None:
+def test_the_version_is_1_3_1_in_the_package_and_in_pyproject() -> None:
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
-    assert __version__ == "1.3.0"
-    assert re.search(r'^version = "1\.3\.0"$', pyproject, re.MULTILINE)
+    assert __version__ == "1.3.1"
+    assert re.search(r'^version = "1\.3\.1"$', pyproject, re.MULTILINE)
 
 
 class TestServerInfo:
@@ -46,7 +46,7 @@ class TestServerInfo:
 
         info = build_server_info(tmp_path, run=run)
 
-        assert info == {"name": "web-research", "version": "1.3.0+g727ec4f"}
+        assert info == {"name": "web-research", "version": "1.3.1+g727ec4f"}
         command, kwargs = run.calls[0]  # type: ignore[attr-defined]
         assert command[0] == "git" and "rev-parse" in command and "--short" in command
         assert str(tmp_path) in command
@@ -57,7 +57,7 @@ class TestServerInfo:
 
         info = build_server_info(tmp_path, run=_git_answering("abc1234\n"))
 
-        assert info["version"] == "1.3.0+gabc1234"
+        assert info["version"] == "1.3.1+gabc1234"
 
     def test_without_a_checkout_it_is_the_plain_version_and_git_is_not_run(
         self, tmp_path: Path
@@ -66,7 +66,7 @@ class TestServerInfo:
 
         info = build_server_info(tmp_path, run=run)
 
-        assert info == {"name": "web-research", "version": "1.3.0"}
+        assert info == {"name": "web-research", "version": "1.3.1"}
         assert run.calls == []  # type: ignore[attr-defined]
 
     @pytest.mark.parametrize(
@@ -83,7 +83,7 @@ class TestServerInfo:
     def test_git_failing_leaves_the_plain_version(self, tmp_path: Path, run: Any) -> None:
         (tmp_path / ".git").mkdir()
 
-        assert build_server_info(tmp_path, run=run)["version"] == "1.3.0"
+        assert build_server_info(tmp_path, run=run)["version"] == "1.3.1"
 
     @pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
     def test_a_real_checkout_names_its_commit(self, tmp_path: Path) -> None:
@@ -95,11 +95,11 @@ class TestServerInfo:
 
         version = build_server_info(tmp_path)["version"]
 
-        assert re.fullmatch(r"1\.3\.0\+g[0-9a-f]{7,40}", version)
+        assert re.fullmatch(r"1\.3\.1\+g[0-9a-f]{7,40}", version)
 
     @pytest.mark.asyncio
     async def test_initialize_answers_with_the_info_the_server_was_given(self) -> None:
-        info = {"name": "web-research", "version": "1.3.0+g727ec4f"}
+        info = {"name": "web-research", "version": "1.3.1+g727ec4f"}
         server = McpServer(_service(FakeFetcher({})), server_info=info)
 
         first = await server.handle_message({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
@@ -122,23 +122,23 @@ class TestServerInfo:
 
 class TestStartupLine:
     def test_it_names_the_server_the_version_the_commit_and_python(self) -> None:
-        line = startup_line({"name": "web-research", "version": "1.3.0+g727ec4f"})
+        line = startup_line({"name": "web-research", "version": "1.3.1+g727ec4f"})
 
         assert "\n" not in line
         assert line.startswith("web-research")
-        assert "version=1.3.0+g727ec4f" in line
+        assert "version=1.3.1+g727ec4f" in line
         assert "commit=727ec4f" in line
         assert f"python={platform.python_version()}" in line
 
     def test_without_a_commit_it_says_so(self) -> None:
-        line = startup_line({"name": "web-research", "version": "1.3.0"})
+        line = startup_line({"name": "web-research", "version": "1.3.1"})
 
-        assert "version=1.3.0 " in line + " " and "commit=unknown" in line
+        assert "version=1.3.1 " in line + " " and "commit=unknown" in line
 
     def test_it_is_one_line_on_the_stream_given(self) -> None:
         stream = io.StringIO()
 
-        announce({"name": "web-research", "version": "1.3.0+g727ec4f"}, stream)
+        announce({"name": "web-research", "version": "1.3.1+g727ec4f"}, stream)
 
         assert stream.getvalue().count("\n") == 1
         assert "727ec4f" in stream.getvalue()

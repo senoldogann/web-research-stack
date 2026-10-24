@@ -9,7 +9,8 @@ from curl_cffi import requests
 
 from web_scraper.config import config
 from web_scraper.content_safety import preserve_code_blocks
-from web_scraper.network_safety import UnsafeTargetError, validate_outbound_url
+from web_scraper.curl_pins import CurlPins, check_peer, pin_url_async
+from web_scraper.network_safety import UnsafeTargetError
 from web_scraper.scrapers import ScrapedData
 from web_scraper.stealth import HeaderFactory
 
@@ -53,6 +54,8 @@ class WebScraperAsync:
             config.scraper_max_redirects if max_redirects is None else max_redirects
         )
         self._client: Optional[requests.AsyncSession] = None
+        # libcurl connects a host to the addresses that were checked for it, and looks nothing up itself.
+        self._pins = CurlPins()
 
     async def __aenter__(self) -> "WebScraperAsync":
         """Async context manager entry."""
@@ -63,6 +66,7 @@ class WebScraperAsync:
             allow_redirects=False,
             headers=headers,
             impersonate=HeaderFactory.get_impersonate_target(),
+            curl_options=self._pins.options,
         )
         return self
 
@@ -355,8 +359,9 @@ class WebScraperAsync:
         return parsed.netloc
 
     async def _request_with_safe_redirects(self, url: str) -> requests.Response:
-        """Fetch a URL while validating every redirect hop."""
-        current_url = validate_outbound_url(
+        """Fetch a URL while checking every redirect hop, and connecting each to the address it checked."""
+        current_url = await pin_url_async(
+            self._pins,
             url,
             allow_private_networks=self.allow_private_networks,
         )
@@ -364,6 +369,7 @@ class WebScraperAsync:
 
         while True:
             response = await self._client.get(current_url)
+            check_peer(response, self.allow_private_networks)
             is_redirect = response.status_code in (301, 302, 303, 307, 308)
             if not self.follow_redirects or not is_redirect:
                 return response
@@ -376,7 +382,8 @@ class WebScraperAsync:
             if redirect_count > self.max_redirects:
                 raise ValueError(f"Exceeded safe redirect limit of {self.max_redirects}")
 
-            current_url = validate_outbound_url(
+            current_url = await pin_url_async(
+                self._pins,
                 urljoin(str(response.url), location),
                 allow_private_networks=self.allow_private_networks,
             )

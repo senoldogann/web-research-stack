@@ -85,7 +85,11 @@ class FakeSession:
 
 
 def _public(url: str, allow_private_networks: bool = False) -> str:
-    return url  # the DNS check is not run by a test
+    return url  # the check of the URL is not run by a test
+
+
+async def _resolved(host: str, port: int, **kwargs: Any) -> list[str]:
+    return ["93.184.216.34"]  # the lookup is not run by a test either: none leaves the machine
 
 
 def _fetcher(
@@ -98,7 +102,9 @@ def _fetcher(
         made.append(kwargs)
         return session
 
-    transport = ImpersonatingTransport(timeout=limits.pop("timeout", 20.0), session_factory=factory)
+    transport = ImpersonatingTransport(
+        timeout=limits.pop("timeout", 20.0), session_factory=factory, resolver=_resolved
+    )
     fetcher = SafeFetcher(
         transport=transport,
         validator=functools.partial(archive_validator, public_check=_public),
@@ -208,7 +214,9 @@ class TestLimits:
         validator = functools.partial(archive_validator, public_check=refuse)
         session = FakeSession(FakeCurlResponse())
         fetcher = SafeFetcher(
-            transport=ImpersonatingTransport(session_factory=lambda **kw: session),
+            transport=ImpersonatingTransport(
+                session_factory=lambda **kw: session, resolver=_resolved
+            ),
             validator=validator,
             retry_attempts=0,
         )

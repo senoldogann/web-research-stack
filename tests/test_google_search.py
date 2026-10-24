@@ -263,3 +263,71 @@ async def test_get_best_sources_filters_google_links(monkeypatch) -> None:
     results = await get_best_sources("anything", max_sources=5)
 
     assert [result["url"] for result in results] == ["https://example.com/keep"]
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        "https://www.google.com/goto?url=https%3A%2F%2Fexample.com%2Fa",
+        "https://www.google.com/url?q=https%3A%2F%2Fexample.com%2Fa&sa=U",
+        "http://google.com/url?q=https%3A%2F%2Fexample.com%2Fa",
+        "https://news.google.com/url?q=https%3A%2F%2Fexample.com%2Fa",
+    ],
+)
+def test_googles_own_redirect_wrapper_is_followed(link: str) -> None:
+    assert GoogleSearcher._is_google_wrapper(link) is True
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        # A result's own address that happens to hold "/url?" or "google.com/goto" is a page on another host:
+        # requesting it would go wherever a stranger's page points, a local server included.
+        "http://127.0.0.1:8080/url?q=1",
+        "http://169.254.169.254/latest/url?x=1",
+        "https://example.com/url?q=https%3A%2F%2Fexample.com%2Fa",
+        "https://example.com/google.com/goto?url=x",
+        "https://evil-google.com/url?q=1",
+        "https://google.com.evil.example/url?q=1",
+        "https://www.google.com/search?q=url%3F",
+        "https://www.google.com/",
+        "ftp://www.google.com/url?q=1",
+        "/url?q=https%3A%2F%2Fexample.com%2Fa",
+        "",
+    ],
+)
+def test_no_other_link_is_requested_to_resolve_it(link: str) -> None:
+    assert GoogleSearcher._is_google_wrapper(link) is False
+
+
+@pytest.mark.asyncio
+async def test_only_googles_wrapper_links_are_requested(monkeypatch: pytest.MonkeyPatch) -> None:
+    requested: list[str] = []
+
+    class Response:
+        headers = {"location": "https://example.com/real"}
+
+    class Session:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> "Session":
+            return self
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+        async def get(self, link: str, **kwargs: object) -> Response:
+            requested.append(link)
+            return Response()
+
+    monkeypatch.setattr("web_scraper.google_search.cffi_requests.AsyncSession", Session)
+    wrapper = "https://www.google.com/url?q=https%3A%2F%2Fexample.com%2Freal"
+    stranger = "http://127.0.0.1:8080/url?q=1"
+
+    resolved = await GoogleSearcher()._resolve_links(
+        [wrapper, stranger, "https://example.com/plain"]
+    )
+
+    assert requested == [wrapper]
+    assert resolved == ["https://example.com/real", stranger, "https://example.com/plain"]

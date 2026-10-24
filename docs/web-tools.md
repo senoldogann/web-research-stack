@@ -39,9 +39,12 @@ scripts/benchmark_web_tools.py ────────────────�
 
 - `WebToolsService` is the single implementation behind REST, MCP, and the
   benchmark; there is no second scrape path to drift.
-- `SafeFetcher` is HTTP-first. It validates every redirect hop, resolves DNS
-  through `validate_outbound_url`, caps response bytes, retries transient
-  failures with exponential backoff, and applies global and per-host gates.
+- `SafeFetcher` is HTTP-first. It validates every redirect hop, opens its
+  connections through a pinned transport (a host name is resolved once, inside
+  the connection; every address must be public; the connection goes to one of
+  them: see [Security boundaries](#security-boundaries)), caps response bytes,
+  retries transient failures with exponential backoff, and applies global and
+  per-host gates.
 - `HeadlessBrowserManager` owns one long-lived browser. `auto` tries headless
   Chrome, then Playwright Chromium, then headless Camoufox. Each render gets a
   fresh isolated context; the worker is reused across requests.
@@ -344,7 +347,77 @@ visible window was opened.
 
 - Only `http` and `https` URLs are accepted.
 - Credentials in URLs, `localhost`, and non-public IP literals are rejected
-  before any request; DNS is resolved for every request and every redirect hop.
+  before any request. A literal is judged by the address it reaches: an IPv6
+  form that carries an IPv4 address (IPv4-compatible `::127.0.0.1`, IPv4-mapped
+  `::ffff:127.0.0.1`, IPv4-translated `::ffff:0:7f00:1`, NAT64 `64:ff9b::7f00:1`,
+  6to4 `2002:7f00:1::`) is judged as that IPv4 address, so one that carries a
+  private, loopback or link-local address is refused and one that carries a
+  public address (what a DNS64 gateway answers for an IPv4-only site on an
+  IPv6-only network) is not; NAT64's local-use prefix `64:ff9b:1::/48` is
+  refused whole. A host written as a number in an old form (`127.1`,
+  `0x7f.0.0.1`, `0177.0.0.1`, `2130706433`) is refused: `0177.0.0.1` is
+  127.0.0.1 to libcurl and may be 177.0.0.1 to `getaddrinfo`, so the address
+  that was checked would not be the one reached. A real IPv4 address is four
+  decimal numbers.
+- **Every connection goes to an address that was checked in the same step**
+  (1.3.1). A host name is resolved once, inside the connection; every address of
+  the answer must be public (one that is not refuses the name, whatever else it
+  answers); and the TCP connection is made to one of those addresses, IPv4
+  first, never to a second lookup. The host name stays the request's own: TLS
+  verifies the certificate for it, SNI included, and the `Host` header is the
+  URL's. A redirect is a new request and goes through the same step, so a
+  name that answers a public address to one connection and `127.0.0.1` to the
+  next is connected to the public address once and refused the next time.
+  Before 1.3.1 the check and the connection each looked the name up (a DNS
+  rebinding answer, public to the first and private to the second, was checked
+  as public and connected to as the loopback or the home network); this
+  includes the reads the server makes of its own accord: the dates read from
+  the heads of search results, and the recovery of a walled page (its AMP or
+  print form, its feed, another outlet's copy). This holds for
+  - `SafeFetcher` (`web_scraper/pinned_transport.py`): scrape, map, extract,
+    crawl, `robots.txt`, sitemaps, the head reads of `resolve_dates`, and every
+    recovery way but the archive. A proxy from the environment is never used
+    (it would resolve the name itself);
+  - the Internet Archive's curl session (`web.archive.org`, fixed in code): the
+    transport resolves the name, checks it and gives libcurl those addresses
+    as the only ones the name has (`CURLOPT_RESOLVE`,
+    `web_scraper/curl_pins.py`), with no proxy from the environment, and an
+    answer that came from a private address is not returned;
+  - the older scrapers (`WebScraper` and `WebScraperAsync`: the CLI, the REST
+    `/scrape` and the research agent) in the same way, with the URL normalized
+    first (libcurl matches a pin by the host as written, and `example.com.`
+    is not `example.com` to it). `SCRAPER_ALLOW_PRIVATE_NETWORKS=true` lifts
+    the public-address rule, not the pinning.
+- **What the pin does not cover.** Said plainly, so that the guarantee is not
+  read wider than it is:
+  - *The headless browser* (and the older Playwright scraper, `web-scraper
+    --playwright` and the research agent's escalation to it, which has the
+    same guard since 1.3.1; before, it checked only the address it was given
+    and not what the page redirected to or loaded). A browser resolves names
+    itself and cannot be told which address to use for one, so a page is
+    rendered only if its host resolves to public addresses only at the moment
+    the render is asked for, and every request the page makes is held to the
+    same rule (`RequestGuard`: the verdict on a host is kept 30 seconds if it is
+    a yes, 300 if it is a no). What remains is the browser's own resolution: a
+    name that answers a public address to that check and a private one to the
+    browser's lookup is rendered. The server's headless browser runs only for a
+    page that the pinned HTTP fetch showed to need rendering, or that answered
+    an access wall.
+  - *The fixed hosts.* The search providers (DuckDuckGo, Yahoo, Google; Brave and
+    Serper at `api.search.brave.com` and `google.serper.dev`) and the research
+    agent's own collectors (Wikipedia, Hacker News, arXiv, Stack Exchange,
+    PubMed, four news feeds) are named in code, not by a page or a result, and
+    the keyed ones are `https` endpoints where a certificate for another address
+    would not verify, so a rebinding answer cannot be made for them by a
+    stranger. They are read through their own sessions and are not pinned.
+    Google's result links are the one thing taken from a page there, and
+    until 1.3.1 any link that held `/url?` was requested to find the real
+    address (a blind request to wherever a result pointed, a local server
+    included): now only Google's own redirect wrappers
+    (`https://www.google.com/url?q=...`, `/goto?url=...`) are.
+  - *FlareSolverr* (`FLARESOLVERR_URL`, the older scrapers' option for a
+    Cloudflare challenge) and the *language model host* are services of the
+    operator's own and are reached where the operator pointed them.
 - Browser subresources are routed through the same public-target check; non-http
   schemes are aborted.
 - Responses are capped by bytes, redirects by count, and requests by timeout.
@@ -1404,7 +1477,8 @@ About 30 calls in all, one search at a time, 8 s or more apart.
   `web.archive.org`; one out of it is refused like any other target.
 - The host is fixed in code: only `https://web.archive.org` on its own port, with no
   credentials, is read this way (`web.archive.org.evil.example` and `archive.org` are not it),
-  and the fetcher's public-address check still runs on it. Nothing else goes through the
+  and the transport checks the host's addresses and pins them in the session (1.3.1: see
+  [Security boundaries](#security-boundaries)). Nothing else goes through the
   impersonated session. The page itself is still fetched by the ordinary fetcher.
 - Headers: the impersonated browser sends its own, coherent with its TLS fingerprint; the
   fetcher's user agent and `Accept` headers are not sent to the archive. The body arrives
@@ -1703,3 +1777,76 @@ Reuters recovery did not need one.
   `web_scrape.content_id`); `web_health` takes none; the server has nine tools, not eight.
 - The `web_scrape` answer is two text blocks (the JSON, then the Markdown); a client that parses
   `content[0]` as JSON finds `"markdown":"(below)"` where the page was.
+
+
+## The server connects only to the address it checked (1.3.1, 2026-10-24)
+
+An independent security review of Dot's item 623 found that the server checked a host and then connected
+to a second lookup of it. `SafeFetcher._validate` ran `validate_outbound_url`, which resolved the name and
+judged every address; then `client.stream("GET", url)` resolved the name again to connect, and so did each
+redirect hop. A name whose DNS answer changes (a public address to the first lookup, `127.0.0.1` or a
+192.168.x.x to the next: DNS rebinding) was checked as public and connected to as the loopback or the home
+network. 1.3.0 had made that reachable without a request from the model:
+
+- **Dates** (`web_tools/headdates.py`, `fetch_head`): a plain news `web_search` sent a blind GET to a local
+  server, when one of the pages it found was on a name that rebinds.
+- **Recovery** (`web_tools/service.py`): a walled `web_scrape` returned a local service's page, a token in it,
+  as "another outlet's copy" (and the AMP and print forms and the feed it names are read the same way).
+
+Two IPv6 forms passed the checks as well: `::127.0.0.1` and `::192.168.1.1` (IPv4-compatible), and
+`64:ff9b::7f00:1` and `64:ff9b::c0a8:101` (NAT64). Dot's own client refused them.
+
+### What changed
+
+| | 1.3.0 | 1.3.1 |
+|---|---|---|
+| A connection of `SafeFetcher` | to a second lookup of the name | to an address of the one lookup, checked in that step (`PinnedTransport`, as Dot's `_CheckedBackend`); TLS and `Host` keep the name |
+| A redirect hop | checked, then looked up again | checked and pinned again |
+| The Internet Archive's curl session | the name checked by the validator, resolved again by libcurl | the transport resolves and checks it and gives libcurl those addresses as the only ones (`CURLOPT_RESOLVE`), no proxy from the environment, no answer from a private address |
+| The older scrapers (`WebScraper`, `WebScraperAsync`) | validated, then libcurl resolved | pinned in the same way |
+| `::127.0.0.1`, `64:ff9b::7f00:1`, `2002:c0a8:101::1` ... | accepted | judged as the IPv4 address they carry; refused when it is not public |
+| `127.1`, `0177.0.0.1`, `2130706433` | accepted or resolved (libcurl reads `0177.0.0.1` as 127.0.0.1) | refused |
+| A result link with `/url?` in it (Google) | requested to find the real address | only Google's own wrappers are |
+| The headless browser | checked on the event loop, a yes kept 300 s | checked off the loop, a yes kept 30 s; what remains is its own name resolution |
+| The older Playwright scraper | the first address only | its page's requests go through the browser's guard |
+| `release.yml`, `ci.yml` | actions by tag, `pip install build twine` | actions by full commit with the release in a comment, `build==1.6.1`, `twine==7.0.0` |
+
+`SafeFetcher(transport=...)` keeps its meaning: a transport of the caller's connects as it likes (a test's
+mock, the archive's curl session, which pins itself) and the validator looks the name up as before. Without
+one, the fetcher builds a `PinnedTransport` and its validator is `validate_outbound_url_syntax`, which looks
+nothing up: a name is judged by what it resolves to, in the connection. A name that does not resolve is still
+`dns_error` and one with an address that is not public `unsafe_target`; they arise when the connection is made.
+
+### What it measured (the reviewer's probes, this Mac, `python -I`)
+
+The probes patch name resolution (a public address to the first lookup of `rebind.test`, `127.0.0.1` to every
+later one) and run a server on 127.0.0.1 that records what reaches it. 1.3.1 was run under `sandbox-exec` with
+only the loopback open, since the public address of the probes is an invented one and the fix, rightly,
+connects to it.
+
+| Probe | 1.3.0 | 1.3.1 |
+|---|---|---|
+| `probe_rebind_e2e.py default` (a news search; dates and recovery on) | looked up 2 times; the local server saw `GET /admin/restart?x=1  Host: rebind.test:<port>` | looked up once; the local server saw nothing |
+| `probe_rebind_recover.py default` (a walled scrape) | looked up 2 times; `recovered_from: other_source`, the answer held the owner-only text and `sk-internal-...`; the local service saw `GET /admin` | looked up once; the scrape fails with the wall's error; nothing reached the local service |
+| both with the two switches off (`WEB_TOOLS_SEARCH_RESOLVE_DATES=off`, `WEB_TOOLS_SCRAPE_RECOVER=off`) | no lookup, nothing reached | the same |
+| `SafeFetcher.fetch_head` of the rebinding name | answered 200 with the local page; looked up 2 times | refused to read the local page: the connection went to the public address (the sandbox denied it); looked up once |
+| `validate_outbound_url` and `canonicalize_url` on `::127.0.0.1`, `::192.168.1.1`, `64:ff9b::7f00:1`, `64:ff9b::c0a8:101`, `64:ff9b::a9fe:a9fe` | accepted | refused |
+| the same on `http://0177.0.0.1/` | accepted | refused |
+
+The tests run the same attack in memory (`tests/rebinding_support.py`: a resolver that rebinds, a dialler that
+serves public addresses from memory and, for any other address, connects for real to a recording server on the
+loopback) for each path: a scrape, a redirect hop, the head read of `resolve_dates`, the AMP form, the feed,
+another outlet's copy, the archive, the older scrapers and the browser's guard. They fail against 1.3.0 (the
+local server is reached) and pass now (`tests/test_web_rebinding_paths.py`, `tests/test_web_pinned_connect.py`,
+`tests/test_curl_pins.py`). The TLS test serves a certificate for a name from a local TLS server, reached through
+a public address of the test, and checks the SNI, the `Host` header, and that a certificate for another name is
+refused (`trustme`, in the `dev` extra).
+
+### For Dot
+
+- Nothing in Dot's configuration changes. `resolve_dates` and recovery still read addresses the server chooses
+  and are still not bound by Dot's `[browser] allowed_hosts` and `blocked_hosts` (the 1.3.0 note above): that is
+  about the owner's lists, not about rebinding, which no longer steers those reads to the local network.
+- What the server does not pin is in [Security boundaries](#security-boundaries): the browsers' own resolution
+  above all. A Dot that runs the browser fallbacks should know that a page it renders is checked at the moment
+  of the render and not at the moment of the browser's connection.

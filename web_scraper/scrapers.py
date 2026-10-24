@@ -12,7 +12,8 @@ from curl_cffi import requests
 
 from web_scraper.config import config
 from web_scraper.content_safety import preserve_code_blocks
-from web_scraper.network_safety import UnsafeTargetError, validate_outbound_url
+from web_scraper.curl_pins import CurlPins, check_peer, pin_url
+from web_scraper.network_safety import UnsafeTargetError
 from web_scraper.stealth import HeaderFactory
 
 
@@ -85,6 +86,8 @@ class WebScraper:
             config.scraper_max_redirects if max_redirects is None else max_redirects
         )
         self._client: Optional[requests.Session] = None
+        # libcurl connects a host to the addresses that were checked for it, and looks nothing up itself.
+        self._pins = CurlPins()
 
     def __enter__(self) -> "WebScraper":
         """Context manager entry - create HTTP client."""
@@ -95,6 +98,7 @@ class WebScraper:
             allow_redirects=False,
             headers=headers,
             impersonate=HeaderFactory.get_impersonate_target(),
+            curl_options=self._pins.options,
         )
         return self
 
@@ -262,12 +266,14 @@ class WebScraper:
                 allow_redirects=False,
                 headers=headers,
                 impersonate="chrome120",
+                curl_options=self._pins.options,
             )
         return self._request_with_safe_redirects(url)
 
     def _request_with_safe_redirects(self, url: str) -> requests.Response:
-        """Fetch a URL while validating every redirect hop."""
-        current_url = validate_outbound_url(
+        """Fetch a URL while checking every redirect hop, and connecting each to the address it checked."""
+        current_url = pin_url(
+            self._pins,
             url,
             allow_private_networks=self.allow_private_networks,
         )
@@ -275,6 +281,7 @@ class WebScraper:
 
         while True:
             response = self._client.get(current_url)
+            check_peer(response, self.allow_private_networks)
             is_redirect = response.status_code in (301, 302, 303, 307, 308)
             if not self.follow_redirects or not is_redirect:
                 return response
@@ -287,7 +294,8 @@ class WebScraper:
             if redirect_count > self.max_redirects:
                 raise ValueError(f"Exceeded safe redirect limit of {self.max_redirects}")
 
-            current_url = validate_outbound_url(
+            current_url = pin_url(
+                self._pins,
                 urljoin(str(response.url), location),
                 allow_private_networks=self.allow_private_networks,
             )

@@ -2,7 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
+import sys
+import time
+import types
+from typing import Any
+
+import pytest
+from rebinding_support import LOOPBACK, PUBLIC_A, World
+
+from web_scraper.playwright_scrapers import PlaywrightScraper
+from web_scraper.web_tools import browser as browser_module
 from web_scraper.web_tools.browser import (
+    BrowserRenderError,
+    HeadlessBrowserManager,
+    RequestGuard,
     browser_launch_candidates,
     browser_request_allowed,
 )
@@ -31,3 +45,246 @@ def test_private_and_unsupported_targets_are_blocked() -> None:
     assert browser_request_allowed("http://localhost/admin") is False
     assert browser_request_allowed("file:///etc/passwd") is False
     assert browser_request_allowed("data:text/html,hello") is False
+
+
+def test_the_address_forms_that_carry_a_private_ipv4_are_blocked() -> None:
+    for address in (
+        "[::127.0.0.1]",
+        "[64:ff9b::7f00:1]",
+        "[2002:c0a8:101::1]",
+        "[::ffff:10.0.0.1]",
+    ):
+        assert browser_request_allowed(f"http://{address}/") is False
+    assert browser_request_allowed("http://0177.0.0.1/") is False
+
+
+class TestWhatIsCheckedWhenAPageIsRendered:
+    """The browser resolves names itself and cannot be pinned: a page is rendered only if its host resolves to
+    public addresses only at the moment of the check, and so is every request the page makes."""
+
+    @pytest.mark.asyncio
+    async def test_a_page_whose_host_resolves_to_a_private_address_is_not_rendered(
+        self, world: World
+    ) -> None:
+        world.dns.answers("rebind.test", [LOOPBACK])
+        manager = HeadlessBrowserManager()
+
+        with pytest.raises(BrowserRenderError) as exc:
+            await manager.render(f"http://rebind.test:{world.local.port}/admin")
+
+        assert exc.value.code == "unsafe_target"
+        assert (
+            world.local.seen == [] and manager.running is False
+        )  # refused before a browser was started
+
+    @pytest.mark.asyncio
+    async def test_a_name_that_rebinds_is_refused_at_the_second_look(self, world: World) -> None:
+        # The check is made when the render is asked for and again for each request of the page, so a name that
+        # answers differently to the browser's own lookup after the first is caught by the second.
+        world.dns.rebinds("rebind.test", PUBLIC_A)
+        manager = HeadlessBrowserManager()
+
+        assert await manager._guard.allowed_now("http://rebind.test/") is True
+        assert await manager._guard.allowed_now("http://rebind.test/") is False
+
+    @pytest.mark.asyncio
+    async def test_the_check_does_not_block_the_event_loop(
+        self, world: World, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def slow(url: str) -> bool:
+            time.sleep(0.2)
+            return False
+
+        monkeypatch.setattr(browser_module, "browser_request_allowed", slow)
+        ticks = 0
+
+        async def tick() -> None:
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0.01)
+                ticks += 1
+
+        ticker = asyncio.create_task(tick())
+        try:
+            with pytest.raises(BrowserRenderError):
+                await HeadlessBrowserManager().render("http://slow.test/")
+        finally:
+            ticker.cancel()
+
+        assert ticks >= 5
+
+    @pytest.mark.asyncio
+    async def test_a_check_that_fails_is_a_refusal(
+        self, world: World, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def broken(url: str) -> bool:
+            raise RuntimeError("the resolver fell over")
+
+        monkeypatch.setattr(browser_module, "browser_request_allowed", broken)
+
+        assert await HeadlessBrowserManager()._guard.allowed_now("http://example.test/") is False
+
+    @pytest.mark.asyncio
+    async def test_an_allow_is_kept_for_a_short_time_and_a_refusal_for_a_long_one(
+        self, world: World
+    ) -> None:
+        world.dns.answers("good.test", [PUBLIC_A])
+        world.dns.answers("bad.test", [LOOPBACK])
+        manager = HeadlessBrowserManager()
+
+        assert await manager._guard.allowed("http://good.test/a") is True
+        assert await manager._guard.allowed("http://bad.test/a") is False
+        # Within the time they are kept, the host is not looked up again.
+        assert await manager._guard.allowed("http://good.test/b") is True
+        assert await manager._guard.allowed("http://bad.test/b") is False
+        assert world.dns.lookups == {"good.test": 1, "bad.test": 1}
+
+        kept = {
+            host: entry.expires_at - time.monotonic()
+            for host, entry in manager._guard._hosts.items()
+        }
+        assert kept["good.test"] <= browser_module._ALLOWED_KEPT_SECONDS
+        assert kept["bad.test"] > browser_module._ALLOWED_KEPT_SECONDS
+        assert browser_module._ALLOWED_KEPT_SECONDS <= 60
+
+
+class _Route:
+    """What Playwright hands a route handler: the request, and what can be done with it."""
+
+    def __init__(self, url: str) -> None:
+        self.request = types.SimpleNamespace(url=url)
+        self.done: list[str] = []
+
+    async def continue_(self) -> None:
+        self.done.append("continue")
+
+    async def abort(self, reason: str) -> None:
+        self.done.append(f"abort:{reason}")
+
+
+class TestTheGuardOfAPage:
+    @pytest.mark.asyncio
+    async def test_a_request_to_a_public_host_goes_on_and_one_to_a_private_host_is_aborted(
+        self, world: World
+    ) -> None:
+        world.dns.answers("public.test", [PUBLIC_A])
+        world.dns.answers("private.test", [LOOPBACK])
+        guard = RequestGuard()
+        routes = [
+            _Route("https://public.test/app.js"),
+            _Route("http://private.test/pixel"),
+            _Route("http://127.0.0.1:8080/"),
+            _Route("http://[::127.0.0.1]/"),
+            _Route("file:///etc/passwd"),
+        ]
+
+        for route in routes:
+            await guard.route(route)
+
+        assert [route.done for route in routes] == [
+            ["continue"],
+            ["abort:blockedbyclient"],
+            ["abort:blockedbyclient"],
+            ["abort:blockedbyclient"],
+            ["abort:blockedbyclient"],
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_hosts_verdict_is_kept_briefly_and_the_host_is_looked_at_again_after(
+        self, world: World
+    ) -> None:
+        world.dns.rebinds("rebind.test", PUBLIC_A)
+        guard = RequestGuard()
+        first, soon, later = (
+            _Route("http://rebind.test/a"),
+            _Route("http://rebind.test/b"),
+            _Route("http://rebind.test/c"),
+        )
+
+        await guard.route(first)
+        await guard.route(soon)  # within the time a yes is kept: not looked up again
+        guard._hosts["rebind.test"].expires_at = 0.0  # the time has passed
+        await guard.route(later)  # looked up again: the name answers the loopback now
+
+        assert first.done == ["continue"] and soon.done == ["continue"]
+        assert later.done == ["abort:blockedbyclient"]
+        assert world.dns.lookups == {"rebind.test": 2}
+
+    @pytest.mark.asyncio
+    async def test_the_table_of_verdicts_does_not_grow_without_bound(self, world: World) -> None:
+        world.dns.answers("fresh.test", [PUBLIC_A])
+        guard = RequestGuard()
+        for index in range(browser_module._HOSTS_KEPT_MAX):
+            guard._hosts[f"old{index}.test"] = browser_module._AllowedHost(True, expires_at=0.0)
+
+        assert await guard.allowed("http://fresh.test/") is True
+
+        assert set(guard._hosts) == {"fresh.test"}  # the verdicts that had run out are gone
+
+
+class _Page:
+    def __init__(self) -> None:
+        self.routes: list[tuple[str, Any]] = []
+
+    async def route(self, pattern: str, handler: Any) -> None:
+        self.routes.append((pattern, handler))
+
+    def set_default_timeout(self, timeout: float) -> None:
+        return None
+
+
+class TestTheOlderPlaywrightScraper:
+    """It checked the address it was given and nothing the page then asked for."""
+
+    @pytest.mark.asyncio
+    async def test_its_page_is_routed_through_the_guard(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        page = _Page()
+
+        class Context:
+            async def new_page(self) -> _Page:
+                return page
+
+        class Browser:
+            async def new_context(self, **options: Any) -> Context:
+                return Context()
+
+            async def close(self) -> None:
+                return None
+
+        class Started:
+            chromium = types.SimpleNamespace(launch=lambda **options: _launched(Browser()))
+
+            async def stop(self) -> None:
+                return None
+
+        async def _launched(browser: Browser) -> Browser:
+            return browser
+
+        async def stealth(page: Any) -> None:
+            return None
+
+        async def start() -> Started:
+            return Started()
+
+        api = types.ModuleType("playwright.async_api")
+        api.async_playwright = lambda: types.SimpleNamespace(start=start)  # type: ignore[attr-defined]
+        stealth_module = types.ModuleType("playwright_stealth")
+        stealth_module.stealth_async = stealth  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
+        monkeypatch.setitem(sys.modules, "playwright.async_api", api)
+        monkeypatch.setitem(sys.modules, "playwright_stealth", stealth_module)
+
+        async with PlaywrightScraper() as scraper:
+            assert page.routes == [("**/*", scraper._guard.route)]
+
+    @pytest.mark.asyncio
+    async def test_it_still_refuses_an_address_it_is_given_before_it_opens_a_page(
+        self, world: World
+    ) -> None:
+        scraper = PlaywrightScraper()
+
+        for url in ("http://127.0.0.1/", "http://[64:ff9b::7f00:1]/", "http://0177.0.0.1/"):
+            result = await scraper.scrape(url)
+            assert result.error is not None and "unsafe" in result.error.lower()

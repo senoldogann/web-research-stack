@@ -495,6 +495,7 @@ _META_PUBLISHED: dict[str, float] = {
     "og:published_time": 0.75,
     "datepublished": 0.75,
     "parsely-pub-date": 0.65,
+    "published_time": 0.65,
     "sailthru.date": 0.60,
     "publish-date": 0.60,
     "publishdate": 0.60,

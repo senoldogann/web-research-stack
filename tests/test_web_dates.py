@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 
 import pytest
 from test_web_service import FakeFetcher, _html_result, _service
@@ -15,6 +16,7 @@ from web_scraper.web_tools.dates import (
     resolve,
     text_signals,
 )
+from web_scraper.web_tools.fields import normalize_date
 
 TODAY = date(2026, 10, 23)
 URL = "https://cloud.google.com/blog/products/compute/introducing-trillium-6th-gen-tpus"
@@ -262,6 +264,68 @@ class TestAgreementAndConflicts:
         resolved = resolve(signals)
 
         assert resolved.date == "2026-10-21" and resolved.date_conflicts == []
+
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def _trillium_page() -> str:
+    """The head of a real Google Cloud blog post, as recorded (tests/fixtures), with the 120 KB
+    of inline scripts it has before its metadata put back: every date signal is past byte 120,000."""
+    recorded = (FIXTURES / "cloud_google_trillium_head.html").read_text(encoding="utf-8")
+    head, _, rest = recorded.partition("<title>")
+    filler = "<script>" + "var cloud = '" + "x" * 120_000 + "';</script>"
+    return f"{head}{filler}<title>{rest}</head><body><main><article><p>Trillium.</p></article></main></body></html>"
+
+
+class TestARecordedGoogleCloudHead:
+    """The page of the case: published_time in a meta tag, datePublished in JSON-LD, 140 KB in."""
+
+    URL = "https://cloud.google.com/blog/products/compute/introducing-trillium-6th-gen-tpus"
+
+    def test_the_recorded_signals_agree_and_date_the_page(self) -> None:
+        resolved = resolve_html_dates(_trillium_page(), self.URL, today=TODAY)
+
+        assert resolved.date == "2024-05-15"
+        assert resolved.date_source == "json_ld:datePublished"
+        assert {"json_ld:datePublished", "meta:published_time"} <= {
+            signal.source for signal in resolved.signals
+        }
+        assert resolved.date_conflicts == []
+        # JSON-LD (0.80) and the meta tag (0.65), both read: 1 - 0.2 * 0.35.
+        assert resolved.date_confidence == pytest.approx(0.93, abs=0.005)
+
+    def test_the_first_64_kb_hold_none_of_it_and_the_head_read_to_its_end_does(self) -> None:
+        page = _trillium_page()
+
+        assert resolve_html_dates(page[:65_536], self.URL, today=TODAY).date is None
+        assert (
+            resolve_html_dates(page[: page.index("</head>") + 7], self.URL, today=TODAY).date
+            == "2024-05-15"
+        )
+
+    def test_the_zone_without_a_colon_is_read_on_every_python(self) -> None:
+        assert normalize_date("2024-05-15T04:05:01+0300") == "2024-05-15T04:05:01+03:00"
+        assert normalize_date("2026-10-21T08:30:00.12Z") == "2026-10-21T08:30:00.120000+00:00"
+        assert normalize_date("2026-10-21T08:30+03") == "2026-10-21T08:30:00+03:00"
+        assert normalize_date("2026-10-21 08:30:00") == "2026-10-21T08:30:00"
+
+    async def test_a_search_dates_the_result_the_snippet_did_not(self) -> None:
+        from test_web_search_resolve_dates import HeadFetcher, _search_service
+
+        page = _trillium_page()
+        fetcher = HeadFetcher({self.URL: page})
+        service = _search_service(fetcher, (self.URL,))
+
+        without = await service.search(
+            "Trillium TPU news this week", depth="fast", resolve_dates=False
+        )
+        answer = await service.search("Trillium TPU announcement this week", depth="fast")
+
+        assert without["results"][0]["date"] is None
+        item = answer["results"][0]
+        assert item["date"] == "2024-05-15" and item["date_source"] == "json_ld:datePublished"
+        assert item["date_confidence"] == pytest.approx(0.93, abs=0.005)
 
 
 class TestTheCloudGoogleCase:

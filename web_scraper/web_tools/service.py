@@ -563,7 +563,7 @@ class WebToolsService:
                 self.settings.search_resolve_dates_top,
                 min(pool, self.settings.search_resolve_dates_max) if strict_dates else 0,
             )
-            found, report = await read_result_dates(
+            found, reading_report = await read_result_dates(
                 results,
                 fetcher=self.fetcher,
                 cached_html=self._cached_html,
@@ -586,20 +586,20 @@ class WebToolsService:
                 results = rank_pool(pool, found)
                 if options.date_from or options.date_to:
                     results = [
-                        item
-                        for item in results
-                        if within_date_range(item["date"], options.date_from, options.date_to)
+                        row
+                        for row in results
+                        if within_date_range(row["date"], options.date_from, options.date_to)
                     ]
-            if report.cut:
-                date_warnings.append(f"resolve_dates_cut:{report.cut}")
-            dates_report = report.to_dict()
+            if reading_report.cut:
+                date_warnings.append(f"resolve_dates_cut:{reading_report.cut}")
+            dates_report = reading_report.to_dict()
             dates_ms = (time.perf_counter() - dates_started) * 1000
         dropped = 0
         if strict_dates:
             kept: list[dict[str, Any]] = []
-            for item in results:
-                if item["date"] and item["date_confidence"] >= LOW_CONFIDENCE:
-                    kept.append(item)
+            for row in results:
+                if row["date"] and row["date_confidence"] >= LOW_CONFIDENCE:
+                    kept.append(row)
                     if len(kept) == resolved_limit:
                         break
                 else:
@@ -615,7 +615,7 @@ class WebToolsService:
         if not results and not dropped:
             # The provider answered, but nothing it returned is about the query.
             warnings.append("no_relevant_results")
-        elif results and all(item["relevance"] < MIN_RESULT_RELEVANCE for item in results):
+        elif results and all(row["relevance"] < MIN_RESULT_RELEVANCE for row in results):
             warnings.append("low_relevance_results")
         warnings.extend(date_warnings)
         facets = build_facets(

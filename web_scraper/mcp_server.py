@@ -115,6 +115,11 @@ async def _health(service: WebToolsService, arguments: dict[str, Any]) -> dict[s
     return service.health()
 
 
+def _compact(on: bool) -> dict[str, Any]:
+    """``compact`` for the service, passed on only when it is on (the service answers in full)."""
+    return {"compact": True} if on else {}
+
+
 async def _search(service: WebToolsService, arguments: dict[str, Any]) -> dict[str, Any]:
     request = WebSearchRequest.model_validate(arguments)
     return await service.search(
@@ -123,7 +128,7 @@ async def _search(service: WebToolsService, arguments: dict[str, Any]) -> dict[s
         provider=request.provider,
         depth=request.depth,
         # A model pays for every character it reads: the answer is compact unless it says not.
-        **({"compact": True} if request.compact is not False else {}),
+        **_compact(request.compact is not False),
         **request.model_dump(include=_SEARCH_PARAMETERS, exclude_none=True),
         **request.model_dump(include=_SEARCH_READ_PARAMETERS, exclude_defaults=True),
     )

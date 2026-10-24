@@ -1273,6 +1273,7 @@ def create_app(settings: Optional[Config] = None) -> FastAPI:
         _: str = Depends(require_web_access),
     ) -> WebSearchResponse:
         web_tools: WebToolsService = request.app.state.web_tools
+        shape: dict[str, Any] = {"compact": True} if payload.compact else {}
         async with app.state.concurrency_gate.acquire():
             result = await web_tools.search(
                 payload.query,
@@ -1280,7 +1281,7 @@ def create_app(settings: Optional[Config] = None) -> FastAPI:
                 provider=payload.provider,
                 depth=payload.depth,
                 # REST answers in full unless it asks for the compact shape (MCP is the other way).
-                **({"compact": True} if payload.compact else {}),
+                **shape,
                 **payload.model_dump(
                     include={
                         "region",

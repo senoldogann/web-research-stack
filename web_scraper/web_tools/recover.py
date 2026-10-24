@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Optional
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 from defusedxml import ElementTree
 
 from web_scraper.web_tools.discovery import query_tokens
@@ -149,10 +149,10 @@ def wall_title(body: str) -> str:
     candidates: list[str] = []
     for attrs in ({"property": "og:title"}, {"name": "twitter:title"}):
         meta = soup.find("meta", attrs=attrs)
-        if meta is not None and meta.get("content"):
+        if isinstance(meta, Tag) and meta.get("content"):
             candidates.append(str(meta["content"]))
     heading = soup.find("h1")
-    if heading is not None:
+    if isinstance(heading, Tag):
         candidates.append(heading.get_text(" "))
     if soup.title is not None:
         candidates.append(soup.title.get_text(" "))

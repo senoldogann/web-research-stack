@@ -327,6 +327,11 @@ class WebToolsService:
         )
 
     async def close(self) -> None:
+        probes = list(self._fallback_probes.values())
+        for probe in probes:
+            probe.cancel()  # a probe of the missing-page check still going is stopped with the rest
+        if probes:
+            await asyncio.gather(*probes, return_exceptions=True)
         if self._crawl is not None:
             await self._crawl.close()
         for adapter in self.search_adapters.values():

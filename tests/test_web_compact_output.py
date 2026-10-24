@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from typing import Any
 
 import pytest
@@ -14,6 +15,7 @@ from web_scraper.api import create_app
 from web_scraper.api_models import WebScrapeRequest, WebScrapeResponse, WebSearchRequest
 from web_scraper.config import config
 from web_scraper.mcp_server import McpServer, _scrape, _search
+from web_scraper.web_tools import discovery
 from web_scraper.web_tools.errors import WebToolError
 from web_scraper.web_tools.pagecache import PageCache
 from web_scraper.web_tools.search import SearchResult
@@ -57,6 +59,20 @@ def _settings(**overrides: object) -> WebToolsSettings:
     }
     values.update(overrides)
     return WebToolsSettings(**values)  # type: ignore[arg-type]
+
+
+class _TheDayTheResultsWereWritten(date):
+    @classmethod
+    def today(cls) -> date:  # type: ignore[override]
+        return date(2026, 10, 23)
+
+
+@pytest.fixture(autouse=True)
+def _today_is_the_day_the_results_were_written(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The results below say "Yesterday" next to an address dated 2026/10/22: those agree on the 23rd and
+    on no other day, and the test of the run block went red at midnight (on 1.3.1 too). These tests are
+    about the shape of an answer, not about what day it is."""
+    monkeypatch.setattr(discovery, "date", _TheDayTheResultsWereWritten)
 
 
 def _results() -> list[SearchResult]:

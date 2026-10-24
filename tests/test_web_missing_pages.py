@@ -272,6 +272,21 @@ class TestWhatTheCheckCosts:
         assert answer["warnings"] == [] and soft.asked == ["/nowhere"]
 
 
+class TestClosingTheService:
+    @pytest.mark.asyncio
+    async def test_a_probe_still_going_is_cancelled_and_forgotten(self) -> None:
+        service = _service()
+        going = asyncio.ensure_future(asyncio.sleep(3600))
+        service._fallback_probes["https://slow.test"] = going
+        going.add_done_callback(
+            lambda _done: service._fallback_probes.pop("https://slow.test", None)
+        )
+
+        await service.close()
+
+        assert going.cancelled() and service._fallback_probes == {}
+
+
 class TestAHostThatSaysWhenAPageIsNotThere:
     @pytest.mark.asyncio
     async def test_a_404_for_the_probe_is_an_honest_host_and_nothing_is_flagged(

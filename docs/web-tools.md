@@ -643,6 +643,15 @@ pick up the new schema.
   with a benchmark. Since 1.4.0 the browser waits for a page to settle and a page that
   stays a shell says so, but a page that needs a login, a click or a scroll to show
   its content is still a shell (`rendered_shell`).
+- The wait for a page to settle watches the page's text, and cannot tell a page from what stands in front of it. A
+  consent banner or any other text of 50 characters or more that shows up before the content, when the network has gone
+  quiet and the text has not changed for `BROWSER_SETTLE_STABLE_MS`, is read as the page: the answer is that text and
+  carries no `rendered_shell`. A page whose content comes later than the network goes quiet, from a timer or a scroll,
+  is read as it is at that moment. `BROWSER_SETTLE_MAX_MS` and `BROWSER_SETTLE_STABLE_MS` are the knobs.
+- The missing-page check judges the page it was given. A page that the site redirects to its home page (the final address
+  is the root of the site, `url` differs from `requested_url`) is the home page and is not judged; and a page that names
+  itself by a canonical link is taken at its word. A site whose fallback differs from address to address (its words
+  change with the path by more than the address's own) is not found.
 - `web_extract` does not use the scrape cache (it holds scrape answers) but shares the
   page cache with `web_scrape`: a page fetched in the last 5 minutes is not fetched again.
 - The scrape, search and page caches live in one process and are lost on
@@ -671,7 +680,9 @@ pick up the new schema.
   `other`, and the aggregator table is a list, not a classifier; the per-domain cap still prevents it from filling the
   page. A host named as the query's subject is `official` on the top-level domains organizations
   use (`com org io dev ai app co`): a copy of the site on one of those is taken for the original,
-  and the original on another (`.so`, `.sh`) is not named official by this rule. Scores are relative to the current result set, not calibrated relevance.
+  and the original on another (`.so`, `.sh`) is not named official by this rule. The rule cannot tell the exact-match
+  domain of a generic query from the subject's own site (`cookrice.com` is `official` for "how to cook rice"): it needs two
+  words and six letters, and a site the rule gets wrong, or misses, is for `WEB_TOOLS_OFFICIAL_HOSTS`. Scores are relative to the current result set, not calibrated relevance.
 - The Google provider remains headless-only and may be refused; it is not a
   guaranteed search fallback.
 
@@ -1882,7 +1893,7 @@ compact output, the source types, and every connection pinned to the address tha
 | Tool | Their score | What they found | What it was | What it is now |
 |---|---|---|---|---|
 | `web_search` | 7 | for "Model Context Protocol specification" mostly blogs and third parties | the official spec page, the project's blog and a copy of its site were all `other`; a blog post led, the spec page was fifth | the project's hosts are `official` (a copy on `.info` is not) and, for a query that asks for a specification, `primary_first` is on: the spec page leads |
-| `web_scrape` | 5 | a blog post came back as "Loading animation while page loads"; `not a url at all` became `https://…` and a DNS error | the browser read the page 500 ms after it loaded and the shorter text lost to the HTTP shell; the request model prefixed every text with `https://` | the browser waits for the page to settle; a page that stays a shell says so; text that is no address says it is not a web address |
+| `web_scrape` | 5 | a blog post came back as "Loading animation while page loads"; `not a url at all` became `https://…` and a DNS error | the page's HTML is an empty `<div id="root">` and the comment `<!-- Loading animation while page loads -->`, which the Markdown reader printed as the page's text (34 characters); the browser was asked, read the page 500 ms after it loaded, saw nothing (0 characters) and the merge kept the longer shell; the request model prefixed every text with `https://` | the browser waits for the page to settle; a page that stays a shell says so; text that is no address says it is not a web address |
 | `web_map` | 9 | 42 URLs, with `lastmod` | `senoldogan.dev` redirects to `www`, and the sitemap's `www` URLs were dropped as another host's: 1 URL | the host the address lands on is the site's own: 44 URLs, `host`, `redirected_from` |
 | `web_extract` | 5 | `/bu-sayfa-yok-12345` (no such page) gave the home page's title as found; `data.title` was "X, X" | a soft 404, and a title written twice | the page says `soft_404` and `looks_missing` and no field is read from it; two signals that agree are one value |
 | `web_crawl` | 5 | `max_pages: 5` showed `percent: 100` with 32 links in the queue | a crawl that ended said nothing of why | `stopped_by`, `not_visited`, and `queue_size` is 0 once it has ended |
@@ -1892,9 +1903,10 @@ compact output, the source types, and every connection pinned to the address tha
 **Over HTTP.** A page whose readable text is under `BROWSER_RENDER_MIN_CHARS` (200) characters while its HTML has a
 `<script>` is read again in the headless browser: a loading placeholder ("Loading…", "Loading animation while page
 loads", "Please enable JavaScript"), an empty `#root`, `#app` or `#__next`, or a few lines that a script is about to
-replace. (1.3.1 read again only under 50 characters, or with `id="root"`/`id="app"` in the HTML: the bound is the one
-the shells seen are under, 34 characters for senoldogan.dev's.) A page with no script is never read again (nothing is
-about to draw it), and a page with 200 characters or more is a page.
+replace. (1.3.1 read again only under 50 characters, or with `id="root"`/`id="app"` in the HTML. senoldogan.dev's
+blog pages came over HTTP as an empty `#root` and a comment, and *were* read again: the 500 ms read of the browser
+saw nothing, and a page the browser reads as shorter than the HTTP text keeps the HTTP text.) A page with no script is
+never read again (nothing is about to draw it), and a page with 200 characters or more is a page.
 
 **In the browser.** The read no longer waits a fixed 500 ms after `DOMContentLoaded`. After the `load` event:
 
@@ -1906,6 +1918,9 @@ about to draw it), and a page with 200 characters or more is a page.
    (under a quarter of `BROWSER_RENDER_MIN_CHARS`) keeps the wait going;
 3. never sooner than `BROWSER_POST_LOAD_WAIT_MS` (500), and never later than `BROWSER_SETTLE_MAX_MS` (8,000) after the
    load, nor past `BROWSER_TIMEOUT_SECONDS` (30) for the whole render.
+
+Text that shows up before the content and is long enough to be a page (a cookie notice, a banner: 50 characters or more)
+counts as text: a page that shows only that when the network goes quiet is read as that, and is not called a shell.
 
 Every request the browser makes is checked as in 1.3.1 (`RequestGuard`: the address of the host, a yes kept 30 s, a no
 300 s); what the browser's own name resolution does is still what [Security boundaries](#security-boundaries) says.
@@ -1941,6 +1956,17 @@ never fills, the least and the most, the deadline, a network that never rests, a
 headless browser against a real server on the loopback, skipped where there is none, as on the CI job, which does not
 install Playwright) and `tests/test_web_js_pages.py` (what is a shell, `rendered_shell`, `needs_javascript`, the caches,
 one loader, the settings, and `web_scrape` of a page a script draws after 1.5 s end to end with a real browser).
+
+### Markup that is not text (after 1.4.0)
+
+The Markdown reader printed every string the parser made of a page, and a comment is one: `<!-- Loading animation while
+page loads -->` was the whole "page" of senoldogan.dev's blog pages when the app had not started (the words the owner
+saw in `web_scrape`), and a Google Tag Manager comment, an IE conditional comment or a `<![CDATA[ ]]>` section was a
+line of the Markdown of any page that has one (1.3.1 and 1.4.0 both did). A comment, a CDATA section, a processing
+instruction, a declaration and a doctype are now left out of the Markdown, in a paragraph, a list, a table and a quote
+alike; text that spells a comment (`&lt;!-- --&gt;` in a code sample) is text and stays. The shell the owner's pages
+serve is now empty over HTTP (`empty_content`, and `needs_javascript` where no browser read it), and the page the
+browser draws has no comment in it. Tests: `tests/test_web_markdown_comments.py`.
 
 ### Pages that do not exist (soft 404)
 
@@ -2066,18 +2092,20 @@ writes about a specification is not the specification), and what leads is the do
 `primary_first: true` is as it was (official +0.12, news +0.10, academic +0.05, whatever the query) and `false` is none.
 
 **What it measured** on the pool Yahoo answered on 2026-10-24 (`tests/fixtures/search_model_context_protocol_specification.json`,
-the three angles of a discover search):
+the three angles of a discover search), ranked by the two versions with the default `limit` of 5 and the clock of that
+day (`tests/test_web_search_official_name.py` runs the 1.4.0 column):
 
 | | 1.3.1 | 1.4.0 |
 |---|---|---|
 | 1 | `blog.modelcontextprotocol.io/posts/2026-07-28` (`other`) | `modelcontextprotocol.io/specification/2026-07-28` (`official`) |
 | 2 | `modelcontextprotocol.info/specification` (`other`) | `blog.modelcontextprotocol.io/posts/2026-07-28` (`official`) |
-| 3 | `github.com/modelcontextprotocol/...` (`code`) | `modelcontextprotocol.io/specification/2026-07-28/architecture` (`official`) |
-| 4 | `en.wikipedia.org/wiki/Model_Context_Protocol` (`reference`) | `modelcontextprotocol.io/specification/2025-06-18/basic` (`official`) |
-| 5 | `modelcontextprotocol.io/specification/2025-03-26` (`other`) | `modelcontextprotocol.info/specification` (`other`) |
+| 3 | `modelcontextprotocol.io/docs/2026-07-28/learn/architecture` (`reference`) | `modelcontextprotocol.io/specification/2026-07-28/architecture` (`official`) |
+| 4 | `github.com/modelcontextprotocol/...` (`code`) | `modelcontextprotocol.info/specification` (`other`) |
+| 5 | `modelcontextprotocol.io/specification/2025-03-26` (`other`) | `blog.modelcontextprotocol.io/posts/2026-07-28-release-candidate` (`official`) |
 
-(the live answer of the same call, 8 results: the spec page, the blog post, its architecture page, the copy of the site
-fourth, then the release-candidate post.) Tests: `tests/test_web_search_official_name.py`.
+The specification page of the 2026-07-28 edition is not among 1.3.1's five at all; the project's own pages are `other`
+or `reference` there, and the copy of its site is second. The live answers of the same call (the pool varies from run
+to run) are in the table below.
 
 ### How each source type is decided
 
@@ -2100,24 +2128,30 @@ fourth, then the release-candidate post.) Tests: `tests/test_web_search_official
 A host matches itself and its subdomains. What a type is worth is `_AUTHORITY` in `discovery.py` (official 0.24, academic
 0.20, news 0.14, reference 0.10, code 0.06, community 0.04, aggregator −0.12), and `primary_first` adds on top.
 
-### What it measured live (2026-10-24, this Mac, one run each, default settings)
+### What it measured live (2026-10-25, this Mac, one run each, default settings)
+
+Both columns were run in the same session, one after the other, from folders of their own: 1.3.1 from a pristine
+copy of its source, 1.4.0 from the branch (the owner's calls, through the MCP handler, `WebToolsService.from_env()`).
+The pages of senoldogan.dev were read lightly (one run each, a crawl of 4 or 5 pages). `web_extract` ran after the
+`web_scrape` of the same pages, so it was answered from the page cache that the scrape filled.
 
 | Call | 1.3.1 | 1.4.0 |
 |---|---|---|
-| `web_search` "Model Context Protocol specification" (DuckDuckGo bot-walled, Yahoo answered) | 7.1 s; blog `other`, copy of the site `other`, GitHub, Wikipedia, spec page fifth `other` | 6.6 s; spec page `official` first, the project's blog, its architecture page, the copy of the site (`other`) fourth |
-| `web_scrape` the post on `www` (en) | 5.3 s; `fetched_with: http`, 34 characters, "Loading animation while page loads" (the browser had run for 5.0 s and its text was the shorter) | 3.5 s; `fetched_with: browser`, 4,602 characters, settled in 2.2 s |
-| `web_scrape` the post on the apex (tr) | 1.4 s; 34 characters, the shell | 2.6 s; 4,366 characters, settled in 2.0 s |
-| `web_scrape` `/bu-sayfa-yok-12345` | 3.4 s; 200, the home page's title, the shell, no warning | 5.2 s (the probe of the host included); `rendered_shell`, `soft_404`, `looks_missing: true`, a `hint` |
-| `web_extract` the same | 2.8 s; `data.title` the home page's title twice, `description` its description | 2.6 s; every field `null`, `title: ""`, `soft_404`, `looks_missing`, a `hint` |
-| `web_extract` the real post | 1.6 s; title and description from the HTTP head | 2.9 s; the same title and description, from the rendered page |
-| `web_scrape("not a url at all")` | 0.15 s; `dns_error`, "Could not resolve host not%20a%20url%20at%20all" | 0.0 s; `invalid_request`, "…is not a web address. Give a full address, such as https://example.com/page" |
-| `web_map("https://senoldogan.dev")` | 0.7 s; 1 URL | 2.6 s; 44 URLs (42 of the sitemap, with `lastmod`, and the links of the home page as drawn), `host: www.senoldogan.dev`, `redirected_from` |
-| `web_map("https://www.senoldogan.dev")` | 0.7 s; 42 URLs | 2.3 s; 44 URLs |
-| crawl of `https://modelcontextprotocol.io/docs`, `max_pages: 5` | 3.1 s; `completed`, `percent: 100`, `queue_size: 32` | 3.0 s; `completed`, `stopped_by: max_pages`, `queue_size: 0`, `not_visited: 32` |
-| crawl of `https://senoldogan.dev`, `max_depth: 1` | 1 page (`discovered: 1`) | 4 pages of `www` |
+| `web_search` "Model Context Protocol specification" (DuckDuckGo and its lite page bot-walled, Yahoo answered) | 5.6 s; 1 blog post `other`, 2 GitHub `code`, 3 Wikipedia `reference`, 4 the copy of the site `other`, 5 the architecture page `reference` | 6.1 s; 1 `modelcontextprotocol.io/specification/2026-07-28` `official`, 2 the project's blog post `official`, 3 its architecture page `official`, 4 the copy of the site `other`, 5 Wikipedia `reference` |
+| `web_scrape` the post on `www` (en) | 1.7 s; `fetched_with: http`, 34 characters, "Loading animation while page loads" (a comment) | 2.9 s; `fetched_with: browser`, 4,602 characters, settled in 1.9 s |
+| `web_scrape` the post on the apex (tr) | 1.2 s; 34 characters, the same | 2.4 s; 4,366 characters, settled in 1.8 s |
+| `web_scrape` `/bu-sayfa-yok-12345` | 0.9 s; 200, the home page's title, 34 characters, no warning | 5.2 s (the probe of the host included); `soft_404`, `looks_missing: true`, a `hint` |
+| `web_extract` the same page | `data.title` the home page's title twice ("X, X"), `description` its description | every field `null`, `title: ""`, `soft_404`, `looks_missing: true`, a `hint` |
+| `web_extract` the real post | the post's title and description (from the HTTP head) | the same (from the page as drawn) |
+| `web_scrape("not a url at all")` | `dns_error`, "Could not resolve host not%20a%20url%20at%20all" | `invalid_request`, "…is not a web address. Give a full address, such as https://example.com/page" |
+| `web_map("https://senoldogan.dev")` | 1.8 s; 1 URL | 2.6 s; 44 URLs (42 of the sitemap, with `lastmod`, and the links of the home page as drawn), `host: www.senoldogan.dev`, `redirected_from` |
+| `web_map("https://www.senoldogan.dev")` | 0.6 s; 42 URLs | 2.2 s; 44 URLs |
+| crawl of `https://modelcontextprotocol.io/docs`, `max_pages: 5` | 2.0 s; `completed`, `percent: 100`, `queue_size: 32` | 3.0 s; `completed`, `stopped_by: max_pages`, `queue_size: 0`, `not_visited: 32` |
+| crawl of `https://senoldogan.dev`, `max_pages: 4`, `max_depth: 1` | 1 page (`discovered: 1`: the 308 to `www` ended it) | 4 pages of `www`, `stopped_by: max_pages`, `not_visited: 28` |
 
-The map takes longer because its start page is read through the loader, and senoldogan.dev's is drawn by scripts. The
-browsers were Playwright 1.64 with the installed Google Chrome, headless.
+The map takes longer because its start page is read through the loader, and senoldogan.dev's is drawn by scripts. On
+1.3.1 the page that the browser read after 500 ms was empty (0 characters) for both blog posts, and the 34 characters
+that came back were the comment. The browsers were Playwright 1.64 with the installed Google Chrome, headless.
 
 ### For Dot
 

@@ -193,7 +193,7 @@ class WebToolsSettings:
 
     # Telling a page a site gives for an address it has nothing at (a soft 404) costs a request: a page that
     # does not say it is itself (no canonical link to its own address) makes the server ask its host, once
-    # per session, for a path that cannot exist, and compare. "off" never asks.
+    # per session, for a path that cannot exist, and compare. False never asks.
     soft_404_check: bool = True
 
     markdown_max_chars: int = 50_000

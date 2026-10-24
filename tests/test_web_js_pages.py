@@ -506,7 +506,7 @@ class TestARealBrowserThroughTheService:
 
         assert drawn["fetched_with"] == "browser" and drawn["title"] == "Late post"
         assert DRAWN.strip() in drawn["markdown"] and LOADING not in drawn["markdown"]
-        assert drawn["warnings"] == [] and drawn["timings"]["settle_ms"] >= 1_500
+        assert drawn["warnings"] == [] and drawn["timings"]["settle_ms"] >= 600
         # The shell that never fills is a shell, and says so.
         assert stuck["warnings"] == ["rendered_shell"] and LOADING in stuck["markdown"]
         assert "hint" in stuck

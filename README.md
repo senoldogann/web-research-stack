@@ -38,6 +38,21 @@ It installs two commands: `web-research-mcp`, the MCP server over stdio (tools `
 | `web_health` | New: each search provider's state (`ok`, `degraded`, `cooling` with the time left, `no_key`), calls, `block_rate`, mean latency, last error. |
 | `web_map`, `web_crawl_*` | Unchanged. |
 
+#### What 1.4.0 added
+
+| Tool | New in 1.4.0 |
+|---|---|
+| `web_scrape` | A page drawn by scripts is read in the headless browser once it has **settled** (the network at rest, then its visible text no longer growing: not after a fixed 500 ms), and a page that is still a shell says so (`warnings: ["rendered_shell"]` or `needs_javascript`, with a `hint`) instead of passing for a short page. A page the site gives for **any** address says `soft_404` and `looks_missing: true` (the page is compared with the host's answer to a path that cannot exist; one extra request to that host per session). Text that is no web address says `"…" is not a web address. Give a full address, such as https://example.com/page` (`invalid_request`). Markup that is not text (an HTML comment) is no longer printed as the page's text. |
+| `web_extract` | One value for two signals that agree (`data.title` was "X, X"); a page that does not exist gives no field and says `looks_missing`; the page's own JSON-LD item is read before the site's. |
+| `web_map` | A site whose address redirects (apex to `www`, `http` to `https`) is mapped at the host it lands on: its sitemap's URLs are kept; `host` and `redirected_from` say which. |
+| `web_crawl_*` | A crawl that has ended says why (`stopped_by`: `max_pages`, `max_depth`, `done`, `cancelled`...), how many links it left (`progress.not_visited`; `web_crawl_results` lists the first 50) and has `queue_size` 0. |
+| `web_search` | A host named as the query's subject (`modelcontextprotocol.io` for "Model Context Protocol specification") and its subdomains are `official`, a copy of the site on another top-level domain is not; `primary_first` is also on for a query that asks for a specification, documentation or an API reference, and the document itself (its newest edition) leads. |
+
+The cost: a page read in the browser is waited for until it settles (about 1.2 s after it loads when it is whole, up to
+`WEB_TOOLS_BROWSER_SETTLE_MAX_MS`, 8 s, for a shell that never fills), more pages go to the browser (any page with a script
+and under 200 characters of text), and the missing-page check makes one request to the page's host. New settings:
+`WEB_TOOLS_BROWSER_SETTLE_MAX_MS`, `WEB_TOOLS_BROWSER_SETTLE_STABLE_MS`, `WEB_TOOLS_SOFT_404_CHECK`.
+
 [CHANGELOG.md](CHANGELOG.md) has the decisions; [docs/web-tools.md](docs/web-tools.md) the settings.
 
 **How Dot uses it.** Dot's package depends on this one, so a fresh Dot install brings it. Dot starts `web-research-mcp` as one of its MCP servers (named `web-research`) and its tools reach the agent as `mcp__web-research__web_search`, `mcp__web-research__web_scrape` and so on. In Dot's `config.toml` it is one table; [docs/web-tools.md](docs/web-tools.md) has it and the settings (`WEB_TOOLS_*`) the server reads.
@@ -172,6 +187,8 @@ uv tool install dotagent-web-research
 ```
 
 İki komut kurar: stdio üzerinden MCP sunucusu `web-research-mcp` ve aşağıda anlatılan CLI ile REST sunucusu `web-scraper`. Araçlar: `web_search`, `web_scrape`, `web_map`, `web_extract`, `web_health` (1.3.0: her sağlayıcının durumu), `web_crawl_start`, `web_crawl_status`, `web_crawl_results`, `web_crawl_cancel`. 1.3.0 tarihleri güvenilir kılar (`date_confidence`, `date_conflicts`; `resolve_dates`, `strict_dates`), engellenen sayfayı başka yoldan okur (`recover`: arşiv, AMP/yazdırma biçimi, besleme, başka yayıncı), çıktıyı küçültür (`compact`, `lean`, `content_id` ile `offset`) ve sağlayıcıları iyileştirir (10 dakikalık soğuma, isteğe bağlı Brave ve Serper anahtarları). Headless tarayıcı yedekleri ek pakettir: `pip install "dotagent-web-research[camoufox]"` veya `"[playwright]"`.
+
+**1.4.0 şunları ekledi.** Betikle çizilen sayfa, tarayıcıda *oturduktan* sonra okunur (ağ sakinleşir, sonra görünen metin büyümeyi bırakır; sabit 500 ms değil) ve hâlâ boş bir kabuk olan sayfa kısa bir sayfa gibi görünmek yerine bunu söyler (`rendered_shell`, `needs_javascript`, bir `hint`). Sitenin *her* adrese verdiği sayfa `soft_404` ve `looks_missing: true` der (sayfa, sunucunun var olamayacak bir yola verdiği yanıtla karşılaştırılır; oturum başına o sunucuya bir ek istek); `web_extract` ondan alan okumaz. Web adresi olmayan bir metin "web adresi değil" der ve örnek bir adres verir (`invalid_request`). `web_extract` aynı değeri iki kez birleştirmez (`data.title` "X, X" idi). Adresi yönlendiren bir sitenin (`senoldogan.dev`, `www`'ya) `web_map`'i varılan sunucuda yapılır (`host`, `redirected_from`). Biten bir tarama nedenini söyler (`stopped_by`: `max_pages`, `max_depth`, `done`, `cancelled`), kaç bağlantıyı bıraktığını (`progress.not_visited`) ve `queue_size` 0 olur. Aramada, sorgunun konusu olan sunucu (`modelcontextprotocol.io`) ve alt alanları `official` sayılır, başka bir üst alandaki kopyası sayılmaz; şartname, belge ya da API başvurusu isteyen sorguda `primary_first` açılır ve belgenin kendisi (en yeni sürümü) öne geçer. Bedeli: tarayıcıda okunan sayfa oturana dek beklenir (bütün gelen sayfa için yaklaşık 1,2 sn; hiç dolmayan kabuk için en çok `WEB_TOOLS_BROWSER_SETTLE_MAX_MS`, 8 sn), daha çok sayfa tarayıcıya gider ve kayıp-sayfa denetimi sayfanın sunucusuna bir istek yapar. Yeni ayarlar: `WEB_TOOLS_BROWSER_SETTLE_MAX_MS`, `WEB_TOOLS_BROWSER_SETTLE_STABLE_MS`, `WEB_TOOLS_SOFT_404_CHECK`.
 
 **Dot bunu nasıl kullanır.** Dot'un paketi buna bağlıdır; yeni bir Dot kurulumu bunu da getirir. Dot `web-research-mcp`'yi MCP sunucularından biri olarak (`web-research` adıyla) başlatır; araçlar ajana `mcp__web-research__web_search`, `mcp__web-research__web_scrape` gibi görünür. Ayrıntı ve ayarlar için [docs/web-tools.md](docs/web-tools.md).
 

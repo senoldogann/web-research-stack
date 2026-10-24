@@ -12,7 +12,7 @@ from typing import Any, Awaitable, Callable, Mapping, Optional
 from urllib.parse import urlsplit
 
 from web_scraper.web_tools.crawl_store import CrawlStore
-from web_scraper.web_tools.errors import WebToolError
+from web_scraper.web_tools.errors import WebToolError, unusable_address
 from web_scraper.web_tools.settings import WebToolsSettings
 from web_scraper.web_tools.urls import (
     UnsafeUrlError,
@@ -661,7 +661,7 @@ def canonical_target(url: str) -> str:
     try:
         return upgrade_to_https(canonicalize_url(url))
     except UnsafeUrlError as exc:
-        raise WebToolError("unsafe_target", str(exc), url=url) from exc
+        raise unusable_address(url, exc) from exc
 
 
 def _identity(url: str) -> str:

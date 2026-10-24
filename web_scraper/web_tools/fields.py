@@ -12,6 +12,7 @@ otherwise reported missing: nothing is guessed.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime
 from email.utils import parsedate_to_datetime
@@ -211,8 +212,26 @@ def find_field(
                 found.values = _split(found.values)
             if known == "author":
                 found.values = [_without_by(value) for value in found.values]
-            return found
+            return _one_of_each(found)
     return None
+
+
+def _one_of_each(found: Found) -> Found:
+    """The values of a field with those that read alike kept once.
+
+    Two signals that give the same value are one value: a page that writes its ``og:title`` twice
+    (a framework that renders its head from the layout and from the page) has one title, not
+    "Title, Title", and an author named by the JSON-LD and by a meta tag is named once. Alike is
+    the same words in the same order whatever the spacing and the case; the first spelling stays.
+    """
+    kept: dict[str, str] = {}
+    for value in found.values:
+        kept.setdefault(" ".join(unicodedata.normalize("NFKC", value).split()).casefold(), value)
+    if len(kept) < len(found.values):
+        found.values = list(kept.values())
+        if found.method in {"json_ld", "meta"}:
+            found.evidence = ", ".join(found.values)
+    return found
 
 
 def _iso_moment(text: str) -> str:
@@ -535,12 +554,14 @@ def _find_unknown(soup: BeautifulSoup, json_ld: list[dict[str, Any]], name: str)
         for key in keys:
             values = _text(item.get(key))
             if values:
-                return Found(values, "json_ld", key, ", ".join(values))
+                return _one_of_each(Found(values, "json_ld", key, ", ".join(values)))
     for key in keys:
         for attribute in ("name", "property", "itemprop"):
             values = _meta_tags(soup, attribute, key)
             if values:
-                return Found(values, "meta", f"meta[{attribute}={key}]", ", ".join(values))
+                return _one_of_each(
+                    Found(values, "meta", f"meta[{attribute}={key}]", ", ".join(values))
+                )
     return None
 
 

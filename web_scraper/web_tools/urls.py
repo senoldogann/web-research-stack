@@ -6,7 +6,7 @@ import hashlib
 import posixpath
 import re
 from fnmatch import fnmatchcase
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from web_scraper.network_safety import host_problem
@@ -32,6 +32,68 @@ _MAX_URL_LENGTH = 4096
 
 class UnsafeUrlError(ValueError):
     """Raised when a URL is malformed or can never be a safe public target."""
+
+
+class NotAWebAddressError(UnsafeUrlError):
+    """Raised for text that is no web address at all: no scheme, or no host that is a name.
+
+    It is the caller's slip, and the message says what an address looks like. An address that is
+    one and must not be used (``localhost``, a private address, ``ftp://``, credentials in it) is an
+    :class:`UnsafeUrlError` with the wording of the safety refusals, not this.
+    """
+
+
+# What a web address looks like, for the message that says a text is not one.
+EXAMPLE_ADDRESS = "https://example.com/page"
+_EXPLICIT_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
+# Schemes that are written without slashes: a text that begins with one names a scheme, not a host.
+_OPAQUE_SCHEMES = ("about:", "blob:", "data:", "file:", "javascript:", "mailto:", "sms:", "tel:")
+_HOST_NAME = re.compile(r"^(?:[\w-]+\.)+[\w-]+$")
+_HOST_SYNTAX = re.compile(r"^(?:[a-z0-9_-]+\.)*[a-z0-9_-]+$")
+
+
+def has_scheme(text: str) -> bool:
+    """Whether a text begins with a scheme of its own (``https://``, ``ftp://``, ``mailto:``)."""
+    stripped = (text or "").strip()
+    return bool(_EXPLICIT_SCHEME.match(stripped)) or stripped.lower().startswith(_OPAQUE_SCHEMES)
+
+
+def bare_host_address(text: str) -> Optional[str]:
+    """``https://`` and the text, when the text is a host written without its scheme.
+
+    ``example.com``, ``example.com:8080/docs``, ``localhost:3000`` and ``[::1]/x`` are; so is
+    ``127.1``, which is then refused as the address it is. Text with a space in it, a single word
+    and a text with a scheme of its own are not: ``None``.
+    """
+    candidate = (text or "").strip()
+    if not candidate or has_scheme(candidate) or re.search(r"[\s<>\"'`]", candidate):
+        return None
+    host = re.split(r"[/?#]", candidate, maxsplit=1)[0].rpartition("@")[2]
+    if host.startswith("["):
+        return (
+            "https://" + candidate
+            if re.fullmatch(r"\[[0-9A-Fa-f:.%]+\](?::\d{0,5})?", host)
+            else None
+        )
+    name = re.sub(r":\d{0,5}$", "", host).rstrip(".")
+    if name.lower() == "localhost" or _HOST_NAME.fullmatch(name):
+        return "https://" + candidate
+    return None
+
+
+def not_a_web_address(text: str, why: str = "") -> NotAWebAddressError:
+    """The error for a text that is no web address: what it was, and an address to give instead.
+
+    The text is quoted as it was given, on one line and not longer than 80 characters; a text that is a
+    host without its scheme is answered with the address it was probably meant to be.
+    """
+    shown = " ".join((text or "").split())
+    shown = shown if len(shown) <= 80 else shown[:77] + "..."
+    guess = bare_host_address(text)
+    advice = (
+        f"Did you mean {guess}?" if guess else f"Give a full address, such as {EXAMPLE_ADDRESS}"
+    )
+    return NotAWebAddressError(f'"{shown}" is not a web address{why}. {advice}')
 
 
 def _normalise_host(hostname: str) -> str:
@@ -65,18 +127,26 @@ def _validated_url_parts(url: str) -> tuple[Any, str, str]:
     if not candidate or len(candidate) > _MAX_URL_LENGTH:
         raise UnsafeUrlError("URL is empty or too long")
 
-    parsed = urlsplit(candidate)
+    try:
+        parsed = urlsplit(candidate)
+    except ValueError as exc:
+        raise not_a_web_address(candidate) from exc
     scheme = (parsed.scheme or "").lower()
     if scheme not in _ALLOWED_SCHEMES:
+        if not has_scheme(candidate):
+            # "not a url at all", "senoldogan.dev": no scheme was given, so nothing was refused.
+            raise not_a_web_address(candidate)
         raise UnsafeUrlError("Blocked unsafe target: only http and https URLs are allowed")
     if parsed.username or parsed.password:
         raise UnsafeUrlError(
             "Blocked unsafe target: URLs with embedded credentials are not allowed"
         )
     if not parsed.hostname:
-        raise UnsafeUrlError("Blocked unsafe target: hostname is required")
+        raise not_a_web_address(candidate, ": it names no host")
 
     hostname = _normalise_host(parsed.hostname)
+    if ":" not in hostname and not _HOST_SYNTAX.fullmatch(hostname):
+        raise not_a_web_address(candidate, ": its host is not a name")
     _reject_unsafe_host(hostname)
 
     try:

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from web_scraper.web_tools.urls import NotAWebAddressError
+
 _STATUS_CODES = {
     "invalid_request": 422,
     "unsafe_target": 400,
@@ -70,3 +72,16 @@ class WebToolError(Exception):
         for key, value in self.extra.items():
             payload.setdefault(key, value)
         return payload
+
+
+def unusable_address(url: str, exc: ValueError) -> WebToolError:
+    """The error for an address the checks of ``urls.py`` turned away.
+
+    A text that is no web address at all is the caller's slip: ``invalid_request``, the message saying
+    what an address looks like. An address that is one and may not be used (``localhost``, a private
+    address, a scheme but http and https, credentials) is ``unsafe_target``, in the wording of the safety
+    refusals.
+    """
+    if isinstance(exc, NotAWebAddressError):
+        return WebToolError("invalid_request", str(exc), url=url)
+    return WebToolError("unsafe_target", str(exc), url=url)

@@ -53,7 +53,7 @@ from web_scraper.web_tools.discovery import (
     wants_news,
     within_date_range,
 )
-from web_scraper.web_tools.errors import WebToolError
+from web_scraper.web_tools.errors import WebToolError, unusable_address
 from web_scraper.web_tools.fetcher import FetchError, FetchResult, HostGate, SafeFetcher
 from web_scraper.web_tools.headdates import read_result_dates
 from web_scraper.web_tools.metrics import LatencyTracker, WebToolsMetrics
@@ -2617,13 +2617,13 @@ class WebToolsService:
         try:
             return canonicalize_url(url)
         except UnsafeUrlError as exc:
-            raise WebToolError("unsafe_target", str(exc), url=url) from exc
+            raise unusable_address(url, exc) from exc
 
     def _request_url(self, url: str) -> str:
         try:
             return normalize_request_url(url)
         except UnsafeUrlError as exc:
-            raise WebToolError("unsafe_target", str(exc), url=url) from exc
+            raise unusable_address(url, exc) from exc
 
     def _extract_budget(self, value: Optional[int]) -> int:
         if value is None:

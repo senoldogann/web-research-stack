@@ -23,6 +23,7 @@ from web_scraper.web_tools.settings import (
     SEARCH_READ_CHARS_MAX,
     SEARCH_READ_MAX,
 )
+from web_scraper.web_tools.urls import bare_host_address, has_scheme
 
 
 def utc_now_iso() -> str:
@@ -31,11 +32,17 @@ def utc_now_iso() -> str:
 
 
 def normalize_url(url: str) -> str:
-    """Accept bare hostnames and normalize them into valid HTTP URLs."""
+    """Accept bare hostnames and normalize them into valid HTTP URLs.
+
+    ``senoldogan.dev`` and ``example.com/docs`` get their ``https://``. Text that is no host is not
+    given one: ``not a url at all`` stays as it is, and the service says it is not a web address
+    (it used to become ``https://not a url at all`` and fail as a DNS error). An address with a
+    scheme of its own stays as it is too, so that ``ftp://`` and ``file:`` are refused as what they are.
+    """
     normalized = url.strip()
-    if not normalized.startswith(("http://", "https://")):
-        normalized = f"https://{normalized}"
-    return normalized
+    if has_scheme(normalized):
+        return normalized
+    return bare_host_address(normalized) or normalized
 
 
 class ScrapeRequest(BaseModel):

@@ -10,6 +10,7 @@ state-run propaganda outlets are left out. A host matches itself and its subdoma
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from dataclasses import dataclass
 from typing import Iterable
@@ -658,6 +659,78 @@ def split_host(host: str) -> tuple[str, str]:
     if labels[-1] in FIRST_PARTY_SUFFIXES:
         keep = 1
     return ".".join(labels[:-keep]), ".".join(labels[-keep:])
+
+
+# Hosts that give a subdomain to anyone: each tenant is a site of its own, so ``alice.github.io`` and
+# ``bob.github.io`` are two, where ``docs.example.com`` and ``blog.example.com`` are one.
+SHARED_HOST_SUFFIXES = BLOG_HOSTS | frozenset(
+    {
+        "appspot.com",
+        "azurewebsites.net",
+        "cloudfront.net",
+        "fly.dev",
+        "github.io",
+        "gitbook.io",
+        "gitlab.io",
+        "glitch.me",
+        "herokuapp.com",
+        "hf.space",
+        "myshopify.com",
+        "netlify.app",
+        "notion.site",
+        "ondigitalocean.app",
+        "onrender.com",
+        "pages.dev",
+        "railway.app",
+        "readthedocs.io",
+        "replit.app",
+        "streamlit.app",
+        "vercel.app",
+        "web.app",
+        "webflow.io",
+        "weebly.com",
+        "wixsite.com",
+        "workers.dev",
+    }
+)
+# What a country's registry calls the kinds of registrant under its top-level domain (``co.za``,
+# ``com.sg``, ``or.jp``, ``gob.mx``): a name ending in one of them and a country code is registered one
+# label further left. ``_TWO_LEVEL_SUFFIXES`` names the registries that matter for naming an
+# organization; a site boundary needs them all.
+_REGISTRANT_KINDS = frozenset(
+    {"ac", "co", "com", "edu", "go", "gob", "gov", "mil", "ne", "net", "or", "org"}
+)
+
+
+def registrable_domain(host: str) -> str:
+    """The name a host's owner registered, which is what a site is: ``example.com`` for
+    ``docs.example.com``, ``bbc.co.uk`` for ``news.bbc.co.uk``, ``alice.github.io`` for
+    ``www.alice.github.io`` (a tenant of a shared host), ``google`` for ``blog.google``. An address and a
+    name without a dot are their own.
+
+    A short table and a rule, not the Public Suffix List: a registry it does not know makes two of its
+    hosts one site, the failure a caller must keep in mind."""
+    name = host.strip().strip(".").lower()
+    labels = name.split(".")
+    try:
+        ipaddress.ip_address(name.strip("[]"))
+    except ValueError:
+        pass
+    else:
+        return name
+    if len(labels) < 2:
+        return name
+    for size in (3, 2):
+        if len(labels) > size and ".".join(labels[-size:]) in SHARED_HOST_SUFFIXES:
+            return ".".join(labels[-(size + 1) :])
+    if labels[-1] in FIRST_PARTY_SUFFIXES:
+        return labels[-1]
+    if len(labels) >= 3 and (
+        ".".join(labels[-2:]) in _TWO_LEVEL_SUFFIXES
+        or (len(labels[-1]) == 2 and labels[-2] in _REGISTRANT_KINDS)
+    ):
+        return ".".join(labels[-3:])
+    return ".".join(labels[-2:])
 
 
 @dataclass(frozen=True)

@@ -2040,13 +2040,28 @@ that is not `http` or `https` (`ftp://`, `file:`, `javascript:`, `mailto:`). The
 ### A site whose address redirects
 
 `web_map("https://senoldogan.dev")` returned one URL: the apex answers every path with a 308 to `www.senoldogan.dev`,
-and the sitemap's `www` URLs were dropped as another host's. Now the host an address lands on is the site's own (apex to
-`www`, `http` to `https`): the start page is read first, through the loader, to learn where the address leads; robots.txt
-and the sitemaps are read there; the URLs of the requested host and of the landed one are kept (with
-`include_subdomains`, the siblings of `www` as well); and the answer says `host` and, when the address moved,
-`redirected_from`. When no page answers but robots.txt or the sitemap does, the host they answered at is the site's.
-A crawl of the apex has the same scope: it follows the pages of `www` (and reads a `use_sitemap` crawl's sitemap there)
-instead of ending at the first. Tests: `tests/test_web_site_redirect.py`.
+and the sitemap's `www` URLs were dropped as another host's. Now the host an address lands on is the site's own when it
+is the same site (apex to `www`, `http` to `https`, one host of a registrable domain to another): the start page is
+read first, through the loader, to learn where the address leads; robots.txt and the sitemaps are read there; the URLs
+of the requested host and of the landed one are kept (with `include_subdomains`, the siblings of `www` as well); and
+the answer says `host` and, when the address moved, `redirected_from`. When no page answers but robots.txt or the
+sitemap does, the host they answered at is the site's. A crawl of the apex has the same scope: it follows the pages of
+`www` (and reads a `use_sitemap` crawl's sitemap there) instead of ending at the first.
+
+**A redirect does not decide which site is read (1.4.2).** 1.4.0 took whatever host the start page, robots.txt or a
+sitemap landed on as the site: an address that forwarded every path to another site made `web_map` return that site's
+addresses, a crawl read its pages (with `include_subdomains`, those of a host nothing had redirected to as well), and
+a page that stayed put while only its robots.txt or sitemap forwarded elsewhere did the same. The landing is the site
+only for the same registrable domain, with or without `www.`, over `http` or `https`. The names are compared by a short
+table of the registries' second levels (`co.uk`, `com.au`, `co.za`, `com.sg`...) and of the hosts that hand a subdomain
+to anyone (`github.io`, `vercel.app`, `blogspot.com`...), not by the Public Suffix List, so a registry it does not know
+makes two of its hosts one site. Anything else is done as 1.3.1 did it: the one page the address leads to (a crawl reads
+it and follows none of its links), and nothing of the other site's robots.txt, sitemaps or links is used or listed: a
+file it answered is dropped, and so is a sitemap an index names that forwards to it. The fetcher still follows the
+redirect of an address's `robots.txt` and `sitemap.xml`, two requests to the other site whose answers are dropped, and
+the sitemaps they name are not asked for. The answer says `redirected_to`: where the address led, or the file that
+forwarded (`https://c.test/robots.txt`). `web_crawl_status`, `web_crawl_results` and the job in the store say it too.
+Tests: `tests/test_web_site_redirect.py`, `tests/test_web_site_boundary.py`.
 
 ### A crawl that has ended says why
 

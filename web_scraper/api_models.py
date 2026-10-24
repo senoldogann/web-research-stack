@@ -743,6 +743,13 @@ class WebMapResponse(BaseModel):
     redirected_from: Optional[str] = Field(
         default=None, description="The address asked for, when it redirected to url"
     )
+    redirected_to: Optional[str] = Field(
+        default=None,
+        description=(
+            "Where the address led when that is another site: not mapped there, urls is what the "
+            "address itself lists"
+        ),
+    )
     urls: List[str]
     # Every URL that matched, before the limit; ``returned`` counts ``urls``.
     total: int
@@ -925,6 +932,10 @@ class WebCrawlJobResponse(BaseModel):
             "failed; progress.not_visited counts the links left"
         ),
     )
+    redirected_to: Optional[str] = Field(
+        default=None,
+        description="Where the address led when that is another site: its one page is read, no link followed",
+    )
     created_at: Optional[str] = None
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
@@ -938,6 +949,9 @@ class WebCrawlResultsResponse(BaseModel):
     job_id: str
     status: str
     stopped_by: Optional[str] = None
+    redirected_to: Optional[str] = Field(
+        default=None, description="Where the address led when that is another site"
+    )
     not_visited: int = Field(default=0, description="The links the crawl left unvisited")
     not_visited_urls: List[str] = Field(
         default_factory=list, description="The first of them (at most 50)"

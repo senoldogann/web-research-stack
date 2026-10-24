@@ -114,7 +114,12 @@ class TestSettings:
         assert WebToolsSettings.from_env().search_fallback_providers == []
 
     @pytest.mark.asyncio
-    async def test_the_service_registers_the_lite_adapter(self) -> None:
+    async def test_the_service_registers_the_lite_adapter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A key in the environment turns a provider on (tests/test_web_paid_search.py).
+        monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
+        monkeypatch.delenv("SERPER_API_KEY", raising=False)
         service = WebToolsService.from_env()
         try:
             assert set(service.search_adapters) == {

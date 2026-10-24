@@ -70,10 +70,19 @@ path inside the redirect loop would repeat forever.
 3. Fetch over plain HTTP with host/global gates, timeout, size limit, redirect
    validation, retry, and CAPTCHA / access-wall detection.
 4. Extract Markdown, title, description, canonical URL, metadata, and links.
-5. If the HTML looks like a client-rendered shell, render once in the shared
-   headless browser. If rendering fails, keep the usable HTTP content and add a
-   warning instead of failing the whole scrape.
-6. Hash the extracted Markdown, cache the payload, and return stage timings.
+5. If the HTML looks like a client-rendered shell (under `BROWSER_RENDER_MIN_CHARS`
+   characters of readable text while the HTML has scripts), read it again in the
+   shared headless browser, which waits for the page to settle
+   ([Pages drawn by scripts](#pages-drawn-by-scripts-are-waited-for)). If rendering
+   fails, keep the usable HTTP content and add a warning instead of failing the whole
+   scrape; a page that is still a shell says so (`rendered_shell`, `needs_javascript`).
+6. A page that does not name itself (no canonical link to its own address) may be what
+   its site answers any address with: it is compared with the host's answer to a path
+   that cannot exist ([Pages that do not exist](#pages-that-do-not-exist-soft-404)).
+7. Hash the extracted Markdown, cache the payload, and return stage timings.
+
+Scrape, extract, a crawl's pages and a map's start page all read a page through this one
+loader (`WebToolsService._load_page`), so that two tools never say different things of one page.
 
 ### Discovery depth
 
@@ -114,7 +123,8 @@ deterministically:
   0.8, background 0.75. Agreement between angles is still valuable, but a hit
   from the historical angle cannot outweigh the exact query as easily.
 - source-type authority (`official`, `academic`, `news`, `press_release`, `social`,
-  `reference`, `code`, `community`, `other`), classified from the host and path;
+  `reference`, `code`, `community`, `aggregator`, `other`), classified from the host and path
+  and, for a host a query names, the query ([How each source type is decided](#how-each-source-type-is-decided));
 - publication year inferred from title, snippet, and URL, with `current`,
   `recent`, `historical`, or `unknown` recency;
 - a current-year bonus, plus a historical bonus for authoritative sources so
@@ -199,9 +209,12 @@ Copy `.env.example` to `.env` and set what you need. The important web tool knob
 | `PAGE_CACHE_MAX_ENTRIES` / `PAGE_CACHE_MAX_BYTES` | `64` / `20000000` | The page cache's bounds, in pages and in bytes of HTML |
 | `BROWSER_ENABLED` | `true` | Enable the headless worker |
 | `BROWSER_PREFERENCE` | `auto` | `auto`, `chrome`, `chromium`, or `camoufox` |
-| `BROWSER_POST_LOAD_WAIT_MS` | `500` | Settle time after DOM content loaded |
+| `BROWSER_POST_LOAD_WAIT_MS` | `500` | The least a page is waited for after it has loaded (1.4.0: it was the whole wait) |
+| `BROWSER_SETTLE_MAX_MS` | `8000` | The most a page that is still a shell is waited for, once the load is done (and never past `BROWSER_TIMEOUT_SECONDS` for the whole render) |
+| `BROWSER_SETTLE_STABLE_MS` | `600` | How long the page's visible text must have stopped growing for the wait to end |
 | `BROWSER_MAX_CONTEXTS` | `4` | Concurrent browser contexts |
-| `BROWSER_RENDER_MIN_CHARS` | `200` | Text threshold for shell detection |
+| `BROWSER_RENDER_MIN_CHARS` | `200` | A page with fewer readable characters than this and scripts in its HTML is read again in the browser (1.4.0: it was 50 unless the HTML had `id="root"` or `id="app"`); a rendered page with under a quarter of it, or a loading placeholder, is a shell |
+| `SOFT_404_CHECK` | `true` | `false` never asks a host for a path that cannot exist ([Pages that do not exist](#pages-that-do-not-exist-soft-404)) |
 | `RESPECT_ROBOTS` | `true` | Crawl robots.txt policy |
 | `MAX_CRAWL_PAGES` | `100` | Hard page cap |
 | `MAX_CRAWL_DEPTH` | `4` | Hard depth cap |
@@ -401,8 +414,10 @@ visible window was opened.
     a yes, 300 if it is a no). What remains is the browser's own resolution: a
     name that answers a public address to that check and a private one to the
     browser's lookup is rendered. The server's headless browser runs only for a
-    page that the pinned HTTP fetch showed to need rendering, or that answered
-    an access wall.
+    page that the pinned HTTP fetch showed to need rendering (little text and
+    scripts), or that answered an access wall, and for the probe of the
+    missing-page check of a host whose pages are drawn by scripts (its address is
+    checked as any page's is, and so are the requests the page makes).
   - *The fixed hosts.* The search providers (DuckDuckGo, Yahoo, Google; Brave and
     Serper at `api.search.brave.com` and `google.serper.dev`) and the research
     agent's own collectors (Wikipedia, Hacker News, arXiv, Stack Exchange,
@@ -625,7 +640,9 @@ pick up the new schema.
 - JavaScript-shell detection is deterministic, not a full browser oracle. A
   client-rendered page whose shell contains more than `BROWSER_RENDER_MIN_CHARS`
   of boilerplate may stay on the HTTP path. Raise or lower that threshold only
-  with a benchmark.
+  with a benchmark. Since 1.4.0 the browser waits for a page to settle and a page that
+  stays a shell says so, but a page that needs a login, a click or a scroll to show
+  its content is still a shell (`rendered_shell`).
 - `web_extract` does not use the scrape cache (it holds scrape answers) but shares the
   page cache with `web_scrape`: a page fetched in the last 5 minutes is not fetched again.
 - The scrape, search and page caches live in one process and are lost on
@@ -649,10 +666,12 @@ pick up the new schema.
   stops at 256 KB of a head: the rest keep the date their address, snippet or title showed, with
   a `date_confidence` under 0.5. Results whose year is not visible are labelled `unknown` and
   receive no current/historical bonus.
-- Source type is a host-and-path heuristic. A blog hosted on a first-party domain (a vendor's
+- Source type is a host-and-path heuristic ([How each source type is decided](#how-each-source-type-is-decided)). A blog hosted on a first-party domain (a vendor's
   own `blog.`) is `official` by design, a site that is not in the tables (a regional outlet) is
   `other`, and the aggregator table is a list, not a classifier; the per-domain cap still prevents it from filling the
-  page. Scores are relative to the current result set, not calibrated relevance.
+  page. A host named as the query's subject is `official` on the top-level domains organizations
+  use (`com org io dev ai app co`): a copy of the site on one of those is taken for the original,
+  and the original on another (`.so`, `.sh`) is not named official by this rule. Scores are relative to the current result set, not calibrated relevance.
 - The Google provider remains headless-only and may be refused; it is not a
   guaranteed search fallback.
 
@@ -1850,3 +1869,268 @@ refused (`trustme`, in the `dev` extra).
 - What the server does not pin is in [Security boundaries](#security-boundaries): the browsers' own resolution
   above all. A Dot that runs the browser fallbacks should know that a page it renders is checked at the moment
   of the render and not at the moment of the browser's connection.
+
+
+## Round B: pages drawn by scripts, pages that are not there, and what the owner's test found (1.4.0, 2026-10-24)
+
+The owner had Dot test the server and scored it 6.2/10 (`web_search` 7, `web_scrape` 5, `web_map` 9, `web_extract` 5,
+`web_crawl` 5). Each finding was probed again on 1.3.1 (`WebToolsService.from_env()`, default settings) and is closed
+below. What they praised stays: `web_map`'s sitemaps with `lastmod`, and the plain errors (a DNS error, a bot wall, a
+provider's fallback said), and everything of 1.3.0 and 1.3.1: the dates, the healing providers, the walled pages, the
+compact output, the source types, and every connection pinned to the address that was checked.
+
+| Tool | Their score | What they found | What it was | What it is now |
+|---|---|---|---|---|
+| `web_search` | 7 | for "Model Context Protocol specification" mostly blogs and third parties | the official spec page, the project's blog and a copy of its site were all `other`; a blog post led, the spec page was fifth | the project's hosts are `official` (a copy on `.info` is not) and, for a query that asks for a specification, `primary_first` is on: the spec page leads |
+| `web_scrape` | 5 | a blog post came back as "Loading animation while page loads"; `not a url at all` became `https://…` and a DNS error | the browser read the page 500 ms after it loaded and the shorter text lost to the HTTP shell; the request model prefixed every text with `https://` | the browser waits for the page to settle; a page that stays a shell says so; text that is no address says it is not a web address |
+| `web_map` | 9 | 42 URLs, with `lastmod` | `senoldogan.dev` redirects to `www`, and the sitemap's `www` URLs were dropped as another host's: 1 URL | the host the address lands on is the site's own: 44 URLs, `host`, `redirected_from` |
+| `web_extract` | 5 | `/bu-sayfa-yok-12345` (no such page) gave the home page's title as found; `data.title` was "X, X" | a soft 404, and a title written twice | the page says `soft_404` and `looks_missing` and no field is read from it; two signals that agree are one value |
+| `web_crawl` | 5 | `max_pages: 5` showed `percent: 100` with 32 links in the queue | a crawl that ended said nothing of why | `stopped_by`, `not_visited`, and `queue_size` is 0 once it has ended |
+
+### Pages drawn by scripts are waited for
+
+**Over HTTP.** A page whose readable text is under `BROWSER_RENDER_MIN_CHARS` (200) characters while its HTML has a
+`<script>` is read again in the headless browser: a loading placeholder ("Loading…", "Loading animation while page
+loads", "Please enable JavaScript"), an empty `#root`, `#app` or `#__next`, or a few lines that a script is about to
+replace. (1.3.1 read again only under 50 characters, or with `id="root"`/`id="app"` in the HTML: the bound is the one
+the shells seen are under, 34 characters for senoldogan.dev's.) A page with no script is never read again (nothing is
+about to draw it), and a page with 200 characters or more is a page.
+
+**In the browser.** The read no longer waits a fixed 500 ms after `DOMContentLoaded`. After the `load` event:
+
+1. the network is waited for to go quiet, at most 3 seconds (a page that never goes quiet is read all the same);
+2. then the page's visible text is looked at every tenth of a second (the same choices the Markdown reader makes:
+   the first of `main`, `article` and `role=main`, else the body, without menus, banners, footers, sidebars, forms and
+   scripts) until it has not changed for `BROWSER_SETTLE_STABLE_MS` (600) **and** is more than a shell's: a loading
+   placeholder (a line of it counts: a cookie notice above a "Loading…" is a shell with a notice) or next to nothing
+   (under a quarter of `BROWSER_RENDER_MIN_CHARS`) keeps the wait going;
+3. never sooner than `BROWSER_POST_LOAD_WAIT_MS` (500), and never later than `BROWSER_SETTLE_MAX_MS` (8,000) after the
+   load, nor past `BROWSER_TIMEOUT_SECONDS` (30) for the whole render.
+
+Every request the browser makes is checked as in 1.3.1 (`RequestGuard`: the address of the host, a yes kept 30 s, a no
+300 s); what the browser's own name resolution does is still what [Security boundaries](#security-boundaries) says.
+The wait is `timings.settle_ms` of the answer (`browser_ms` is the whole render), and the browser's own record says
+why it ended: `stable`, or `cap` (the time ran out first).
+
+**A page that is still a shell says so.** After the read, a page whose text is a loading placeholder, an empty app root
+or next to nothing, while its HTML has scripts, is not a short page: it is one that was not read.
+
+| `warnings` | Meaning |
+|---|---|
+| `rendered_shell` | the browser read it, waited, and it is still a shell. `hint`: "The page is drawn by scripts and was still empty after the browser waited for it. It may need a login or more time (`WEB_TOOLS_BROWSER_SETTLE_MAX_MS`), or may not exist." |
+| `needs_javascript` | no browser read it (it is off, or could not start: `browser_render_failed:…` says which); only the shell was read |
+
+A page with either is not kept by the page cache or by the answer cache (asked again, it is read again; it may have
+filled by then). A page the browser filled is kept as every page is.
+
+**One loader.** `web_scrape`, `web_extract`, a crawl's pages, a map's start page and a search's `read` all read a page
+through `WebToolsService._load_page`: the same HTTP read, the same decision to render, the same wait, the same
+verdicts. Two tools never disagree on one page: the owner saw `web_scrape` return the shell and `web_extract` the home
+page's title for one site. Fields are read from the page as it was rendered when it was rendered (what a person who
+opened it sees). A search's `read` says `content_warnings` for a page it read that is a shell or a soft 404.
+`web_map` now reads its start page through the loader, so a site drawn by scripts has the links of the page as drawn.
+
+**What a browser read costs.** A page that is whole as it arrives is waited for about 1.2 s after it has loaded (the
+500 ms the old wait was, the network at rest, and 600 ms of text that has stopped growing), a page whose script draws it
+after 1.5 s is read at about 2.1 s, and a shell that never fills costs `BROWSER_SETTLE_MAX_MS`, once per call (it is not
+cached). More pages go to the browser than before: any page with scripts and under 200 characters, so a short real page
+with an analytics script pays the render (a few seconds the first time a browser starts, one or two after).
+
+Tests: `tests/test_web_browser_settle.py` (the waiting against a fake page and a fake clock: late content, a shell that
+never fills, the least and the most, the deadline, a network that never rests, a page that is navigating; and a real
+headless browser against a real server on the loopback, skipped where there is none, as on the CI job, which does not
+install Playwright) and `tests/test_web_js_pages.py` (what is a shell, `rendered_shell`, `needs_javascript`, the caches,
+one loader, the settings, and `web_scrape` of a page a script draws after 1.5 s end to end with a real browser).
+
+### Pages that do not exist (soft 404)
+
+A site that answers every address with its home page or its app's shell gives a 200 for a page that is not there.
+senoldogan.dev answers `/bu-sayfa-yok-12345` with the home page's `<title>`, no canonical link and the same shell as
+every page; a real post has its own `<title>`, a canonical link to itself and `og:url`.
+
+**Telling it.** A page is compared with the same host's answer to an address that cannot exist:
+
+- **Which pages are asked about.** Only a page that may be a fallback: not the root of the site (the root is what a
+  fallback shows), and either it does not say it is itself (no `<link rel=canonical>` in the server's own HTML, or one
+  that names another address) or its title is the root's, as the root this session has read had it. A page that names
+  itself is a page the site vouches for, and costs nothing. The canonical link is the one in the HTTP response, before a
+  browser ran the page's scripts: a site's script can write a canonical link for any address it is asked for.
+- **The probe.** `https://<host>/web-research-probe-<16 random hex digits>`, read once for each host and kept for the
+  session (512 hosts; an answer that told nothing is asked again after 5 minutes), by the same loader and so by the same
+  checks: the fetcher that pins its connections to the address it checked, and, for a host whose pages are drawn by
+  scripts, the same browser and the same guard. Pages that want it at the same time wait for one probe.
+  A 404 or 410 means the host says when a page is not there (nothing is flagged on it); any other refusal tells nothing.
+- **The comparison.** The two documents, as the loader gave them (so a page drawn by scripts is compared as the browser
+  drew it, not as the HTTP shell was), have the same title **and** the same text or nine words in ten alike
+  (the words of the two addresses left out of both: "Nothing at /x" is still the fallback). The title is required
+  because a site that knows a page writes its own into the HTML, so a real page whose script never filled it has a
+  shell's text and its own title, and is not taken for a missing one. The text alone is not enough, and neither is the
+  title alone: a site with one static `<title>` for all its pages is not a soft 404 site.
+  The same text or content hash after rendering is the evidence; the title keeps a page the server vouches for apart.
+
+**What the answer says.** `warnings` holds `soft_404`, `looks_missing: true`, and a `hint` ("This site answers every
+address with the same page, so this address may not exist: what was read is the site's fallback, not a page of its
+own."). `status_code` stays what the site said (200). `web_extract` returns no field read from the fallback: every
+field is `null` with provenance `not_found` (a `required` one is reported as it is when the page has nothing), and its
+`title`, `description`, `canonical_url` and `date*` are empty. `web_scrape` keeps the text it read, so that the caller
+can see what the site gave. A crawl records a `soft_404` page as an error of the job (`failed` counts it as a 404 is)
+and does not follow its links. The verdict is made before a page is kept, so a cached page says the same.
+
+**What it costs.** One request to the same host, through the same checks, the first time a page that does not name
+itself is read from a host (and one browser read when the host's pages are drawn by scripts); nothing for a page that
+names itself or for the root. `WEB_TOOLS_SOFT_404_CHECK=false` never asks. A host that serves a real page for
+everything, and a page with a canonical link to itself on a host whose root this session has not read, are taken at
+their word: the check finds what it can find from one extra request and no more.
+
+Tests: `tests/test_web_missing_pages.py` (a site that answers every path with its home page, a site that says 404, the
+requests counted, once per host, an honest host, a failing probe, a framework that names every page itself, a page
+drawn by scripts compared as drawn, a crawl) and `tests/test_web_missing_comparison.py` (the arithmetic).
+
+### One value for two signals that agree
+
+`data.title` was "X, X": a page that writes its `og:title` twice (a framework that renders its head from the layout and
+from the page) gave two values, and the answer joined them. A field's values that read alike (the same words in the
+same order, whatever the spacing and the case) are now one value, the first spelling, in the data and in the evidence;
+two different values are still both there, and several authors or keywords still are. By name, a page's own JSON-LD
+item (its `BlogPosting`) is read before the site's (its `Organization`, its `WebSite`) for `description` and `image` as
+it is for `headline` and the dates: a page a browser has drawn carries the site's items ahead of the post's.
+
+### Input that is no web address
+
+`web_scrape("not a url at all")` became `https://not a url at all` in the request model (which prefixed every text with
+`https://`) and failed as a DNS error. Now `senoldogan.dev` and `example.com/docs` get their `https://` as before, and
+text that is no host stays what it was; the service then says, for every tool,
+
+```
+invalid_request: "not a url at all" is not a web address. Give a full address, such as https://example.com/page
+```
+
+(a text that is a host without its scheme is answered with "Did you mean https://…?"; `https://`, a host that is not a
+name and a malformed URL are the same error). An address that is one and must not be used keeps the wording of the safety
+refusals and its `unsafe_target`: `localhost`, a private address, a numeric host, credentials in the URL, and a scheme
+that is not `http` or `https` (`ftp://`, `file:`, `javascript:`, `mailto:`). The older scraper endpoints
+(`/api/v1/scrape`) keep their own wording. Tests: `tests/test_web_not_an_address.py`.
+
+### A site whose address redirects
+
+`web_map("https://senoldogan.dev")` returned one URL: the apex answers every path with a 308 to `www.senoldogan.dev`,
+and the sitemap's `www` URLs were dropped as another host's. Now the host an address lands on is the site's own (apex to
+`www`, `http` to `https`): the start page is read first, through the loader, to learn where the address leads; robots.txt
+and the sitemaps are read there; the URLs of the requested host and of the landed one are kept (with
+`include_subdomains`, the siblings of `www` as well); and the answer says `host` and, when the address moved,
+`redirected_from`. When no page answers but robots.txt or the sitemap does, the host they answered at is the site's.
+A crawl of the apex has the same scope: it follows the pages of `www` (and reads a `use_sitemap` crawl's sitemap there)
+instead of ending at the first. Tests: `tests/test_web_site_redirect.py`.
+
+### A crawl that has ended says why
+
+| `stopped_by` | It means | `not_visited` |
+|---|---|---|
+| `max_pages` | the page limit was reached while links were waiting | the links waiting, and the ones past the depth limit |
+| `max_depth` | nothing was waiting, but pages at `max_depth` had in-scope links the crawl would not follow | those links |
+| `done` | everything in scope that the links led to was visited | 0 |
+| `cancelled` | it was cancelled (a queued job, never started, has left its start page) | what was waiting |
+| `interrupted` | the server stopped while it ran; it is not resumed | what was waiting |
+| `failed` | the crawl itself failed (`errors` says) | what was waiting |
+
+`stopped_by` is `null` while the crawl runs; `progress.queue_size` is the links waiting while it runs and 0 once it has
+ended; `progress.not_visited` counts the links it left, and `web_crawl_results` lists the first 50 of them
+(`not_visited_urls`) with `stopped_by` and the count. `percent` keeps its meaning (the share of the page limit that was
+read: 100 for a crawl that ended). A restart keeps all of it (in the job's `progress` in the store; a job an older
+version kept has no reason). Tests: `tests/test_web_crawl_stop.py`.
+
+### Search: an organization's own site
+
+**It is official.** A host whose registrable name is all the words of the query's subject joined (`modelcontextprotocol`
+for "Model Context Protocol specification"), and its subdomains (its blog, its docs), is `official` for that query, on
+any of its pages. The subject is the query without its stopwords, the words that ask for a kind of page (specification,
+documentation, docs, API, reference, guide, tutorial, manual, install, release, version, latest, overview...) and its
+numbers. It needs two words or more (a name of one word is the older rule's, below) and six letters, and it is not a
+forum on the domain (`discuss.`, `community.`, `forum.`...). A lookalike on another top-level domain is not: the rule
+holds on `com org io dev ai app co` (and `co.uk`, `com.au` and the other second levels of `com`, `co` and `org`), not on
+`.info`, `.net`, `.xyz`, `.biz` and the rest, where a copy of a site is put.
+
+**It leads.** `primary_first` is on, unless a call says, for a query that asks for a specification, documentation or an
+API reference (`specification`, `spec`, `documentation`, `docs`, "API reference"; their Turkish, Finnish and German
+words) and is not a news query. Only the organization's own pages lead (official +0.12, academic +0.05; an outlet that
+writes about a specification is not the specification), and what leads is the document itself:
+
+- an official page whose address says it is a document (a path segment or the host's first label: `specification`,
+  `spec`, `docs`, `documentation`, `reference`, `api`, `manual`) gets +0.12, +0.12 more when it is the kind the query
+  asked for (`/specification/` for "…specification");
+- an official post about it (`blog`, `news`, `press`, `posts`, `announcements`...) does not get the primary bonus;
+- an older edition of a versioned page the results have a newer one of (`/specification/2025-03-26` beside
+  `/specification/2026-07-28`, `/3.11/` beside `/3.12/`) loses 0.10, unless the query has a number in it;
+- officials are not held back by the diversity step that keeps one kind of source from filling the page.
+
+`primary_first: true` is as it was (official +0.12, news +0.10, academic +0.05, whatever the query) and `false` is none.
+
+**What it measured** on the pool Yahoo answered on 2026-10-24 (`tests/fixtures/search_model_context_protocol_specification.json`,
+the three angles of a discover search):
+
+| | 1.3.1 | 1.4.0 |
+|---|---|---|
+| 1 | `blog.modelcontextprotocol.io/posts/2026-07-28` (`other`) | `modelcontextprotocol.io/specification/2026-07-28` (`official`) |
+| 2 | `modelcontextprotocol.info/specification` (`other`) | `blog.modelcontextprotocol.io/posts/2026-07-28` (`official`) |
+| 3 | `github.com/modelcontextprotocol/...` (`code`) | `modelcontextprotocol.io/specification/2026-07-28/architecture` (`official`) |
+| 4 | `en.wikipedia.org/wiki/Model_Context_Protocol` (`reference`) | `modelcontextprotocol.io/specification/2025-06-18/basic` (`official`) |
+| 5 | `modelcontextprotocol.io/specification/2025-03-26` (`other`) | `modelcontextprotocol.info/specification` (`other`) |
+
+(the live answer of the same call, 8 results: the spec page, the blog post, its architecture page, the copy of the site
+fourth, then the release-candidate post.) Tests: `tests/test_web_search_official_name.py`.
+
+### How each source type is decided
+
+`source_type` is decided from the address, in this order; the first rule that holds names the type
+(`web_scraper/web_tools/discovery.py`, `classify_source_type`, with the tables of `sources.py`).
+
+| Type | Decided by |
+|---|---|
+| `official` | a host of the built-in official table (`docs.python.org`, `developer.mozilla.org`, `react.dev`...); a public body (`europa.eu`, `gov.uk`, the Finnish authorities) or a government suffix (`.gov`, `.mil`, `.int`, `.gov.xx`); a first-party site (`openai.com`, `cloud.google.com`, `apple.com/newsroom`..., every site under a brand top-level domain, and `WEB_TOOLS_OFFICIAL_HOSTS`; a forum on the domain is not); and, for a query, a host the query names as a word or two joined (its docs, developers, help, blog, newsroom, research and status pages only: `docs.stripe.com`, `notion.so/help`), or a host named as all of the query's subject joined (any page, on an organization's top-level domain: see above) |
+| `academic` | `arxiv.org`, `nature.com`, the universities named in the table, `.edu`, `.edu.xx`, `.ac.xx` |
+| `news` | the outlets named by hand (`sources.py`: wires, public broadcasters, papers of record, the business and technology press), never a site because its name sounds like news |
+| `press_release` | the wires that publish companies' own announcements (`businesswire.com`, `prnewswire.com`...) |
+| `social` | `x.com`, `facebook.com`, `linkedin.com`... (and YouTube, for a news query) |
+| `reference` | Wikipedia, Britannica and the like; and a page on a host no table knows whose path says it is documentation (`/docs/`, `/documentation/`, `/api/`, `/reference/`, `/manual/`: mirrors copy another project's documentation) |
+| `code` | GitHub, GitLab, Bitbucket, Codeberg, `*.github.io` |
+| `community` | forums and Q&A (`reddit.com`, `stackoverflow.com`, `news.ycombinator.com`, `dev.to`, `medium.com`) and blog hosts (`substack.com`, `blogspot.com`, `wordpress.com`...) |
+| `aggregator` | sites that collect other outlets' stories (`news.google.com`, `msn.com`, `techmeme.com`...; `WEB_TOOLS_AGGREGATOR_HOSTS` adds) |
+| `other` | everything else |
+
+A host matches itself and its subdomains. What a type is worth is `_AUTHORITY` in `discovery.py` (official 0.24, academic
+0.20, news 0.14, reference 0.10, code 0.06, community 0.04, aggregator −0.12), and `primary_first` adds on top.
+
+### What it measured live (2026-10-24, this Mac, one run each, default settings)
+
+| Call | 1.3.1 | 1.4.0 |
+|---|---|---|
+| `web_search` "Model Context Protocol specification" (DuckDuckGo bot-walled, Yahoo answered) | 7.1 s; blog `other`, copy of the site `other`, GitHub, Wikipedia, spec page fifth `other` | 6.6 s; spec page `official` first, the project's blog, its architecture page, the copy of the site (`other`) fourth |
+| `web_scrape` the post on `www` (en) | 5.3 s; `fetched_with: http`, 34 characters, "Loading animation while page loads" (the browser had run for 5.0 s and its text was the shorter) | 3.5 s; `fetched_with: browser`, 4,602 characters, settled in 2.2 s |
+| `web_scrape` the post on the apex (tr) | 1.4 s; 34 characters, the shell | 2.6 s; 4,366 characters, settled in 2.0 s |
+| `web_scrape` `/bu-sayfa-yok-12345` | 3.4 s; 200, the home page's title, the shell, no warning | 5.2 s (the probe of the host included); `rendered_shell`, `soft_404`, `looks_missing: true`, a `hint` |
+| `web_extract` the same | 2.8 s; `data.title` the home page's title twice, `description` its description | 2.6 s; every field `null`, `title: ""`, `soft_404`, `looks_missing`, a `hint` |
+| `web_extract` the real post | 1.6 s; title and description from the HTTP head | 2.9 s; the same title and description, from the rendered page |
+| `web_scrape("not a url at all")` | 0.15 s; `dns_error`, "Could not resolve host not%20a%20url%20at%20all" | 0.0 s; `invalid_request`, "…is not a web address. Give a full address, such as https://example.com/page" |
+| `web_map("https://senoldogan.dev")` | 0.7 s; 1 URL | 2.6 s; 44 URLs (42 of the sitemap, with `lastmod`, and the links of the home page as drawn), `host: www.senoldogan.dev`, `redirected_from` |
+| `web_map("https://www.senoldogan.dev")` | 0.7 s; 42 URLs | 2.3 s; 44 URLs |
+| crawl of `https://modelcontextprotocol.io/docs`, `max_pages: 5` | 3.1 s; `completed`, `percent: 100`, `queue_size: 32` | 3.0 s; `completed`, `stopped_by: max_pages`, `queue_size: 0`, `not_visited: 32` |
+| crawl of `https://senoldogan.dev`, `max_depth: 1` | 1 page (`discovered: 1`) | 4 pages of `www` |
+
+The map takes longer because its start page is read through the loader, and senoldogan.dev's is drawn by scripts. The
+browsers were Playwright 1.64 with the installed Google Chrome, headless.
+
+### For Dot
+
+- New fields in the answers: `looks_missing` and `hint` (`web_scrape`, `web_extract`, and each page of a batch;
+  `content_warnings` on a search result that was read), `host` and `redirected_from` (`web_map`), `stopped_by` and
+  `progress.not_visited` (`web_crawl_status`), `not_visited` and `not_visited_urls` (`web_crawl_results`), `warnings`
+  on a crawl result that is a shell, `timings.settle_ms`. New warnings: `rendered_shell`, `needs_javascript`,
+  `soft_404`; a crawl's `errors` can hold `soft_404`. A text that is no address is `invalid_request` (it was a
+  `dns_error`).
+- New settings: `WEB_TOOLS_BROWSER_SETTLE_MAX_MS`, `WEB_TOOLS_BROWSER_SETTLE_STABLE_MS`, `WEB_TOOLS_SOFT_404_CHECK`;
+  `BROWSER_POST_LOAD_WAIT_MS` now means the least a page is waited for, and `BROWSER_RENDER_MIN_CHARS` is the bound of
+  the browser read for every page with scripts.
+- The missing-page check and the settle make requests the model did not ask for, to the host it asked about and to no
+  other, through the same checks. `WEB_TOOLS_SOFT_404_CHECK=false` keeps the first from being made.
+- The nine tools and their arguments are the same; the text a model reads grew by 428 characters (11,932 of the 12,000 the
+  budget test allows).

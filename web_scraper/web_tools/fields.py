@@ -75,9 +75,22 @@ _ALIASES: dict[str, tuple[str, ...]] = {
 _CANONICAL = {alias: name for name, aliases in _ALIASES.items() for alias in aliases}
 DATE_FIELDS = frozenset({"published", "modified"})
 # Fields whose JSON-LD or meta value is about the article, read from an article's
-# item before the page's others (a WebSite or an Organization item has a name too).
+# item before the page's others (a WebSite or an Organization item has a name too, and a
+# description and an image: a page a browser has drawn often carries the site's own items
+# ahead of the post's).
 _ARTICLE_FIELDS = frozenset(
-    {"headline", "author", "published", "modified", "section", "keywords", "body", "word_count"}
+    {
+        "headline",
+        "author",
+        "published",
+        "modified",
+        "section",
+        "keywords",
+        "body",
+        "word_count",
+        "description",
+        "image",
+    }
 )
 _ARTICLE_TYPES = ("article", "posting", "report", "review", "recipe", "webpage")
 

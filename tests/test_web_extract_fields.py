@@ -255,3 +255,39 @@ class TestTwoSignalsThatAgreeAreOneValue:
         result = extract_structured(_page(head), URL, {"robots": {}})
 
         assert result.data["robots"] == "index"
+
+
+class TestTheArticlesOwnItemComesFirst:
+    """A page a browser has drawn carries the site's JSON-LD (its Organization, its WebSite) ahead of the post's:
+    senoldogan.dev's blog post, read in the browser, answered with the site's description."""
+
+    DRAWN = """<script type="application/ld+json">
+{"@type": "ProfessionalService", "name": "Acme Studio", "description": "Acme is a studio.", "image": "https://x.test/logo.png"}
+</script>
+<script type="application/ld+json">{"@type": "WebSite", "name": "Acme", "description": "Acme is a studio."}</script>
+<script type="application/ld+json">
+{"@type": "BlogPosting", "headline": "Seven checks", "description": "Seven points that decide it.",
+ "image": "https://x.test/post.png", "datePublished": "2026-10-20"}
+</script>"""
+
+    def test_the_posts_description_and_image_are_read_before_the_sites(self) -> None:
+        result = extract_structured(_page(self.DRAWN), URL, {"description": {}, "image": {}})
+
+        assert result.data == {
+            "description": "Seven points that decide it.",
+            "image": "https://x.test/post.png",
+        }
+
+    def test_a_page_with_no_article_item_gives_the_first_description_there_is(self) -> None:
+        head = """<script type="application/ld+json">
+{"@type": "WebSite", "name": "Acme", "description": "Acme is a studio."}
+</script>"""
+
+        result = extract_structured(_page(head), URL, {"description": {}})
+
+        assert result.data["description"] == "Acme is a studio."
+
+    def test_a_name_the_article_does_not_have_is_the_sites(self) -> None:
+        result = extract_structured(_page(self.DRAWN), URL, {"name": {}})
+
+        assert result.data["name"] == "Acme Studio"

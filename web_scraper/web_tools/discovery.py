@@ -29,6 +29,7 @@ from web_scraper.web_tools.dates import infer_publication_date as infer_publicat
 from web_scraper.web_tools.search import SearchResult
 from web_scraper.web_tools.sources import (
     BLOG_HOSTS,
+    COMMUNITY_SUBDOMAINS,
     DEFAULT_RULES,
     FIRST_PARTY_SEGMENTS,
     FIRST_PARTY_SUBDOMAINS,
@@ -38,6 +39,7 @@ from web_scraper.web_tools.sources import (
     SOCIAL_HOSTS,
     SOCIAL_ON_NEWS_HOSTS,
     SourceRules,
+    has_organization_suffix,
     registrable_label,
     split_host,
 )
@@ -358,6 +360,36 @@ _AUTHORITY = {
 # that report it lead: a bonus on top of their authority, but not to a result too old for the
 # time the query asks about.
 _PRIMARY_FIRST = {"official": 0.12, "news": 0.10, "academic": 0.05}
+# For a query that asks for a specification, documentation or an API reference, and says nothing of
+# news, primary_first is on as well, and what leads is the organization's own pages: an outlet that
+# writes about a specification is not the specification.
+_PRIMARY_DOCS = {"official": 0.12, "academic": 0.05}
+# In that case what leads is the document itself: an official page whose address says it is the
+# specification, the documentation, the reference or the API (a path segment or the host's first label)
+# gets this more, as much again when it is the kind of page the query asked for (``/specification/`` for
+# "... specification"), and an official post about it (blog, news, press, announcement) does not get the
+# primary bonus: the project's blog post on the 2026 specification is not the specification.
+_DOCUMENT_KINDS = {
+    "api": "api",
+    "doc": "documentation",
+    "docs": "documentation",
+    "documentation": "documentation",
+    "manual": "manual",
+    "reference": "reference",
+    "spec": "specification",
+    "specs": "specification",
+    "specification": "specification",
+    "specifications": "specification",
+}
+_POST_MARKS = frozenset(
+    {"announcements", "articles", "blog", "news", "newsroom", "post", "posts", "press", "stories"}
+)
+_DOCUMENT_BONUS = 0.12
+# A page of the document the pool has a newer version of (``/specification/2025-03-26`` beside
+# ``/specification/2026-07-28``, ``/3.11/`` beside ``/3.12/``) is the older edition: it goes after the
+# newest by this, unless the query names a version.
+_SUPERSEDED = 0.10
+_VERSION_SEGMENT = re.compile(r"^(?:\d{4}-\d{2}(?:-\d{2})?|v?\d+(?:\.\d+){0,2})$")
 # A query that names two organizations or more (a deal, a partnership, a comparison) is about
 # what holds both: the bonuses of a site's kind count in proportion to the share of the query's
 # distinctive words its title and snippet hold, and a result holding more than half of them gets
@@ -695,6 +727,55 @@ def classify_page_kind(url: str) -> str:
     return "page"
 
 
+def _edition(url: str) -> Optional[tuple[str, tuple[int, ...]]]:
+    """The edition a document address is of: ``(host and path with the version segment left out,
+    the version)``, or ``None`` when no segment of its path is a version (a date such as
+    ``2026-07-28``, or ``v2``, ``3.12``). Two addresses are editions of one document when the first
+    parts are equal."""
+    try:
+        parts = urlsplit(url or "")
+    except ValueError:
+        return None
+    segments = [segment for segment in parts.path.split("/") if segment]
+    for index, segment in enumerate(segments):
+        if _VERSION_SEGMENT.match(segment):
+            version = tuple(int(number) for number in re.findall(r"\d+", segment))
+            kind = "date" if re.match(r"\d{4}-", segment) else "number"
+            shape = "/".join([*segments[:index], "{" + kind + "}", *segments[index + 1 :]])
+            return f"{(parts.hostname or '').lower()}/{shape}", version
+    return None
+
+
+def _demote_superseded(rows: list[dict[str, Any]]) -> None:
+    """Take ``_SUPERSEDED`` off the score of each page of a document that the pool has a newer edition of."""
+    editions: dict[str, list[tuple[tuple[int, ...], dict[str, Any]]]] = {}
+    for row in rows:
+        found = _edition(row["url"])
+        if found is not None:
+            editions.setdefault(found[0], []).append((found[1], row))
+    for group in editions.values():
+        newest = max(version for version, _ in group)
+        for version, row in group:
+            if version < newest:
+                row["score"] = round(row["score"] - _SUPERSEDED, 6)
+
+
+def _page_marks(url: str) -> tuple[frozenset[str], bool]:
+    """What an address says of its page: the kinds of document it is (specification, documentation,
+    reference, API, manual) and whether it is a post about one (blog, news, press), by the host's first
+    label and the path's segments."""
+    try:
+        parts = urlsplit(url or "")
+    except ValueError:
+        return frozenset(), False
+    names = {(parts.hostname or "").lower().split(".")[0]}
+    names.update(segment.lower() for segment in parts.path.split("/") if segment)
+    return (
+        frozenset(_DOCUMENT_KINDS[name] for name in names if name in _DOCUMENT_KINDS),
+        bool(names & _POST_MARKS),
+    )
+
+
 # "News" as the owner's languages and the big ones say it.
 _NEWS_WORDS = frozenset(
     {
@@ -712,6 +793,72 @@ _NEWS_WORDS = frozenset(
         "uutinen",
     }
 )
+
+
+# What a query that wants the thing itself, not what is said about it, says: a specification, the
+# documentation, an API reference. (The owner's languages too: Turkish, Finnish, German.)
+_PRIMARY_SOURCE_WORDS = frozenset(
+    _normalise_token(word)
+    for word in (
+        "specification",
+        "specifications",
+        "spec",
+        "specs",
+        "documentation",
+        "docs",
+        "spesifikasyon",
+        "spesifikasyonu",
+        "şartname",
+        "dokümantasyon",
+        "dokümantasyonu",
+        "dokümanı",
+        "dokumentaatio",
+        "määrittely",
+        "spesifikaatio",
+        "spezifikation",
+        "dokumentation",
+    )
+)
+# The words of a query that ask for a kind of page and name nothing: what remains of "Model Context
+# Protocol specification" once they are taken away is the subject.
+_INTENT_WORDS = frozenset(
+    _normalise_token(word)
+    for word in (
+        "api",
+        "changelog",
+        "doc",
+        "documentation",
+        "docs",
+        "download",
+        "guide",
+        "install",
+        "installation",
+        "intro",
+        "introduction",
+        "latest",
+        "manual",
+        "official",
+        "overview",
+        "readme",
+        "reference",
+        "release",
+        "releases",
+        "spec",
+        "specification",
+        "specifications",
+        "specs",
+        "tutorial",
+        "version",
+        "versions",
+    )
+)
+
+
+def asks_for_primary_source(query: str) -> bool:
+    """Whether a query asks for a specification, documentation or an API reference: for the thing
+    itself, which an organization's own site is, and not for what is said about it."""
+    words = _query_words(query)
+    return bool(_PRIMARY_SOURCE_WORDS & set(words)) or ("api" in words and "reference" in words)
 
 
 def wants_news(query: str) -> bool:
@@ -783,8 +930,10 @@ def classify_source_type(
     a known first-party domain (``openai.com``, ``cloud.google.com``, ``blog.google``,
     ``apple.com/newsroom``, a table that WEB_TOOLS_OFFICIAL_HOSTS extends; *rules* carries it),
     and, for a query that names the organization, its docs, blog, newsroom or developer pages
-    (``docs.stripe.com`` for "stripe webhooks"). A site that collects other outlets' stories is
-    ``aggregator``.
+    (``docs.stripe.com`` for "stripe webhooks"); and a host whose registrable name is all the words of
+    the query's subject joined (``modelcontextprotocol.io`` for "Model Context Protocol specification"),
+    every page of it and of its subdomains, on a top-level domain an organization uses (not
+    ``modelcontextprotocol.info``). A site that collects other outlets' stories is ``aggregator``.
     """
     rules = rules or DEFAULT_RULES
     try:
@@ -821,7 +970,10 @@ def classify_source_type(
         return "community"
     if rules.is_aggregator(host, path):
         return "aggregator"
-    if query and _site_named_by(host, path, _query_words(query)):
+    if query and (
+        _site_named_by(host, path, _query_words(query))
+        or _site_is_the_subject(host, _query_words(query))
+    ):
         return "official"
     # A docs-looking path alone does not make a host official: mirrors (mdn.org.cn, runebook.dev) copy another
     # project's documentation. Give them the weight of a reference, below the canonical project's own domain.
@@ -860,6 +1012,36 @@ def _site_named_by(host: str, path: str, words: list[str]) -> bool:
     if first in ("", "www"):
         return not segments or segments[0] in FIRST_PARTY_SEGMENTS
     return first in FIRST_PARTY_SUBDOMAINS
+
+
+def _subject_words(words: list[str]) -> list[str]:
+    """What a query is about: its words without the stopwords, the words that ask for a kind of page
+    (specification, documentation, API, reference...) and the numbers (a year, a version)."""
+    return [
+        word
+        for word in words
+        if word not in _STOPWORD_KEYS and word not in _INTENT_WORDS and not word.isdigit()
+    ]
+
+
+def _site_is_the_subject(host: str, words: list[str]) -> bool:
+    """Whether a host is the site of what the query is about: its registrable name is all the words of
+    the subject joined (``modelcontextprotocol`` for "Model Context Protocol specification").
+
+    That is the subject's own site, and so are its subdomains (its blog, its docs): any page of it,
+    not only those that are an organization speaking. Not a subject of one word, which a site's name
+    says less surely (``_site_named_by`` is that rule), not a name of fewer than six letters, not a
+    forum on the domain, and not the same name on a top-level domain that organizations do not use
+    (``.info``, ``.biz``, ``.xyz``, ``.net``: where a copy of a site is put).
+    """
+    subject = _subject_words(words)
+    joined = "".join(subject)
+    if len(subject) < 2 or len(joined) < 6:
+        return False
+    if registrable_label(host).replace("-", "") != joined or not has_organization_suffix(host):
+        return False
+    subdomain, _ = split_host(host)
+    return (subdomain.split(".")[0] if subdomain else "") not in COMMUNITY_SUBDOMAINS
 
 
 def _field_tokens(text: str) -> list[str]:
@@ -960,8 +1142,9 @@ def annotate_candidates(
     results from the same search, so the whole pool is scored together. *dates* holds, by
     address, the dates found by reading a page (see ``dates.py``); a result with one is dated by
     it and not by its address, snippet or title. *rules* are the tables of first-party sites and
-    aggregators (``sources.py``). With *primary_first* (unset: when the query asks for news) the
-    organization's own site and the news outlets that report lead.
+    aggregators (``sources.py``). With *primary_first* (unset: when the query asks for news, or for a
+    specification, documentation or an API reference) the organization's own site, and the news outlets
+    that report it for a news query, lead.
     """
     items = list(candidates)
     terms = _bm25_query_terms(query)
@@ -974,7 +1157,7 @@ def annotate_candidates(
     news = wants_news(query)
     window = detect_date_filter(query, year=now.year)
     facts = _QueryFacts.of(query, news, primary_first, rules or DEFAULT_RULES)
-    return [
+    rows = [
         _annotate_candidate(
             query,
             item,
@@ -988,6 +1171,10 @@ def annotate_candidates(
         )
         for index, item in enumerate(items)
     ]
+    if facts.docs_mode and not re.search(r"\d", query):
+        # A query for a document wants its newest edition, unless it names a version (or a year).
+        _demote_superseded([row for row in rows if row["source_type"] == "official"])
+    return rows
 
 
 @dataclass(frozen=True)
@@ -996,6 +1183,13 @@ class _QueryFacts:
 
     rules: SourceRules
     primary_first: bool
+    # What the sites of each kind get when primary_first is on (empty when it is off).
+    primary_bonus: Mapping[str, float]
+    # primary_first is on because the query asks for a specification, documentation or an API reference
+    # (and not for news, and not by the caller's say): the document itself leads. *kinds* are the kinds
+    # of document the query asks for (``specification``, ``documentation``, ``reference``, ``api``).
+    docs_mode: bool
+    kinds: frozenset[str]
     # The query names two organizations or more and has words enough for a page to hold some of them.
     by_coverage: bool
     terms: frozenset[str]
@@ -1006,9 +1200,21 @@ class _QueryFacts:
     ) -> _QueryFacts:
         terms = frozenset(distinctive_terms(query))
         named = _names(_query_words(query)) & rules.organizations()
+        # Unasked, primary_first is on for news, and for a query that wants the thing itself (a
+        # specification, documentation, an API reference), where only the organization's own pages lead.
+        docs = primary_first is None and not news and asks_for_primary_source(query)
+        if primary_first is None:
+            bonus = _PRIMARY_FIRST if news else _PRIMARY_DOCS if docs else {}
+        else:
+            bonus = _PRIMARY_FIRST if primary_first else {}
         return cls(
             rules=rules,
-            primary_first=news if primary_first is None else primary_first,
+            primary_first=bool(bonus),
+            primary_bonus=bonus,
+            docs_mode=docs,
+            kinds=frozenset(
+                _DOCUMENT_KINDS[word] for word in _query_words(query) if word in _DOCUMENT_KINDS
+            ),
             by_coverage=len(named) >= 2 and len(terms) >= _COVERAGE_MIN_TERMS,
             terms=terms,
         )
@@ -1097,7 +1303,13 @@ def _annotate_candidate(
     else:
         score += {"current": 0.10, "recent": 0.05}.get(recency, 0.0)
     if facts.primary_first and fresh is not False:
-        score += _PRIMARY_FIRST.get(source_type, 0.0) * coverage
+        score += facts.primary_bonus.get(source_type, 0.0) * coverage
+        if facts.docs_mode and source_type == "official":
+            documents, post = _page_marks(url)
+            if documents and not post:
+                score += _DOCUMENT_BONUS * coverage * (2 if documents & facts.kinds else 1)
+            elif post and not documents:
+                score -= facts.primary_bonus["official"] * coverage
     if recency == "historical":
         score += 0.08 if source_type in {"official", "academic", "reference"} else 0.04
     if _has_exact_phrase(query, result.title, result.snippet):
@@ -1199,7 +1411,10 @@ def rank_candidates(
             item["url"],
         )
     )
-    return _select_diverse(eligible, limit)
+    facts = _QueryFacts.of(query, wants_news(query), primary_first, rules or DEFAULT_RULES)
+    # For a query that asks for a document the kinds that lead are not held back for variety's sake.
+    spared = frozenset(facts.primary_bonus) if facts.docs_mode else frozenset()
+    return _select_diverse(eligible, limit, spared=spared)
 
 
 def domain_cap(limit: int) -> int:
@@ -1230,6 +1445,7 @@ def build_facets(
 def _select_diverse(
     ranked: list[dict[str, Any]],
     limit: int,
+    spared: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     remaining = list(ranked)
     selected: list[dict[str, Any]] = []
@@ -1239,9 +1455,9 @@ def _select_diverse(
     cap = domain_cap(limit)
 
     while remaining and len(selected) < limit:
-        best_index = _best_index(remaining, per_domain, per_type, cap, selected_tokens)
+        best_index = _best_index(remaining, per_domain, per_type, cap, selected_tokens, spared)
         if best_index is None:
-            best_index = _best_index(remaining, per_domain, per_type, None, selected_tokens)
+            best_index = _best_index(remaining, per_domain, per_type, None, selected_tokens, spared)
         if best_index is None:
             break
         chosen = remaining.pop(best_index)
@@ -1258,6 +1474,7 @@ def _best_index(
     per_type: Counter[str],
     cap: Optional[int],
     selected_tokens: list[set[str]],
+    spared: frozenset[str] = frozenset(),
 ) -> Optional[int]:
     best_index: Optional[int] = None
     best_effective: Optional[float] = None
@@ -1265,7 +1482,9 @@ def _best_index(
         if cap is not None and per_domain[item["domain"]] >= cap:
             continue
         type_count = per_type[item["source_type"]]
-        effective = item["score"] + (0.04 if type_count == 0 else -0.02 * type_count)
+        effective = item["score"]
+        if item["source_type"] not in spared:
+            effective += 0.04 if type_count == 0 else -0.02 * type_count
         if selected_tokens:
             similarity = max(_jaccard(_content_tokens(item), chosen) for chosen in selected_tokens)
             excess = max(0.0, similarity - _NEAR_DUPLICATE_THRESHOLD)

@@ -604,6 +604,23 @@ _TWO_LEVEL_SUFFIXES = frozenset(
 )
 
 
+# The top-level domains an organization's own site is on, for the rule that a host named as the query's
+# subject (``modelcontextprotocol.io`` for "Model Context Protocol") is the subject's own: the ones
+# companies, projects and foundations use. The same name on another (``modelcontextprotocol.info``,
+# ``.biz``, ``.xyz``, ``.net``...) is the kind of address a copy of a site is put on, and is not taken for
+# the original.
+ORGANIZATION_SUFFIXES = frozenset({"com", "org", "io", "dev", "ai", "app", "co"})
+
+
+def has_organization_suffix(host: str) -> bool:
+    """Whether a host ends in a top-level domain an organization's own site is on (``ORGANIZATION_SUFFIXES``,
+    or ``co.uk``, ``com.au`` and the other second levels of ``com``, ``co`` and ``org``)."""
+    labels = host.split(".")
+    if len(labels) >= 3 and ".".join(labels[-2:]) in _TWO_LEVEL_SUFFIXES:
+        return labels[-2] in {"com", "co", "org"}
+    return labels[-1] in ORGANIZATION_SUFFIXES
+
+
 def _entry_matches(entry: str, host: str, path: str) -> bool:
     entry_host, _, entry_path = entry.partition("/")
     if host != entry_host and not host.endswith("." + entry_host):

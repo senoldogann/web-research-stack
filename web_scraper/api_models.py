@@ -672,6 +672,17 @@ class WebScrapeResponse(BaseModel):
         default=None, description="With recovered_from: one sentence on what to do with the text"
     )
     warnings: List[str] = Field(default_factory=list)
+    looks_missing: bool = Field(
+        default=False,
+        description=(
+            "True with the warning soft_404: the site answers every address with this page, so "
+            "the address may not exist"
+        ),
+    )
+    hint: Optional[str] = Field(
+        default=None,
+        description="With soft_404, rendered_shell or needs_javascript: what the warning means",
+    )
     timings: Dict[str, float] = Field(default_factory=dict)
     pages: Optional[int] = Field(default=None, description="Page count of a PDF document")
 
@@ -720,6 +731,10 @@ class WebMapEntry(BaseModel):
 
 class WebMapResponse(BaseModel):
     url: str
+    host: str = Field(default="", description="The site's host: where its address landed")
+    redirected_from: Optional[str] = Field(
+        default=None, description="The address asked for, when it redirected to url"
+    )
     urls: List[str]
     # Every URL that matched, before the limit; ``returned`` counts ``urls``.
     total: int
@@ -852,6 +867,14 @@ class WebExtractResponse(BaseModel):
         default=None, description="On a cache hit: what fetching the page cost when it was fetched"
     )
     warnings: List[str] = Field(default_factory=list)
+    looks_missing: bool = Field(
+        default=False,
+        description="True with soft_404: the page may not exist; no field was read from it",
+    )
+    hint: Optional[str] = Field(
+        default=None,
+        description="With soft_404, rendered_shell or needs_javascript: what the warning means",
+    )
     truncated: bool = Field(
         default=False,
         description="True when max_items or max_chars left values out or cut a text",
@@ -887,6 +910,13 @@ class WebCrawlJobResponse(BaseModel):
     job_id: str
     url: str
     status: str
+    stopped_by: Optional[str] = Field(
+        default=None,
+        description=(
+            "Once the crawl has ended, why: max_pages, max_depth, done, cancelled, interrupted or "
+            "failed; progress.not_visited counts the links left"
+        ),
+    )
     created_at: Optional[str] = None
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
@@ -899,6 +929,11 @@ class WebCrawlJobResponse(BaseModel):
 class WebCrawlResultsResponse(BaseModel):
     job_id: str
     status: str
+    stopped_by: Optional[str] = None
+    not_visited: int = Field(default=0, description="The links the crawl left unvisited")
+    not_visited_urls: List[str] = Field(
+        default_factory=list, description="The first of them (at most 50)"
+    )
     total: int
     offset: int
     limit: int

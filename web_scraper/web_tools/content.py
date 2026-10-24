@@ -525,17 +525,26 @@ def is_placeholder_text(text: str) -> bool:
     )
 
 
+def _says_loading(text: str) -> bool:
+    """Whether a text is a placeholder, or has a line of it that is: a cookie notice above a "Loading..."
+    is a shell with a notice, not a page."""
+    if is_placeholder_text(text):
+        return True
+    lines = [line.strip(" \t#*>-") for line in (text or "").splitlines()]
+    return any(is_placeholder_text(line) for line in lines if line)
+
+
 def shell_text(text: str, min_chars: int = 200) -> Optional[str]:
     """Why a page's readable text is a shell's rather than a page's, or ``None`` when it can pass.
 
-    ``loading_placeholder`` (it says it is loading, or that it needs JavaScript) or ``almost_empty``
-    (a quarter of *min_chars*, at least 20 characters, is the least a page says). A text of
-    *min_chars* or more is a page, and so is a short one that says something of its own.
+    ``loading_placeholder`` (it says it is loading, or that it needs JavaScript, as a whole or in a line of
+    it) or ``almost_empty`` (a quarter of *min_chars*, at least 20 characters, is the least a page says).
+    A text of *min_chars* or more is a page, and so is a short one that says something of its own.
     """
     cleaned = _clean_text(text or "")
     if len(cleaned) >= min_chars:
         return None
-    if is_placeholder_text(cleaned):
+    if _says_loading(text):
         return "loading_placeholder"
     if len(cleaned) < max(20, min_chars // 4):
         return "almost_empty"
@@ -576,11 +585,11 @@ def shell_reason(html: str, markdown: str, min_chars: int = 200) -> Optional[str
     text = _clean_text(markdown)
     if len(text) >= min_chars or "<script" not in (html or "").lower():
         return None
-    if is_placeholder_text(text):
+    if _says_loading(markdown):
         return "loading_placeholder"
     if _has_empty_mount(html):
         return "empty_app_root"
-    return shell_text(text, min_chars)
+    return shell_text(markdown, min_chars)
 
 
 def _body_bytes(text: str) -> int:

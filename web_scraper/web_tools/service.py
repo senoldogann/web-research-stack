@@ -28,6 +28,7 @@ from web_scraper.web_tools.budget import (
     trim_metadata,
 )
 from web_scraper.web_tools.content import (
+    PageLink,
     ParsedPage,
     detect_interstitial,
     extract_page,
@@ -125,6 +126,7 @@ from web_scraper.web_tools.urls import (
     matches_search_filter,
     matches_url_filters,
     normalize_request_url,
+    site_scopes,
     upgrade_to_https,
     url_in_scope,
     url_on_domains,
@@ -146,6 +148,10 @@ class LoadedDocument:
     # ``cached_timings`` what the fetch cost when it was made.
     cache_hit: bool = False
     cached_timings: dict[str, float] = field(default_factory=dict)
+    # The address the canonical link of the server's own HTML names ("" when it names none), before a browser
+    # ran the page's scripts: a site's script can write a canonical link for any address it is asked for, so
+    # what the server said is what vouches for a page. None for a page that was only read in the browser.
+    server_canonical: Optional[str] = None
 
 
 @dataclass
@@ -359,8 +365,9 @@ class WebToolsService:
         """Discover URLs for a query: ranked results, and what it took to get them.
 
         ``primary_first`` makes an organization's own site and the news outlets that report it
-        lead (unset: it does for a query that asks for news); a known aggregator ranks lower
-        whatever the query.
+        lead (unset: it does for a query that asks for news, and, for the organization's own pages
+        alone, for one that asks for a specification, documentation or an API reference); a known
+        aggregator ranks lower whatever the query.
 
         ``compact`` shapes the answer for a model that pays for every character (see
         ``_present_search``); the search cache keeps the whole answer, so a compact call and a
@@ -1987,46 +1994,69 @@ class WebToolsService:
         exclude_patterns: Optional[list[str]] = None,
         limit: Optional[int] = None,
     ) -> dict[str, Any]:
-        base = self._canonical(url)
+        """The URLs of a site: its sitemaps' (with their ``lastmod``) and the links of its start page.
+
+        A site whose address redirects (``senoldogan.dev`` to ``www.senoldogan.dev``, ``http`` to
+        ``https``) is the site at the host it lands on: its sitemaps are read there and its URLs are
+        kept, and the answer says which host that is (``host``, and ``redirected_from`` when the address
+        moved). The start page is read first, through the one loader that scrape, extract and crawl use,
+        which is how the host it lands on is known; the errors are still told in the order of the
+        reads (robots.txt, the sitemaps, the page).
+        """
+        requested = self._canonical(url)
         includes = list(include_patterns or [])
         excludes = list(exclude_patterns or [])
         max_urls = min(
             max(limit or self.settings.default_map_limit, 1),
             self.settings.max_map_limit,
         )
-        entries, sitemaps, errors = await self._read_sitemaps(base, include_subdomains)
 
+        site = requested
+        page_links: list[PageLink] = []
+        page_error: Optional[dict[str, Any]] = None
+        page_read = False
         try:
-            page_fetch = await self.fetcher.fetch(self._request_url(url))
-            page = extract_page(
-                page_fetch.html,
-                page_fetch.final_url,
-                max_links=self.settings.max_links,
-                max_chars=self.settings.markdown_max_chars,
+            document = await self._load_page(
+                self._request_url(url), max_chars=self.settings.markdown_max_chars, judge=False
             )
-            for link in page.links:
-                entries.setdefault(
-                    link.url,
-                    {"url": link.url, "lastmod": None, "source": "links"},
-                )
-            # The base is listed once its page was read: a host that does not
-            # resolve, or a page that is not there, is no URL of the site.
-            entries.setdefault(base, {"url": base, "lastmod": None, "source": "base"})
+            page_read, page_links = True, document.page.links
+            try:
+                site = canonicalize_url(document.final_url)
+            except UnsafeUrlError:
+                site = requested
         except Exception as exc:  # noqa: BLE001 - sitemap results may still be useful
-            errors.append(self._safe_error(base, exc))
+            page_error = self._safe_error(requested, exc)
+
+        scopes = site_scopes(requested, site, include_subdomains)
+        entries, sitemaps, errors, landed = await self._read_sitemaps(
+            site, include_subdomains, scopes
+        )
+        if not page_read and landed is not None:
+            # No page answered, but robots.txt or the sitemap did, at the host the address leads to.
+            site = landed
+            scopes = site_scopes(requested, site, include_subdomains)
+        if page_error is not None:
+            errors.append(page_error)
+        for link in page_links:
+            entries.setdefault(link.url, {"url": link.url, "lastmod": None, "source": "links"})
+        if page_read:
+            # The site is listed once its page was read: a host that does not resolve, or a page
+            # that is not there, is no URL of the site.
+            entries.setdefault(site, {"url": site, "lastmod": None, "source": "base"})
 
         matched = [
             target
             for target in entries
-            if url_in_scope(target, base, include_subdomains)
+            if any(url_in_scope(target, scope, include_subdomains) for scope in scopes)
             and matches_url_filters(target, includes, excludes)
             and (not search or matches_search_filter(target, search))
         ]
         urls = matched[:max_urls]
 
         self.metrics.count("maps_total")
-        return {
-            "url": base,
+        answer: dict[str, Any] = {
+            "url": site,
+            "host": urlsplit(site).hostname or "",
             "urls": urls,
             "total": len(matched),
             "returned": len(urls),
@@ -2035,26 +2065,55 @@ class WebToolsService:
             "sitemaps": sitemaps,
             "errors": errors,
         }
+        if site != requested:
+            answer["redirected_from"] = requested
+        return answer
 
     async def _read_sitemaps(
-        self, base: str, include_subdomains: bool
-    ) -> tuple[dict[str, dict[str, Any]], list[str], list[dict[str, Any]]]:
+        self,
+        base: str,
+        include_subdomains: bool,
+        scopes: Optional[Sequence[str]] = None,
+    ) -> tuple[dict[str, dict[str, Any]], list[str], list[dict[str, Any]], Optional[str]]:
         """The URLs of a site's sitemaps, as ``web_map`` and a seeded crawl read them.
 
-        The ``Sitemap:`` lines of robots.txt and ``/sitemap.xml``, and the sitemaps an index
-        names (at most ``max_sitemaps``, in scope of *base*). Returns the entries by
-        canonical URL (``source: sitemap``), the sitemaps read, and the errors met: one
-        sitemap that cannot be read never fails the rest.
+        The ``Sitemap:`` lines of robots.txt and ``/sitemap.xml`` of *base*'s host, and the sitemaps an
+        index names (at most ``max_sitemaps``, in scope: of *base*, or of any of *scopes*, the addresses
+        that are the site's own when its address redirected). Returns the entries by canonical URL
+        (``source: sitemap``), the sitemaps read, the errors met (one sitemap that cannot be read never
+        fails the rest) and, when robots.txt or the sitemap was answered at another host than *base*'s
+        (an address that redirects, apex to ``www``), that host's root: the site's own, whose sitemaps
+        are then in scope as well.
         """
         origin = _origin(base)
+        in_scope = list(scopes) if scopes else [base]
         errors: list[dict[str, Any]] = []
         entries: dict[str, dict[str, Any]] = {}
         sitemaps: list[str] = []
+        landed: Optional[str] = None
+
+        def kept(address: str) -> bool:
+            return any(url_in_scope(address, scope, include_subdomains) for scope in in_scope)
+
+        def note_landing(final_url: str) -> None:
+            nonlocal landed, in_scope
+            if landed is not None:
+                return
+            try:
+                root = canonicalize_url(_origin(final_url))
+            except UnsafeUrlError:
+                return
+            if urlsplit(root).hostname != urlsplit(base).hostname:
+                landed = root
+                in_scope = list(
+                    dict.fromkeys([*in_scope, *site_scopes(base, root, include_subdomains)])
+                )
 
         candidates: list[str] = []
         robots_url = origin + "/robots.txt"
         try:
             robots = await self.fetcher.fetch(robots_url)
+            note_landing(robots.final_url)
             for line in robots.html.splitlines():
                 if line.strip().lower().startswith("sitemap:"):
                     candidate = line.split(":", 1)[1].strip()
@@ -2077,10 +2136,11 @@ class WebToolsService:
 
         while queue and len(sitemaps) < self.settings.max_sitemaps:
             sitemap_url = queue.pop(0)
-            if not url_in_scope(sitemap_url, base, include_subdomains):
+            if not kept(sitemap_url):
                 continue
             try:
                 fetched = await self.fetcher.fetch(sitemap_url)
+                note_landing(fetched.final_url)
                 kind, parsed = parse_sitemap_xml(fetched.html.encode("utf-8"))
             except Exception as exc:  # noqa: BLE001 - one sitemap must not fail the map
                 errors.append(self._safe_error(sitemap_url, exc))
@@ -2103,18 +2163,19 @@ class WebToolsService:
                         child = canonicalize_url(item["url"])
                     except UnsafeUrlError:
                         continue
-                    if child not in seen_sitemaps and url_in_scope(child, base, include_subdomains):
+                    if child not in seen_sitemaps and kept(child):
                         seen_sitemaps.add(child)
                         queue.append(child)
 
-        return entries, sitemaps, errors
+        return entries, sitemaps, errors, landed
 
     async def _sitemap_seeds(
         self, base: str, options: CrawlOptions
-    ) -> tuple[list[str], list[dict[str, Any]]]:
-        """The pages a site's sitemaps list, for a crawl that asked to be seeded from them."""
-        entries, _, errors = await self._read_sitemaps(base, options.include_subdomains)
-        return list(entries), errors
+    ) -> tuple[list[str], list[dict[str, Any]], Optional[str]]:
+        """The pages a site's sitemaps list, for a crawl that asked to be seeded from them, the errors
+        met, and the root of the host the site's address landed on when it is not *base*'s."""
+        entries, _, errors, landed = await self._read_sitemaps(base, options.include_subdomains)
+        return list(entries), errors, landed
 
     async def start_crawl(
         self,
@@ -2298,12 +2359,12 @@ class WebToolsService:
         if (parts.path or "/") == "/":
             self._remember(self._root_titles, host, title_key(title))
             return
-        if not suspect(
-            document.final_url,
-            document.page.canonical_declared,
-            title,
-            self._root_titles.get(host, ""),
-        ):
+        declared = (
+            document.server_canonical
+            if document.server_canonical is not None
+            else document.page.canonical_declared
+        )
+        if not suspect(document.final_url, declared, title, self._root_titles.get(host, "")):
             return
         fallback = await self._fallback_of(f"{parts.scheme}://{parts.netloc}")
         if fallback.kind != "page" or fallback.page is None:
@@ -2465,6 +2526,7 @@ class WebToolsService:
                 "extract_ms": round(extract_ms, 2),
                 "browser_ms": 0.0,
             },
+            server_canonical=page.canonical_declared,
         )
 
         rendered_in_browser = False
@@ -2696,6 +2758,7 @@ class WebToolsService:
             fetched_with="browser",
             warnings=list(document.warnings),
             timings=timings,
+            server_canonical=document.server_canonical,
         )
 
     def _page_payload(

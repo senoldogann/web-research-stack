@@ -245,6 +245,23 @@ def url_in_scope(url: str, base_url: str, include_subdomains: bool) -> bool:
     return include_subdomains and target_host.endswith("." + base_host)
 
 
+def site_scopes(requested: str, site: str, include_subdomains: bool) -> list[str]:
+    """The addresses that stand for one site, for ``url_in_scope``.
+
+    The address a caller asked for, the one it landed on after its redirects (``senoldogan.dev`` to
+    ``www.senoldogan.dev``: the host it lands on is the site's own), and, with subdomains, the host
+    without its ``www.`` (the site's other subdomains are its siblings, not the ``www`` host's).
+    """
+    scopes = [requested] if requested == site else [requested, site]
+    if include_subdomains:
+        for address in list(scopes):
+            parts = urlsplit(address)
+            host = parts.hostname or ""
+            if host.startswith("www."):
+                scopes.append(f"{parts.scheme}://{host[4:]}/")
+    return list(dict.fromkeys(scopes))
+
+
 def matches_url_filters(
     url: str,
     include_patterns: list[str],

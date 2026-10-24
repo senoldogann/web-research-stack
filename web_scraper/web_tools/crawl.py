@@ -19,13 +19,15 @@ from web_scraper.web_tools.urls import (
     canonicalize_url,
     content_hash,
     matches_url_filters,
+    site_scopes,
     upgrade_to_https,
     url_in_scope,
 )
 
 PageLoader = Callable[[str], Awaitable[dict[str, Any]]]
-# The URLs a site's sitemaps list (in scope of the crawl's options), and the errors met reading them.
-SeedLoader = Callable[["str", "CrawlOptions"], Awaitable[tuple[list[str], list[dict[str, Any]]]]]
+# The URLs a site's sitemaps list (in scope of the crawl's options), the errors met reading them and,
+# optionally, the root of the host the site's address landed on when it is not the one asked for.
+SeedLoader = Callable[["str", "CrawlOptions"], Awaitable[tuple[Any, ...]]]
 # A job is over in one of these: ``interrupted`` is what a restart (or a stop) of the server
 # made of a job that was queued or running; it is not resumed.
 _TERMINAL = {"completed", "cancelled", "failed", "interrupted"}
@@ -39,7 +41,13 @@ _COUNTERS = (
     "duplicates",
     "current_depth",
     "queue_size",
+    "not_visited",
 )
+# How many of the links a crawl left unvisited are listed (``not_visited`` counts them all).
+_NOT_VISITED_LISTED = 50
+# Why a crawl ended (``stopped_by``): it reached its page limit, or its depth limit, or had nothing left
+# to visit; or it was cancelled, the server stopped (interrupted), or it failed.
+STOPPED_BY = ("max_pages", "max_depth", "done", "cancelled", "interrupted", "failed")
 
 
 @dataclass
@@ -137,7 +145,15 @@ class CrawlJob:
     skipped: int = 0
     duplicates: int = 0
     current_depth: int = 0
+    # The links waiting to be visited while the crawl runs; 0 once it has ended, when what was left is
+    # ``not_visited`` (and, from the first of them, ``not_visited_urls``) and ``stopped_by`` says why.
     queue_size: int = 0
+    not_visited: int = 0
+    not_visited_urls: list[str] = field(default_factory=list)
+    stopped_by: Optional[str] = None
+    # The address the site's own pages are at when the one asked for redirected (apex to www): the host the
+    # start page landed on is the site's own, so its links are in scope too. Empty until known.
+    site_url: str = ""
     results: list[dict[str, Any]] = field(default_factory=list)
     errors: list[dict[str, Any]] = field(default_factory=list)
     duplicate_entries: list[dict[str, str]] = field(default_factory=list)
@@ -159,7 +175,12 @@ class CrawlJob:
             "url": self.url,
             "status": self.status,
             "options": self.options.to_dict(),
-            "progress": {name: getattr(self, name) for name in _COUNTERS},
+            # Beside the counters, in the same column: what says how the crawl ended.
+            "progress": {
+                **{name: getattr(self, name) for name in _COUNTERS},
+                "stopped_by": self.stopped_by,
+                "not_visited_urls": list(self.not_visited_urls),
+            },
             "errors": list(self.errors),
             "duplicates": list(self.duplicate_entries),
             "created_at": self.created_at,
@@ -171,12 +192,10 @@ class CrawlJob:
 
     @classmethod
     def from_record(cls, record: Mapping[str, Any], settings: WebToolsSettings) -> CrawlJob:
-        counters = {
-            name: _int((record.get("progress") or {}).get(name), 0)
-            for name in _COUNTERS
-            if name != "discovered"
-        }
-        counters["discovered"] = _int((record.get("progress") or {}).get("discovered"), 1)
+        progress = record.get("progress") or {}
+        counters = {name: _int(progress.get(name), 0) for name in _COUNTERS if name != "discovered"}
+        counters["discovered"] = _int(progress.get("discovered"), 1)
+        stopped_by = progress.get("stopped_by")
         results = list(record.get("results") or [])
         return cls(
             job_id=str(record["job_id"]),
@@ -192,6 +211,8 @@ class CrawlJob:
             errors=list(record.get("errors") or []),
             duplicate_entries=list(record.get("duplicates") or []),
             persisted=len(results),
+            stopped_by=str(stopped_by) if stopped_by else None,
+            not_visited_urls=[str(item) for item in progress.get("not_visited_urls") or []],
             **counters,
         )
 
@@ -209,6 +230,7 @@ class CrawlJob:
             "job_id": self.job_id,
             "url": self.url,
             "status": self.status,
+            "stopped_by": self.stopped_by,
             "created_at": self.created_at,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
@@ -222,6 +244,7 @@ class CrawlJob:
                 "skipped": self.skipped,
                 "duplicates": self.duplicates,
                 "queue_size": self.queue_size,
+                "not_visited": self.not_visited,
                 "current_depth": self.current_depth,
                 "percent": percent,
                 "total_results": len(self.results),
@@ -291,6 +314,9 @@ class CrawlManager:
         return {
             "job_id": job.job_id,
             "status": job.status,
+            "stopped_by": job.stopped_by,
+            "not_visited": job.not_visited,
+            "not_visited_urls": list(job.not_visited_urls),
             "total": len(job.results),
             "offset": offset,
             "limit": limit,
@@ -312,6 +338,8 @@ class CrawlManager:
             job.run_task.cancel()
         if job.status == "queued":
             job.status = "cancelled"
+            job.stopped_by = "cancelled"
+            job.not_visited, job.not_visited_urls = 1, [job.url]  # the start page was never read
             job.finished_at = _iso(time.time())
             job.updated_ts = time.time()
         elif job.status != "cancelled":
@@ -344,6 +372,8 @@ class CrawlManager:
 
     def _interrupt(self, job: CrawlJob) -> None:
         job.status = "interrupted"
+        job.stopped_by = "interrupted"
+        job.queue_size = 0
         job.finished_at = _iso(time.time())
         job.updated_ts = time.time()
         self._persist(job)
@@ -383,6 +413,8 @@ class CrawlManager:
     async def _run(self, job: CrawlJob) -> None:
         if job.cancel_event.is_set():
             job.status = "interrupted" if job.stopping else "cancelled"
+            job.stopped_by = job.status
+            job.not_visited, job.not_visited_urls = 1, [job.url]  # the start page was never read
             self._persist(job)
             return
 
@@ -394,6 +426,10 @@ class CrawlManager:
         # One entry per host and path: http and https are the same page.
         seen_urls = {_identity(job.url)}
         seen_hashes: dict[str, str] = {}
+        # The links of the pages at the depth limit that the limit kept the crawl from following.
+        beyond: list[str] = []
+        beyond_count = 0
+        stopped_by = "failed"
 
         try:
             queue.extend(await self._seeds(job, seen_urls))
@@ -408,7 +444,7 @@ class CrawlManager:
                     candidate, depth = queue.popleft()
                     if depth > job.options.max_depth:
                         continue
-                    if depth > 0 and not self._in_scope(candidate, job.url, job.options):
+                    if depth > 0 and not self._in_scope(candidate, job):
                         job.skipped += 1
                         continue
                     if (
@@ -435,6 +471,9 @@ class CrawlManager:
                 outcomes = await asyncio.gather(*tasks, return_exceptions=True)
                 job.tasks.difference_update(tasks)
 
+                if job.site_url:
+                    # The start page landed elsewhere (apex to www): that page is read, not a link to follow.
+                    seen_urls.add(_identity(job.site_url))
                 for outcome in outcomes:
                     if isinstance(outcome, asyncio.CancelledError):
                         continue
@@ -445,14 +484,16 @@ class CrawlManager:
                     if not outcome:
                         continue
                     for link, depth in outcome:
-                        if depth > job.options.max_depth:
-                            continue
                         key = _identity(link)
-                        if key in seen_urls:
-                            continue
-                        if not self._in_scope(link, job.url, job.options):
+                        if key in seen_urls or not self._in_scope(link, job):
                             continue
                         seen_urls.add(key)
+                        if depth > job.options.max_depth:
+                            # A link the depth limit kept the crawl from following: left unvisited.
+                            beyond_count += 1
+                            if len(beyond) < _NOT_VISITED_LISTED:
+                                beyond.append(link)
+                            continue
                         queue.append((self._target(job, link), depth))
                         job.discovered += 1
 
@@ -462,15 +503,27 @@ class CrawlManager:
 
             if job.cancel_event.is_set():
                 job.status = "interrupted" if job.stopping else "cancelled"
+                stopped_by = job.status
             else:
                 job.status = "completed"
+                # What stopped it: the page limit (links were waiting), else the depth limit (links
+                # were found that it would not follow), else nothing was left.
+                stopped_by = "max_pages" if queue else "max_depth" if beyond_count else "done"
         except asyncio.CancelledError:
             job.status = "interrupted" if job.stopping else "cancelled"
+            stopped_by = job.status
         except Exception as exc:  # noqa: BLE001 - job must not crash the process
             job.status = "failed"
+            stopped_by = "failed"
             self._record_error(job, job.url, "internal_error", type(exc).__name__)
         finally:
-            job.queue_size = len(queue)
+            # The frontier is over: what is left in it, and what the depth limit kept out, is not
+            # "queued" any more but not visited, with the reason the crawl stopped.
+            job.stopped_by = stopped_by
+            job.not_visited = len(queue) + beyond_count
+            job.not_visited_urls = [url for url, _ in list(queue)[:_NOT_VISITED_LISTED]]
+            job.not_visited_urls += beyond[: _NOT_VISITED_LISTED - len(job.not_visited_urls)]
+            job.queue_size = 0
             job.finished_at = _iso(time.time())
             job.updated_ts = time.time()
             self._persist(job)
@@ -486,7 +539,10 @@ class CrawlManager:
         if not job.options.use_sitemap or self._seeder is None:
             return []
         try:
-            urls, errors = await self._seeder(job.url, job.options)
+            found = await self._seeder(job.url, job.options)
+            urls, errors = found[0], found[1]
+            if len(found) > 2 and found[2]:
+                job.site_url = str(found[2])  # the host the address landed on is the site's own
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - the links still lead the crawl
@@ -507,7 +563,7 @@ class CrawlManager:
             if len(seeds) >= room:
                 break
             key = _identity(url)
-            if key in seen_urls or not self._in_scope(url, job.url, job.options):
+            if key in seen_urls or not self._in_scope(url, job):
                 continue
             if (
                 job.options.respect_robots
@@ -547,6 +603,8 @@ class CrawlManager:
         if job.cancel_event.is_set():
             return None
 
+        if depth == 0 and url == job.url:
+            self._note_landing(job, str(payload.get("url") or ""))
         digest = str(payload.get("content_hash") or content_hash(str(payload.get("markdown", ""))))
         if digest in seen_hashes:
             job.duplicates += 1
@@ -572,8 +630,6 @@ class CrawlManager:
             )  # a shell says so here as it does in a scrape
         job.results.append(result)
         job.updated_ts = time.time()
-        if depth >= job.options.max_depth:
-            return []
         return [(link, depth + 1) for link in payload.get("links", [])]
 
     async def _load(self, job: CrawlJob, url: str) -> dict[str, Any]:
@@ -594,10 +650,23 @@ class CrawlManager:
         job.upgraded.add(target)
         return target
 
-    def _in_scope(self, url: str, base: str, options: CrawlOptions) -> bool:
-        if not url_in_scope(url, base, options.include_subdomains):
+    def _in_scope(self, url: str, job: CrawlJob) -> bool:
+        """Whether a link is on the site the job crawls: its start address, or the host that address landed
+        on (apex to ``www``), and its filters let it through."""
+        options = job.options
+        scopes = site_scopes(job.url, job.site_url or job.url, options.include_subdomains)
+        if not any(url_in_scope(url, scope, options.include_subdomains) for scope in scopes):
             return False
         return matches_url_filters(url, options.include_patterns, options.exclude_patterns)
+
+    def _note_landing(self, job: CrawlJob, landed: str) -> None:
+        """Take the host the start page landed on as the site's own when it is not the start address's."""
+        try:
+            address = canonicalize_url(landed)
+        except UnsafeUrlError:
+            return
+        if urlsplit(address).hostname != urlsplit(job.url).hostname:
+            job.site_url = address
 
     def _record_error(self, job: CrawlJob, url: str, code: str, message: str) -> None:
         if len(job.errors) >= self._settings.max_crawl_errors:

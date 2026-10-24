@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import hashlib
-import ipaddress
 import posixpath
 import re
 from fnmatch import fnmatchcase
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+from web_scraper.network_safety import host_problem
 
 _TRACKING_PARAMS = {
     "fbclid",
@@ -41,17 +42,12 @@ def _normalise_host(hostname: str) -> str:
     return ascii_host.rstrip(".").lower()
 
 
-def _reject_non_public_literal(hostname: str) -> None:
-    if hostname == "localhost" or hostname.endswith(".localhost"):
-        raise UnsafeUrlError("Blocked unsafe target: localhost is not allowed")
-    try:
-        address = ipaddress.ip_address(hostname)
-    except ValueError:
-        return
-    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
-        address = address.ipv4_mapped
-    if not address.is_global:
-        raise UnsafeUrlError("Blocked unsafe target: non-public IP addresses are not allowed")
+def _reject_unsafe_host(hostname: str) -> None:
+    """Refuse a host that no request may use, whatever it would resolve to: ``localhost``, an address that is not
+    public (IPv6 forms that carry a private IPv4 address included) and a numeric spelling of one."""
+    problem = host_problem(hostname)
+    if problem is not None:
+        raise UnsafeUrlError(problem)
 
 
 def _is_tracking_param(name: str) -> bool:
@@ -81,7 +77,7 @@ def _validated_url_parts(url: str) -> tuple[Any, str, str]:
         raise UnsafeUrlError("Blocked unsafe target: hostname is required")
 
     hostname = _normalise_host(parsed.hostname)
-    _reject_non_public_literal(hostname)
+    _reject_unsafe_host(hostname)
 
     try:
         port = parsed.port

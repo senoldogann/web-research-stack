@@ -282,6 +282,17 @@ class WebSearchRequest(BaseModel):
         default=False,
         description="With read: use the Internet Archive for walled pages",
     )
+    resolve_dates: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Read the first 64 KB of the top results' pages for their dates (default: on for "
+            "news and date-range searches)"
+        ),
+    )
+    strict_dates: bool = Field(
+        default=False,
+        description="Drop results with no date or a low date_confidence; warnings says how many",
+    )
 
     @field_validator("query")
     @classmethod
@@ -357,7 +368,18 @@ class WebSearchResult(BaseModel):
         default=None,
         description="YYYY-MM-DD or YYYY-MM read from the address, the snippet or the title",
     )
-    date_source: Optional[str] = Field(default=None, description="url, snippet, or title")
+    date_source: Optional[str] = Field(
+        default=None, description="url, snippet, title, provider, or the page's own signal"
+    )
+    date_confidence: float = Field(
+        default=0.0,
+        description="0 to 1: agreeing signals raise it, an address-only or snippet-only date is low",
+    )
+    date_conflicts: List[Dict[str, str]] = Field(
+        default_factory=list,
+        description="Signals more than a day from date, each with source and value",
+    )
+    date_modified: Optional[str] = None
     age_days: Optional[int] = None
     freshness: str = Field(
         default="undated",
@@ -414,6 +436,10 @@ class WebSearchResponse(BaseModel):
     # On a cache hit: the timings of the call that filled the cache, and when.
     cached_timings: Optional[Dict[str, float]] = None
     cached_at: Optional[str] = None
+    dates: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="With resolve_dates: pages asked, read, resolved, failed, cut, and the budget",
+    )
     timings: Dict[str, float]
 
 
@@ -540,6 +566,25 @@ class WebScrapeResponse(BaseModel):
         description="True when the page's meta tags or JSON-LD were cut to 10,000 characters",
     )
     content_hash: str
+    date: Optional[str] = Field(
+        default=None,
+        description="The page's published date, YYYY-MM-DD, from all its date signals",
+    )
+    date_source: Optional[str] = Field(
+        default=None,
+        description="Which signal gave date (json_ld:datePublished, meta:..., time, ...)",
+    )
+    date_confidence: float = Field(
+        default=0.0,
+        description="0 to 1: agreeing signals raise it, a lone address or printed date is low",
+    )
+    date_conflicts: List[Dict[str, str]] = Field(
+        default_factory=list,
+        description="Signals more than a day from date, each with source and value",
+    )
+    date_modified: Optional[str] = Field(
+        default=None, description="When the page says it was updated"
+    )
     fetched_with: str
     cache_hit: bool = False
     # On a cache hit: the timings of the call that filled the cache, and when.
@@ -708,6 +753,25 @@ class WebExtractResponse(BaseModel):
     data: Dict[str, Any]
     provenance: Dict[str, Any]
     errors: List[Dict[str, Any]]
+    date: Optional[str] = Field(
+        default=None,
+        description="The page's published date, YYYY-MM-DD, from all its date signals",
+    )
+    date_source: Optional[str] = Field(
+        default=None,
+        description="Which signal gave date (json_ld:datePublished, meta:..., time, ...)",
+    )
+    date_confidence: float = Field(
+        default=0.0,
+        description="0 to 1: agreeing signals raise it, a lone address or printed date is low",
+    )
+    date_conflicts: List[Dict[str, str]] = Field(
+        default_factory=list,
+        description="Signals more than a day from date, each with source and value",
+    )
+    date_modified: Optional[str] = Field(
+        default=None, description="When the page says it was updated"
+    )
     fetched_with: str
     timings: Dict[str, float]
     cache_hit: bool = Field(

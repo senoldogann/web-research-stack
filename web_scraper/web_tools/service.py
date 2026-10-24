@@ -37,6 +37,7 @@ from web_scraper.web_tools.content import (
 )
 from web_scraper.web_tools.crawl import CrawlManager, CrawlOptions, canonical_target
 from web_scraper.web_tools.crawl_store import CrawlStore
+from web_scraper.web_tools.dates import LOW_CONFIDENCE, DateResolution, infer_publication_date
 from web_scraper.web_tools.discovery import (
     DEPTHS,
     MIN_RESULT_RELEVANCE,
@@ -45,13 +46,14 @@ from web_scraper.web_tools.discovery import (
     annotate_candidates,
     build_facets,
     build_search_angles,
-    infer_publication_date,
     rank_candidates,
     relevant_results,
+    wants_news,
     within_date_range,
 )
 from web_scraper.web_tools.errors import WebToolError
 from web_scraper.web_tools.fetcher import FetchError, FetchResult, HostGate, SafeFetcher
+from web_scraper.web_tools.headdates import read_result_dates
 from web_scraper.web_tools.metrics import LatencyTracker, WebToolsMetrics
 from web_scraper.web_tools.pagecache import CachedDocument, PageCache
 from web_scraper.web_tools.pdf import PDF_CONTENT_TYPE, PdfError, extract_pdf
@@ -255,6 +257,8 @@ class WebToolsService:
         read: int = 0,
         read_chars: Optional[int] = None,
         archive: bool = False,
+        resolve_dates: Optional[bool] = None,
+        strict_dates: bool = False,
     ) -> dict[str, Any]:
         cleaned = (query or "").strip()
         if not cleaned:
@@ -297,10 +301,14 @@ class WebToolsService:
                 detail=f"{len(operators)} characters of operators",
             )
 
+        reading_dates, date_warnings = self._dates_plan(
+            cleaned, resolve_dates, strict_dates, options
+        )
         cache_key = (
             f"search:{provider_name}:{resolved_depth}:{resolved_limit}:"
             f"{self.settings.search_region}:{self.settings.search_language}:"
             f"{_parameters_key(options, site_list, excluded_list)}:"
+            f"dates{int(reading_dates)}{int(strict_dates)}:"
             f"{cleaned.casefold()}"
         )
         started = time.perf_counter()
@@ -394,6 +402,7 @@ class WebToolsService:
                             url=target,
                             snippet=item.snippet,
                             source=item.source,
+                            published=item.published,
                         ),
                         angle_ranks={angle.name: rank},
                     )
@@ -406,6 +415,7 @@ class WebToolsService:
                             url=target,
                             snippet=item.snippet,
                             source=item.source or existing.result.source,
+                            published=item.published or existing.result.published,
                         )
 
         if not candidates and first_error is not None:
@@ -426,21 +436,91 @@ class WebToolsService:
             warnings.append("provider_fallback")
 
         search_ms = (time.perf_counter() - started) * 1000
+
+        def rank_pool(
+            size: int, found: Optional[Mapping[str, DateResolution]] = None
+        ) -> list[dict[str, Any]]:
+            if resolved_depth == "fast":
+                # Provider order, minus results that hold no distinctive word of the query. The
+                # whole pool is scored, so BM25 sees the same corpus as in discover and deep;
+                # annotate_candidates keeps the provider's order.
+                annotated = annotate_candidates(cleaned, candidates.values(), dates=found)
+                return relevant_results(cleaned, annotated)[:size]
+            return rank_candidates(cleaned, candidates.values(), size, dates=found)
+
+        # A strict search drops the results that cannot be dated, so it ranks a longer list and
+        # dates more of it, to have the limit left after the drop.
+        pool = (
+            min(resolved_limit * 2, self.settings.search_resolve_dates_max)
+            if strict_dates
+            else resolved_limit
+        )
+        pool = max(pool, resolved_limit)
         ranking_started = time.perf_counter()
-        if resolved_depth == "fast":
-            # Provider order, minus results that hold no distinctive word of the query. The
-            # whole pool is scored, so BM25 sees the same corpus as in discover and deep;
-            # annotate_candidates keeps the provider's order.
-            annotated = annotate_candidates(cleaned, candidates.values())
-            results = relevant_results(cleaned, annotated)[:resolved_limit]
+        results = rank_pool(pool)
+        ranking_ms = (time.perf_counter() - ranking_started) * 1000
+        dates_report: Optional[dict[str, Any]] = None
+        dates_ms = 0.0
+        if reading_dates and results:
+            dates_started = time.perf_counter()
+            reading_top = max(
+                self.settings.search_resolve_dates_top,
+                min(pool, self.settings.search_resolve_dates_max) if strict_dates else 0,
+            )
+            found, report = await read_result_dates(
+                results,
+                fetcher=self.fetcher,
+                cached_html=self._cached_html,
+                top=reading_top,
+                budget_seconds=self.settings.search_resolve_dates_budget_ms / 1000,
+                max_bytes=self.settings.search_resolve_dates_bytes,
+                concurrency=self.settings.search_resolve_dates_concurrency,
+                snippets={
+                    target: (
+                        candidate.result.title,
+                        candidate.result.snippet,
+                        candidate.result.published,
+                    )
+                    for target, candidate in candidates.items()
+                },
+            )
+            if found:
+                # The dates move freshness, so the order may move: ranked again with them.
+                results = rank_pool(pool, found)
+                if options.date_from or options.date_to:
+                    results = [
+                        item
+                        for item in results
+                        if within_date_range(item["date"], options.date_from, options.date_to)
+                    ]
+            if report.cut:
+                date_warnings.append(f"resolve_dates_cut:{report.cut}")
+            dates_report = report.to_dict()
+            dates_ms = (time.perf_counter() - dates_started) * 1000
+        dropped = 0
+        if strict_dates:
+            kept: list[dict[str, Any]] = []
+            for item in results:
+                if item["date"] and item["date_confidence"] >= LOW_CONFIDENCE:
+                    kept.append(item)
+                    if len(kept) == resolved_limit:
+                        break
+                else:
+                    dropped += 1
+            if dropped and results:
+                date_warnings.append(f"strict_dates_dropped:{dropped}")
+            results = kept
         else:
-            results = rank_candidates(cleaned, candidates.values(), resolved_limit)
-        if not results:
+            results = results[:resolved_limit]
+        if dates_report is not None:
+            dates_report["strict"] = strict_dates
+            dates_report["dropped"] = dropped
+        if not results and not dropped:
             # The provider answered, but nothing it returned is about the query.
             warnings.append("no_relevant_results")
-        elif all(item["relevance"] < MIN_RESULT_RELEVANCE for item in results):
+        elif results and all(item["relevance"] < MIN_RESULT_RELEVANCE for item in results):
             warnings.append("low_relevance_results")
-        ranking_ms = (time.perf_counter() - ranking_started) * 1000
+        warnings.extend(date_warnings)
         facets = build_facets(
             results,
             total_candidates=len(candidates),
@@ -455,6 +535,8 @@ class WebToolsService:
             depth=resolved_depth,
         )
         self.metrics.observe("ranking", ranking_ms, operation="search")
+        if dates_report is not None:
+            self.metrics.observe("search_dates", dates_ms)
         self.metrics.observe("total", total_ms, operation="search")
         self.metrics.count(
             "searches_total",
@@ -466,6 +548,8 @@ class WebToolsService:
             "ranking_ms": round(ranking_ms, 2),
             "total_ms": round(total_ms, 2),
         }
+        if dates_report is not None:
+            timings["dates_ms"] = round(dates_ms, 2)
         for name, value in angle_timings.items():
             timings[f"angle_{name}_ms"] = value
         payload = {
@@ -482,6 +566,8 @@ class WebToolsService:
             "timings": timings,
             "cache_hit": False,
         }
+        if dates_report is not None:
+            payload["dates"] = dates_report
         # The search is cached as it is, without the reading: what is read is the pages' own
         # cache entries, and a search that reads no page never gets one's content.
         await self.cache.set(
@@ -491,6 +577,38 @@ class WebToolsService:
         )
         await self._read_results(payload, reading, archive)
         return payload
+
+    def _dates_plan(
+        self,
+        query: str,
+        resolve_dates: Optional[bool],
+        strict_dates: bool,
+        options: SearchOptions,
+    ) -> tuple[bool, list[str]]:
+        """Whether this search reads the head of its top results' pages for their dates.
+
+        Unless a call says, it does when the query asks for news or the call gives a date range
+        (and when ``strict_dates`` needs dates to drop by); ``search_resolve_dates`` off turns it
+        off for every call, and a call that asked is told so.
+        """
+        mode = self.settings.search_resolve_dates
+        if mode == "off":
+            return False, (["resolve_dates_disabled"] if resolve_dates else [])
+        if resolve_dates is not None:
+            return resolve_dates, []
+        wanted = (
+            mode == "on"
+            or strict_dates
+            or bool(options.date_from or options.date_to)
+            or wants_news(query)
+        )
+        return wanted, []
+
+    def _cached_html(self, url: str) -> Optional[str]:
+        """The HTML of a page the page cache holds, if it does: reading it costs no request."""
+        key = self._page_key(url)
+        stored = self._pages.get(key) if key is not None else None
+        return stored.html if stored is not None and stored.html else None
 
     @staticmethod
     def _read_plan(read: int, read_chars: Optional[int]) -> tuple[int, int]:
@@ -1100,6 +1218,7 @@ class WebToolsService:
             document.final_url,
             validated,
             max_items=self.settings.extract_max_items,
+            dates=document.page.dates,
         )
         extract_ms = (time.perf_counter() - started) * 1000
         self.metrics.observe("extraction", extract_ms, operation="structured")
@@ -1126,6 +1245,7 @@ class WebToolsService:
             "warnings": list(document.warnings),
             "truncated": False,
         }
+        payload.update(_date_fields(document.page.dates))
         if document.cache_hit:
             payload["cached_timings"] = dict(document.cached_timings)
         cut = fit_extract_payload(payload, budget)
@@ -1757,6 +1877,7 @@ class WebToolsService:
             "warnings": list(document.warnings),
             "timings": dict(document.timings),
         }
+        payload.update(_date_fields(document.page.dates))
         if document.pages is not None:
             payload["pages"] = document.pages
         return payload
@@ -1978,6 +2099,11 @@ def _storable(document: LoadedDocument) -> bool:
             for warning in document.warnings
         )
     )
+
+
+def _date_fields(dates: Optional[DateResolution]) -> dict[str, Any]:
+    """The date fields of a page's answer: no date is said, with a confidence of 0, never left out."""
+    return (dates or DateResolution()).fields()
 
 
 def _site_operators(sites: list[str], excluded: list[str]) -> str:

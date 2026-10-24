@@ -24,14 +24,20 @@ class SearchResult:
     url: str
     snippet: str = ""
     source: str = ""
+    # A date the provider gave as a field of its own (Brave's page_age, Serper's date), as it
+    # wrote it; empty for the providers that give none.
+    published: str = ""
 
     def to_dict(self) -> dict[str, str]:
-        return {
+        payload = {
             "title": self.title,
             "url": self.url,
             "snippet": self.snippet,
             "source": self.source,
         }
+        if self.published:
+            payload["published"] = self.published
+        return payload
 
 
 @dataclass(frozen=True)
@@ -299,6 +305,7 @@ def _from_dicts(raw: list[dict]) -> list[SearchResult]:
                 url=url,
                 snippet=str(item.get("snippet") or ""),
                 source=str(item.get("source") or ""),
+                published=str(item.get("published") or ""),
             )
         )
     return results

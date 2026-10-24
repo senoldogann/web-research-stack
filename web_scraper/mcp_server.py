@@ -31,8 +31,16 @@ _PROTOCOL_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
 _SERVER_NAME = "web-research"
 _TOOL_CONCURRENCY = 8
 # The search parameters a request may add; each is passed on only when it is set.
-_SEARCH_PARAMETERS = {"region", "language", "sites", "exclude_sites", "date_from", "date_to"}
-_SEARCH_READ_PARAMETERS = {"read", "read_chars", "archive"}
+_SEARCH_PARAMETERS = {
+    "region",
+    "language",
+    "sites",
+    "exclude_sites",
+    "date_from",
+    "date_to",
+    "resolve_dates",
+}
+_SEARCH_READ_PARAMETERS = {"read", "read_chars", "archive", "strict_dates"}
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _GIT_TIMEOUT_SECONDS = 1
 
@@ -191,26 +199,24 @@ def _tool_specs() -> list[tuple[dict[str, Any], Handler]]:
             {
                 "name": "web_search",
                 "description": (
-                    "Discover result URLs with a replaceable search provider. depth=discover "
-                    "(default) runs base, current-year, and historical queries; depth=deep adds "
-                    "an official or primary-source angle; depth=fast sends one query. Ranking "
-                    "uses field-weighted BM25, weighted cross-angle consensus, source authority, "
-                    "inferred recency, and near-duplicate/domain diversity. Explicit freshness "
-                    "queries get provider date filters; responses are cached per query. region, "
-                    "language, sites, exclude_sites, date_from and date_to narrow a search. read "
-                    "N (0 to 5) also reads the top N results: content or content_error on each; "
-                    "it costs seconds. A refused or timed-out call goes on to DuckDuckGo lite, "
-                    "Yahoo, then Google; provider names who answered. With nothing relevant, results is "
-                    "empty and warnings holds no_relevant_results; low_relevance_results says "
-                    "every result holds under half of the query's words. Results carry "
-                    "source_type (official, academic, news, press_release, social, reference, "
-                    "code, community, other), year, recency (by year: current is this year or "
-                    "last), date (day or month, from the address, snippet or title, with "
-                    "date_source and age_days), freshness (this_week ... undated, by that date "
-                    "first), kind (article, listing, front, page; a news query ranks articles "
-                    "before listings and front pages), angles, relevance, bm25, score, and "
-                    "cache_hit, with coverage facets. Search discovers URLs only; use "
-                    "web_scrape to read a result."
+                    "Discover result URLs. depth: fast (one query), discover (default: base, "
+                    "current-year and historical angles), deep (adds an official or "
+                    "primary-source angle). Ranked by BM25, cross-angle consensus, source "
+                    "authority and freshness; cached per query. region, language, sites, "
+                    "exclude_sites, date_from and date_to narrow it. read N (0 to 5) also reads "
+                    "the top N pages: content or content_error on each; it costs seconds. A "
+                    "refused or timed-out provider falls to DuckDuckGo lite, Yahoo, then Google; "
+                    "provider names who answered. No relevant result: results is empty and "
+                    "warnings holds no_relevant_results (low_relevance_results: every result "
+                    "holds under half of the query's words). Each result has source_type "
+                    "(official, academic, news, press_release, social, reference, code, "
+                    "community, other), year, recency, kind (article, listing, front, page), "
+                    "freshness, date (day or month) with date_source, date_confidence (0 to 1) "
+                    "and date_conflicts, relevance, bm25, score, angles. resolve_dates reads the "
+                    "first 64 KB of the top pages for their dates (default on for news and "
+                    "date-range queries); strict_dates drops results with no date or a low "
+                    "date_confidence, and warnings says how many. Search discovers URLs only; "
+                    "web_scrape reads one."
                 ),
                 "inputSchema": WebSearchRequest.model_json_schema(),
                 "annotations": _annotations(

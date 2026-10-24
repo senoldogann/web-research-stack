@@ -223,6 +223,24 @@ class SafeFetcher:
 
         raise FetchError("network_error", "Fetch exhausted retries", url=url)
 
+    async def fetch_head(self, url: str, *, max_bytes: int = 65_536) -> FetchResult:
+        """Fetch only the first *max_bytes* of a page, once, and close the connection.
+
+        Enough for a page's ``<head>``, where its meta tags and structured data are, and for the
+        byline near its headline; the rest of a long page is never downloaded. Every hop is
+        validated as in :meth:`fetch`, and a refusal or an error status raises as it does there;
+        what differs is that a long body is not an error (``too_large``): it is cut, and a page
+        cut is content, never judged a challenge. There is no retry: the caller has a budget.
+        """
+        started = time.monotonic()
+        return await self._fetch_once(
+            original_url=url,
+            start_url=self._validate(url),
+            attempts=1,
+            started=started,
+            head_bytes=max(int(max_bytes), 1),
+        )
+
     async def _fetch_once(
         self,
         *,
@@ -230,6 +248,7 @@ class SafeFetcher:
         start_url: str,
         attempts: int,
         started: float,
+        head_bytes: Optional[int] = None,
     ) -> FetchResult:
         current = start_url
         redirects = 0
@@ -269,7 +288,11 @@ class SafeFetcher:
                             current = self._validate(urljoin(current, location))
                             continue
 
-                        body = await self._read_body(response, content_type)
+                        cut = False
+                        if head_bytes is None:
+                            body = await self._read_body(response, content_type)
+                        else:
+                            body, cut = await self._read_head(response, head_bytes)
                         network_ms = (time.monotonic() - request_started) * 1000
 
                         if status >= 400:
@@ -326,8 +349,12 @@ class SafeFetcher:
                             )
 
                         html = self._decode(body, response)
-                        interstitial = detect_interstitial(
-                            html, str(response.url), status, content_type=content_type
+                        interstitial = (
+                            None
+                            if cut
+                            else detect_interstitial(
+                                html, str(response.url), status, content_type=content_type
+                            )
                         )
                         if interstitial:
                             raise FetchError(
@@ -393,6 +420,19 @@ class SafeFetcher:
                 )
             chunks.append(chunk)
         return b"".join(chunks)
+
+    @staticmethod
+    async def _read_head(response: httpx.Response, head_bytes: int) -> tuple[bytes, bool]:
+        """The first *head_bytes* of a body, and whether the body went on past them."""
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in response.aiter_bytes():
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > head_bytes:
+                break
+        body = b"".join(chunks)
+        return body[:head_bytes], len(body) > head_bytes
 
     @staticmethod
     def _is_textual(content_type: str) -> bool:

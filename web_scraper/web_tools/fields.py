@@ -331,7 +331,8 @@ def _lookup(item: dict[str, Any], path: str) -> Any:
     return value.get(rest) if isinstance(value, dict) else None
 
 
-def _is_article(item: dict[str, Any]) -> bool:
+def is_article_item(item: dict[str, Any]) -> bool:
+    """Whether a JSON-LD item is an article, a posting, a report or a page: what a page is about."""
     kinds = item.get("@type")
     names = kinds if isinstance(kinds, list) else [kinds]
     return any(
@@ -343,8 +344,8 @@ def _is_article(item: dict[str, Any]) -> bool:
 def _ordered(json_ld: list[dict[str, Any]], field: str) -> list[dict[str, Any]]:
     if field not in _ARTICLE_FIELDS:
         return json_ld
-    return [item for item in json_ld if _is_article(item)] + [
-        item for item in json_ld if not _is_article(item)
+    return [item for item in json_ld if is_article_item(item)] + [
+        item for item in json_ld if not is_article_item(item)
     ]
 
 

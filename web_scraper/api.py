@@ -1287,11 +1287,13 @@ def create_app(settings: Optional[Config] = None) -> FastAPI:
                         "exclude_sites",
                         "date_from",
                         "date_to",
+                        "resolve_dates",
                     },
                     exclude_none=True,
                 ),
                 **payload.model_dump(
-                    include={"read", "read_chars", "archive"}, exclude_defaults=True
+                    include={"read", "read_chars", "archive", "strict_dates"},
+                    exclude_defaults=True,
                 ),
             )
         return WebSearchResponse(**result)

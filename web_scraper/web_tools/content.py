@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any, Optional
 from urllib.parse import urljoin, urlsplit
 
 from bs4 import BeautifulSoup, NavigableString, Tag
 from defusedxml import ElementTree
 
+from web_scraper.web_tools.dates import DISAGREEMENT_DAYS, DateResolution, resolve_page
 from web_scraper.web_tools.fields import (
     DATE_FIELDS,
     canonical_field,
@@ -117,6 +119,9 @@ class ParsedPage:
     markdown: str
     links: list[PageLink] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    # What every date signal of the page comes to (see dates.py); None for a document that is not
+    # a web page (a PDF).
+    dates: Optional[DateResolution] = None
 
 
 @dataclass
@@ -423,16 +428,28 @@ def extract_page(
     max_links: int = 200,
     max_chars: int = 50_000,
 ) -> ParsedPage:
-    """Extract a page's readable Markdown plus metadata and outgoing links."""
+    """Extract a page's readable Markdown plus metadata, outgoing links and publication date."""
     soup = _soup(html)
+    metadata = _extract_metadata(soup, base_url)
     return ParsedPage(
         title=_extract_title(soup),
         description=_extract_description(soup),
         canonical_url=_extract_canonical(soup, base_url),
         markdown=html_to_markdown(html, base_url, max_chars=max_chars),
         links=_extract_links(soup, base_url, max_links),
-        metadata=_extract_metadata(soup, base_url),
+        metadata=metadata,
+        dates=resolve_page(soup, metadata.get("json_ld") or [], base_url),
     )
+
+
+def resolve_html_dates(html: str, base_url: str, *, today: Optional[date] = None) -> DateResolution:
+    """The publication date of a page given as HTML, possibly only its first bytes.
+
+    A page read from its head alone (the first 64 KB) has its meta tags and structured data, which
+    is where most of the dates are; a script cut in half is skipped.
+    """
+    soup = _soup(html)
+    return resolve_page(soup, _iter_json_ld(soup), base_url, today=today)
 
 
 def needs_browser_render(html: str, markdown: str, min_chars: int = 200) -> bool:
@@ -626,17 +643,81 @@ def _record_page(entry: dict[str, Any], total: int, returned: int, offset: int) 
         entry["next_offset"] = offset + returned
 
 
+def _same_day(found: str, settled: Optional[str]) -> bool:
+    """Whether a date a field found is within a day of the one the signals settled on (a month: in it)."""
+    if not settled:
+        return True
+    try:
+        day = date.fromisoformat(found[:10])
+        if len(settled) == 7:
+            return (day.year, day.month) == (int(settled[:4]), int(settled[5:7]))
+        return abs((day - date.fromisoformat(settled[:10])).days) <= DISAGREEMENT_DAYS
+    except ValueError:
+        return True
+
+
+def _signal_method(source: str) -> str:
+    return (
+        "json_ld"
+        if source.startswith("json_ld")
+        else "meta"
+        if source.startswith("meta")
+        else "html"
+    )
+
+
+def _settle_date(
+    kind: str,
+    value: Any,
+    entry: dict[str, Any],
+    dates: DateResolution,
+    base_url: str,
+) -> tuple[Any, dict[str, Any]]:
+    """A published or modified date found by its name, held to the page's date signals.
+
+    The value stands when it is within a day of what the signals settled on. When they weigh
+    against it (JSON-LD says September, two other signals say October), their winner is the
+    value, with its own source: the answer's ``date`` and ``published_at`` are never two different
+    days. A published date's provenance gains ``date_confidence`` and ``date_conflicts``.
+    """
+    if kind == "published":
+        settled, moment, source = dates.date, dates.moment, dates.date_source
+    else:
+        settled, moment, source = (
+            dates.date_modified,
+            dates.modified_moment,
+            dates.date_modified_source,
+        )
+    if not settled or not isinstance(value, str):
+        return value, entry
+    if not _same_day(value, settled) and moment and source:
+        value = moment
+        entry = {
+            "method": _signal_method(source),
+            "selector": source,
+            "evidence": moment,
+            "source_url": base_url,
+        }
+    if kind == "published":
+        entry["date_confidence"] = dates.date_confidence
+        entry["date_conflicts"] = [dict(item) for item in dates.date_conflicts]
+    return value, entry
+
+
 def extract_structured(
     html: str,
     base_url: str,
     schema: dict[str, Any],
     *,
     max_items: int = 100,
+    dates: Optional[DateResolution] = None,
 ) -> StructuredResult:
     """Extract schema fields with selector or structured-data provenance.
 
     An ``all`` field returns at most its own ``max_items`` values (*max_items*
-    when it names none); its provenance counts every match in ``total``.
+    when it names none); its provenance counts every match in ``total``. With *dates* (what
+    the page's date signals come to), a published or modified date found by its name is held to
+    them: see ``_settle_date``.
     """
     soup = _soup(html)
     json_ld = _iter_json_ld(soup)
@@ -734,13 +815,17 @@ def extract_structured(
             else:
                 value = _coerce(named.values[0], kind)
             if value not in (None, "") and (value != [] or (wants_all and every)):
-                data[field_name] = value
-                provenance[field_name] = {
+                entry: dict[str, Any] = {
                     "method": named.method,
                     "selector": named.selector,
                     "evidence": named.evidence[:500],
                     "source_url": base_url,
                 }
+                known = canonical_field(field_name)
+                if dates is not None and known in DATE_FIELDS and not wants_all:
+                    value, entry = _settle_date(known, value, entry, dates, base_url)
+                data[field_name] = value
+                provenance[field_name] = entry
                 if wants_all:
                     _record_page(provenance[field_name], len(every), len(value), skip)
                     truncated = truncated or skip + len(value) < len(every)

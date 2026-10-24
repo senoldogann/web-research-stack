@@ -136,6 +136,19 @@ class WebToolsSettings:
     max_search_limit: int = 20
     max_query_length: int = 500
 
+    # Dating results by reading the head of their pages (web_search resolve_dates). "auto" does it
+    # for a search that asks for news or a date range, "on" for every search that does not say
+    # resolve_dates: false, "off" never, whatever a call says: the server then reads no page of a
+    # search result on its own. It reads the first search_resolve_dates_bytes of at most the top
+    # search_resolve_dates_top results (strict_dates may widen that to search_resolve_dates_max),
+    # four at a time, and stops when search_resolve_dates_budget_ms is spent.
+    search_resolve_dates: str = "auto"
+    search_resolve_dates_top: int = 6
+    search_resolve_dates_max: int = 12
+    search_resolve_dates_budget_ms: int = 4_000
+    search_resolve_dates_bytes: int = 65_536
+    search_resolve_dates_concurrency: int = 4
+
     fetch_timeout_seconds: float = 20.0
     fetch_retries: int = 1
     max_response_bytes: int = 5_000_000
@@ -223,6 +236,19 @@ class WebToolsSettings:
         self.default_search_limit = max(self.default_search_limit, 1)
         self.max_search_limit = max(self.max_search_limit, self.default_search_limit)
         self.max_query_length = max(self.max_query_length, 1)
+        mode = (self.search_resolve_dates or "auto").strip().lower()
+        self.search_resolve_dates = mode if mode in {"auto", "on", "off"} else "auto"
+        self.search_resolve_dates_top = min(max(self.search_resolve_dates_top, 1), 20)
+        self.search_resolve_dates_max = min(
+            max(self.search_resolve_dates_max, self.search_resolve_dates_top), 20
+        )
+        self.search_resolve_dates_budget_ms = min(
+            max(self.search_resolve_dates_budget_ms, 0), 60_000
+        )
+        self.search_resolve_dates_bytes = min(max(self.search_resolve_dates_bytes, 4_096), 262_144)
+        self.search_resolve_dates_concurrency = min(
+            max(self.search_resolve_dates_concurrency, 1), 8
+        )
         self.fetch_timeout_seconds = max(self.fetch_timeout_seconds, 1.0)
         self.fetch_retries = max(self.fetch_retries, 0)
         self.max_response_bytes = max(self.max_response_bytes, 1024)
@@ -319,6 +345,12 @@ class WebToolsSettings:
             default_search_limit=_int("WEB_TOOLS_DEFAULT_SEARCH_LIMIT", 5),
             max_search_limit=_int("WEB_TOOLS_MAX_SEARCH_LIMIT", 20),
             max_query_length=_int("WEB_TOOLS_MAX_QUERY_LENGTH", 500),
+            search_resolve_dates=os.getenv("WEB_TOOLS_SEARCH_RESOLVE_DATES", "auto"),
+            search_resolve_dates_top=_int("WEB_TOOLS_SEARCH_RESOLVE_DATES_TOP", 6),
+            search_resolve_dates_max=_int("WEB_TOOLS_SEARCH_RESOLVE_DATES_MAX", 12),
+            search_resolve_dates_budget_ms=_int("WEB_TOOLS_SEARCH_RESOLVE_DATES_BUDGET_MS", 4_000),
+            search_resolve_dates_bytes=_int("WEB_TOOLS_SEARCH_RESOLVE_DATES_BYTES", 65_536),
+            search_resolve_dates_concurrency=_int("WEB_TOOLS_SEARCH_RESOLVE_DATES_CONCURRENCY", 4),
             fetch_timeout_seconds=_float("WEB_TOOLS_FETCH_TIMEOUT_SECONDS", 20.0),
             fetch_retries=_int("WEB_TOOLS_FETCH_RETRIES", 1),
             max_response_bytes=_int("WEB_TOOLS_MAX_RESPONSE_BYTES", 5_000_000),

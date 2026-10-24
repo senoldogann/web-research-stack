@@ -156,6 +156,9 @@ class WebToolsSettings:
     search_resolve_dates_max: int = 12
     search_resolve_dates_budget_ms: int = 4_000
     search_resolve_dates_bytes: int = 65_536
+    # A head that has not ended by then is read on to its end, up to this (cloud.google.com's are
+    # 170 KB, their dates at 140 KB).
+    search_resolve_dates_head_cap: int = 262_144
     search_resolve_dates_concurrency: int = 4
 
     fetch_timeout_seconds: float = 20.0
@@ -273,6 +276,9 @@ class WebToolsSettings:
             max(self.search_resolve_dates_budget_ms, 0), 60_000
         )
         self.search_resolve_dates_bytes = min(max(self.search_resolve_dates_bytes, 4_096), 262_144)
+        self.search_resolve_dates_head_cap = min(
+            max(self.search_resolve_dates_head_cap, self.search_resolve_dates_bytes), 1_048_576
+        )
         self.search_resolve_dates_concurrency = min(
             max(self.search_resolve_dates_concurrency, 1), 8
         )
@@ -395,6 +401,7 @@ class WebToolsSettings:
             search_resolve_dates_max=_int("WEB_TOOLS_SEARCH_RESOLVE_DATES_MAX", 12),
             search_resolve_dates_budget_ms=_int("WEB_TOOLS_SEARCH_RESOLVE_DATES_BUDGET_MS", 4_000),
             search_resolve_dates_bytes=_int("WEB_TOOLS_SEARCH_RESOLVE_DATES_BYTES", 65_536),
+            search_resolve_dates_head_cap=_int("WEB_TOOLS_SEARCH_RESOLVE_DATES_HEAD_CAP", 262_144),
             search_resolve_dates_concurrency=_int("WEB_TOOLS_SEARCH_RESOLVE_DATES_CONCURRENCY", 4),
             fetch_timeout_seconds=_float("WEB_TOOLS_FETCH_TIMEOUT_SECONDS", 20.0),
             fetch_retries=_int("WEB_TOOLS_FETCH_RETRIES", 1),

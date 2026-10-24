@@ -62,11 +62,12 @@ def needs_reading(item: Mapping[str, Any]) -> bool:
     return not item.get("date") or float(item.get("date_confidence") or 0.0) < LOW_CONFIDENCE
 
 
-async def _head(fetcher: Any, url: str, max_bytes: int) -> str:
-    """The first *max_bytes* of a page as text: the fetcher's ``fetch_head``, else its ``fetch`` cut."""
+async def _head(fetcher: Any, url: str, max_bytes: int, head_cap: Optional[int] = None) -> str:
+    """The first *max_bytes* of a page as text (the head read on to its end up to *head_cap*): the
+    fetcher's ``fetch_head``, else its ``fetch`` cut."""
     reader = getattr(fetcher, "fetch_head", None)
     if reader is not None:
-        fetched = await reader(url, max_bytes=max_bytes)
+        fetched = await reader(url, max_bytes=max_bytes, head_cap=head_cap)
         return str(fetched.html or "")
     fetch = getattr(fetcher, "fetch", None)
     if fetch is None:
@@ -85,6 +86,7 @@ async def read_result_dates(
     max_bytes: int,
     concurrency: int,
     snippets: Mapping[str, tuple[str, str, str]],
+    head_cap: Optional[int] = None,
     today: Optional[date] = None,
 ) -> tuple[dict[str, DateResolution], DatesReport]:
     """Resolve the dates of the first *top* results whose date is unknown or low.
@@ -115,7 +117,7 @@ async def read_result_dates(
                 report.cached += 1
             else:
                 try:
-                    html = await _head(fetcher, url, max_bytes)
+                    html = await _head(fetcher, url, max_bytes, head_cap)
                 except AttributeError:
                     report.unavailable = True
                     return

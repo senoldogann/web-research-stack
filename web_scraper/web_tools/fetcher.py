@@ -230,14 +230,19 @@ class SafeFetcher:
 
         raise FetchError("network_error", "Fetch exhausted retries", url=url)
 
-    async def fetch_head(self, url: str, *, max_bytes: int = 65_536) -> FetchResult:
+    async def fetch_head(
+        self, url: str, *, max_bytes: int = 65_536, head_cap: Optional[int] = None
+    ) -> FetchResult:
         """Fetch only the first *max_bytes* of a page, once, and close the connection.
 
         Enough for a page's ``<head>``, where its meta tags and structured data are, and for the
-        byline near its headline; the rest of a long page is never downloaded. Every hop is
-        validated as in :meth:`fetch`, and a refusal or an error status raises as it does there;
-        what differs is that a long body is not an error (``too_large``): it is cut, and a page
-        cut is content, never judged a challenge. There is no retry: the caller has a budget.
+        byline near its headline; the rest of a long page is never downloaded. With *head_cap*
+        (larger than *max_bytes*) a head that has not ended by *max_bytes* is read on to its end
+        (``</head>``) or to *head_cap*, whichever comes first: some sites' heads are 170 KB of
+        inline scripts with the structured data in the middle. Every hop is validated as in
+        :meth:`fetch`, and a refusal or an error status raises as it does there; what differs is
+        that a long body is not an error (``too_large``): it is cut, and a page cut is content,
+        never judged a challenge. There is no retry: the caller has a budget.
         """
         started = time.monotonic()
         return await self._fetch_once(
@@ -246,6 +251,7 @@ class SafeFetcher:
             attempts=1,
             started=started,
             head_bytes=max(int(max_bytes), 1),
+            head_cap=max(int(head_cap), int(max_bytes)) if head_cap else None,
         )
 
     async def _fetch_once(
@@ -256,6 +262,7 @@ class SafeFetcher:
         attempts: int,
         started: float,
         head_bytes: Optional[int] = None,
+        head_cap: Optional[int] = None,
     ) -> FetchResult:
         current = start_url
         redirects = 0
@@ -299,7 +306,7 @@ class SafeFetcher:
                         if head_bytes is None:
                             body = await self._read_body(response, content_type)
                         else:
-                            body, cut = await self._read_head(response, head_bytes)
+                            body, cut = await self._read_head(response, head_bytes, head_cap)
                         network_ms = (time.monotonic() - request_started) * 1000
 
                         if status >= 400:
@@ -434,17 +441,33 @@ class SafeFetcher:
         return b"".join(chunks)
 
     @staticmethod
-    async def _read_head(response: httpx.Response, head_bytes: int) -> tuple[bytes, bool]:
-        """The first *head_bytes* of a body, and whether the body went on past them."""
+    async def _read_head(
+        response: httpx.Response, head_bytes: int, head_cap: Optional[int] = None
+    ) -> tuple[bytes, bool]:
+        """The first *head_bytes* of a body, and whether the body went on past them.
+
+        With *head_cap*, a body whose ``<head>`` has not ended by *head_bytes* is read on until
+        it has, or to *head_cap*.
+        """
         chunks: list[bytes] = []
         total = 0
+        ceiling = head_bytes
         async for chunk in response.aiter_bytes():
             chunks.append(chunk)
             total += len(chunk)
-            if total > head_bytes:
+            if total <= head_bytes:
+                continue
+            if head_cap is None:
+                break
+            ended = b"".join(chunks).lower().find(b"</head")
+            if ended >= 0:
+                ceiling = max(head_bytes, ended + len(b"</head>"))
+                break
+            ceiling = head_cap
+            if total >= head_cap:
                 break
         body = b"".join(chunks)
-        return body[:head_bytes], len(body) > head_bytes
+        return body[:ceiling], len(body) > ceiling
 
     @staticmethod
     def _is_textual(content_type: str) -> bool:

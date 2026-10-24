@@ -352,6 +352,8 @@ class TestAnotherOutlet:
         assert page["canonical_url"] == CNBC
         assert "recovered_other_source" in page["warnings"]
         assert page["next_action"].startswith("The text is cnbc.com's report, not reuters.com's")
+        # Cross-checked against another address, not against the one that was just read.
+        assert THEVERGE in page["next_action"] and CNBC not in page["next_action"]
         # The search was for the address's words, away from the walled site.
         query = search.calls[0][0]
         assert query.startswith("openai sell its top models google cloud latest enterprise push")

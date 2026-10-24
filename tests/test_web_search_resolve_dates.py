@@ -13,6 +13,7 @@ from test_web_service import FakeFetcher, FakeSearch, _html_result, _service
 
 from web_scraper.api_models import WebSearchRequest
 from web_scraper.mcp_server import _search
+from web_scraper.web_tools.content import resolve_html_dates
 from web_scraper.web_tools.errors import WebToolError
 from web_scraper.web_tools.fetcher import FetchError, FetchResult, SafeFetcher
 from web_scraper.web_tools.pagecache import CachedDocument
@@ -49,7 +50,9 @@ class HeadFetcher:
         self.in_flight = 0
         self.peak = 0
 
-    async def fetch_head(self, url: str, *, max_bytes: int = 65_536) -> FetchResult:
+    async def fetch_head(
+        self, url: str, *, max_bytes: int = 65_536, head_cap: Optional[int] = None
+    ) -> FetchResult:
         self.heads.append((url, max_bytes))
         self.in_flight += 1
         self.peak = max(self.peak, self.in_flight)
@@ -330,6 +333,12 @@ class TestWhenItReads:
             6,
             4_000,
         )
+        # A head is read on to its end up to a cap (cloud.google.com's are 170 KB).
+        assert defaults.search_resolve_dates_head_cap == 262_144
+        monkeypatch.setenv("WEB_TOOLS_SEARCH_RESOLVE_DATES_HEAD_CAP", "10")
+        assert (
+            WebToolsSettings.from_env().search_resolve_dates_head_cap == 4_096
+        )  # never under the read
 
 
 class TestStrictDates:
@@ -415,6 +424,58 @@ class TestTheHeadRead:
         assert 65_000 < len(result.html) <= 65_536
         assert "article:published_time" in result.html
         assert calls == ["https://example.org/story"]
+
+    @staticmethod
+    def _heavy_head(*, ends: bool = True, filler: int = 110_000) -> str:
+        """A head like cloud.google.com's: inline scripts first, the structured data in the middle."""
+        ld = '<script type="application/ld+json">{"@type":"NewsArticle","datePublished":"2026-10-21"}</script>'
+        script = "<script>" + "x" * filler + "</script>"
+        head = f"<html><head><title>T</title>{script}{ld}{script}" + ("</head>" if ends else "")
+        return head + "<body>" + "<p>x</p>" * 40_000 + "</body></html>"
+
+    async def test_a_head_that_has_not_ended_is_read_on_to_its_end(self) -> None:
+        page = self._heavy_head()
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, headers={"content-type": "text/html"}, text=page)
+
+        async with self._fetcher(handler) as fetcher:
+            plain = await fetcher.fetch_head("https://example.org/a", max_bytes=65_536)
+            wide = await fetcher.fetch_head(
+                "https://example.org/a", max_bytes=65_536, head_cap=262_144
+            )
+
+        # 64 KB of it is scripts and no date; the head, read to its end, holds the date.
+        assert "datePublished" not in plain.html and len(plain.html) == 65_536
+        assert "datePublished" in wide.html and wide.html.endswith("</head>")
+        assert len(wide.html) < 262_144 and "<body>" not in wide.html
+        assert resolve_html_dates(wide.html, "https://example.org/a").date == "2026-10-21"
+
+    async def test_a_head_that_ends_early_is_not_read_past_the_size(self) -> None:
+        page = "<html><head><title>T</title></head><body>" + "<p>x</p>" * 40_000 + "</body></html>"
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, headers={"content-type": "text/html"}, text=page)
+
+        async with self._fetcher(handler) as fetcher:
+            result = await fetcher.fetch_head(
+                "https://example.org/a", max_bytes=65_536, head_cap=262_144
+            )
+
+        assert len(result.html) == 65_536
+
+    async def test_a_head_that_never_ends_is_cut_at_the_cap(self) -> None:
+        page = self._heavy_head(ends=False, filler=400_000)
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, headers={"content-type": "text/html"}, text=page)
+
+        async with self._fetcher(handler) as fetcher:
+            result = await fetcher.fetch_head(
+                "https://example.org/a", max_bytes=65_536, head_cap=150_000
+            )
+
+        assert len(result.html) == 150_000
 
     async def test_a_long_page_is_still_too_large_for_a_whole_read(self) -> None:
         async def handler(request: httpx.Request) -> httpx.Response:

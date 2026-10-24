@@ -570,6 +570,7 @@ class WebToolsService:
                 top=reading_top,
                 budget_seconds=self.settings.search_resolve_dates_budget_ms / 1000,
                 max_bytes=self.settings.search_resolve_dates_bytes,
+                head_cap=self.settings.search_resolve_dates_head_cap,
                 concurrency=self.settings.search_resolve_dates_concurrency,
                 snippets={
                     target: (
@@ -1864,8 +1865,14 @@ class WebToolsService:
             for alternate in alternates:
                 if alternate["url"] == item["url"]:
                     alternate["why"] += " (read)"
+            # The page's own title: a search result's is cut by the provider with "...".
             return (
-                _Recovery("other_source", document, document.final_url, title=item["title"]),
+                _Recovery(
+                    "other_source",
+                    document,
+                    document.final_url,
+                    title=(document.page.title or item["title"])[:160],
+                ),
                 alternates,
                 "",
             )
@@ -2800,9 +2807,10 @@ def _next_action(
             + (f"{best['url']}" if best else "another source")
             + " for the rest, or ask again later."
         )
+    other = next((item for item in alternates if item["url"] != recovery.source_url), None)
     return (
         f"The text is {host_of(recovery.source_url)}'s report, not {site}'s: cross-check it with "
-        + (f"{best['url']} or " if best and best["url"] != recovery.source_url else "")
+        + (f"{other['url']} or " if other else "")
         + f"scrape {requested} again later."
     )
 

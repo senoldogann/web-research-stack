@@ -204,7 +204,7 @@ Research results are cached for 5 minutes (configurable) to improve response tim
 
 #### Security Features
 
-- **SSRF Protection**: Prevents requests to private networks
+- **SSRF Protection**: Prevents requests to private networks, including through a host name that changes its DNS answer between the check and the connection (the connection goes to the address that was checked) and through IPv6 forms that carry a private IPv4 address
 - **Input Validation**: All inputs are validated
 - **API Key Authentication**: Optional API key protection
 - **CORS**: Configurable cross-origin resource sharing
@@ -414,7 +414,7 @@ Yanıt sürelerini iyileştirmek için araştırma sonuçları 5 dakika önbelle
 
 #### Güvenlik Özellikleri
 
-- **SSRF Koruması**: Özel ağlara istekleri engeller
+- **SSRF Koruması**: Özel ağlara istekleri engeller; denetim ile bağlantı arasında DNS yanıtını değiştiren bir ana makine adı (bağlantı denetlenen adrese yapılır) ve özel IPv4 adresi taşıyan IPv6 biçimleri dahil
 - **Giriş Doğrulama**: Tüm girdiler doğrulanır
 - **API Anahtar Kimlik Doğrulama**: İsteğe bağlı API anahtarı koruması
 - **CORS**: Yapılandırılabilir çapraz kaynak kaynak paylaşımı

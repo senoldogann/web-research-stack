@@ -197,22 +197,19 @@ class TestResolveDates:
         assert "resolve_dates_cut:1" in answer["warnings"]
         assert answer["dates"]["cut"] == 1 and answer["dates"]["resolved"] == 1
 
-    async def test_the_pages_are_read_together_and_one_host_at_a_time(self) -> None:
-        a1, a2 = (
-            "https://a.example/one-ai-news-this-week-story",
-            "https://a.example/two-ai-news-this-week-story",
-        )
-        b1 = "https://b.example/ai-news-this-week-story-three"
+    async def test_the_pages_are_read_together_and_two_of_one_host_at_a_time(self) -> None:
+        same = [f"https://a.example/story-{n}-ai-news-this-week-from-the-labs" for n in (1, 2, 3)]
+        other = "https://b.example/ai-news-this-week-story-from-the-labs"
+        urls = [*same, other]
         fetcher = HeadFetcher(
-            {a1: _page(YESTERDAY), a2: _page(YESTERDAY), b1: _page(YESTERDAY)},
-            stall={a1: 0.05, a2: 0.05, b1: 0.05},
+            {url: _page(YESTERDAY) for url in urls}, stall=dict.fromkeys(urls, 0.05)
         )
-        service = _search_service(fetcher, (a1, a2, b1))
+        service = _search_service(fetcher, tuple(urls))
 
         await service.search(NEWS, depth="fast")
 
-        # a1 and b1 together; a2 waits for a1: the host is read once at a time.
-        assert fetcher.peak == 2
+        # Two of a.example and the one of b.example together; the third of a.example waits for a turn.
+        assert len(fetcher.heads) == 4 and fetcher.peak == 3
 
     async def test_a_page_the_page_cache_holds_costs_no_request(self) -> None:
         fetcher = HeadFetcher({ART_B: _page(YESTERDAY)})

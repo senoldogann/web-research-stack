@@ -22,6 +22,8 @@ from web_scraper.web_tools.dates import LOW_CONFIDENCE, DateResolution, resolve,
 
 # A page kind whose dates say nothing of the page: a front page or a section lists stories.
 _UNDATED_KINDS = frozenset({"front", "listing"})
+# How many heads of one host are read together (the fetcher's own gate allows two a host).
+_PER_HOST = 2
 _SKIPPED_SUFFIXES = (".pdf", ".zip", ".png", ".jpg", ".jpeg", ".gif", ".mp4", ".mp3")
 
 
@@ -93,7 +95,7 @@ async def read_result_dates(
 
     *snippets* holds, by address, the ``(title, snippet, provider date)`` a result showed, which
     are weighed with the page's own signals. Returns a resolution by address for each page that
-    gave a date, and a report. Pages are read together (*concurrency* at a time, one per host) and
+    gave a date, and a report. Pages are read together (*concurrency* at a time, two per host) and
     stopped when *budget_seconds* is spent; a stopped read is counted as ``cut``.
     """
     report = DatesReport(budget_ms=budget_seconds * 1000)
@@ -110,7 +112,7 @@ async def read_result_dates(
     async def one(item: Mapping[str, Any]) -> None:
         url = str(item["url"])
         host = (urlsplit(url).hostname or "").lower()
-        gate = per_host.setdefault(host, asyncio.Semaphore(1))
+        gate = per_host.setdefault(host, asyncio.Semaphore(_PER_HOST))
         async with gate, overall:
             html = cached_html(url)
             if html is not None:

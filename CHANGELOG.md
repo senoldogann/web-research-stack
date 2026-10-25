@@ -4,6 +4,14 @@ The package is `dotagent-web-research`; the MCP server is `web-research-mcp`
 (`web_scraper.mcp_server`). Behavior, settings and measurements are described in
 [docs/web-tools.md](docs/web-tools.md); this file says what a version changed.
 
+## 1.4.3 (2026-10-25)
+
+Camoufox bundled as a standard dependency.
+
+### Added
+
+- **Zero-setup stealth browser installation:** Added `camoufox>=0.5.8` directly to package `dependencies`, ensuring that any client installing `dotagent-web-research` (including Dot desktop app users) receives the full bot evasion and Cloudflare Turnstile bypass engine out of the box without manual package installations.
+
 ## 1.4.2 (2026-10-25)
 
 Bot evasion hardening and automatic challenge escalation.

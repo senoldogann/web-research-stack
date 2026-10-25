@@ -4,6 +4,102 @@ The package is `dotagent-web-research`; the MCP server is `web-research-mcp`
 (`web_scraper.mcp_server`). Behavior, settings and measurements are described in
 [docs/web-tools.md](docs/web-tools.md); this file says what a version changed.
 
+## 1.4.2 (2026-10-25)
+
+An independent security review of 1.3.1 to 1.4.1 found six things in round B. 1.4.2 closes them, one commit
+each. Each has a test that fails on 1.4.1: the reviewer's probes are the scenarios, against sites in memory or, for the
+browser, a real headless browser and servers on the loopback (skipped where there is none, as on the CI job).
+
+### Fixed
+
+- **A redirect no longer decides which site a map or a crawl reads.** 1.4.0 took whatever host the start page,
+  `robots.txt` or a sitemap landed on as the site. An address that forwarded every path to another site made `web_map`
+  read that site's robots.txt and sitemaps and return its addresses, made a crawl read its pages and, with
+  `include_subdomains`, a host nothing had redirected to (`internal.other.test`). A page that stayed put while only its
+  robots.txt or sitemap forwarded elsewhere did the same, and so did a start page that was not there. A landing is the
+  site only for a `www.` flip, `http` to `https` or the same registrable domain (`same_registrable_domain`: a short
+  table of the registries' second levels and of the hosts that hand a subdomain to anyone, not the Public Suffix List).
+  Any other is done as 1.3.1 did it: the one page the address leads to (a crawl reads it and follows none of its links),
+  and nothing of the other site's robots.txt, sitemaps or links used or listed (the fetcher still follows the redirect
+  of `robots.txt` and `sitemap.xml`, two requests whose answers are dropped, and a sitemap an index names that forwards
+  elsewhere is dropped too), and the answer says `redirected_to`.
+- **The browser's guard holds the web sockets and the windows of a page.** It was routed on the one page: a page's
+  `new WebSocket("ws://127.0.0.1:9222/...")` and `window.open("http://127.0.0.1:8080/...")` (the window's navigation,
+  its image and its fetches) reached a host the guard refuses. It is now put on the context, before its first page
+  exists: `context.route` for the requests (a window is a page of the context), `context.route_web_socket` for the
+  sockets (an address that may be requested is connected as before, any other is closed with 1008), and a window is
+  closed as it opens. The older Playwright scraper has the same.
+- **A page that blocks the browser no longer hangs the render, its slots or the tool.** A page whose script spins
+  (`while (true) {}`) leaves `page.evaluate` and `page.content` unanswered for ever; the render waited on them with
+  nothing around it, kept a context slot and, above it, one of the MCP server's eight tool slots (with the manager's
+  timeout at 10 s it was still going after 40 s). The render as a whole is now bounded by `BROWSER_TIMEOUT_SECONDS` and
+  5 seconds and ends with `timeout` (the service has the HTTP text and says `browser_render_failed:timeout`); its
+  context is closed whatever happened, for at most 5 seconds, and a browser that does not answer a close is shut down
+  and started again by the next render. The shutdown of a browser is bounded too.
+- **A page `web_map` read first is judged when it is scraped.** The map's start page is read without the missing-page
+  question and was kept in the page cache; a scrape of it within five minutes got no `soft_404` and sent no probe, and a
+  root the map had read was not remembered by its title. A read that wants the verdict and gets such a page from the
+  cache asks it then and keeps the answer with the page (the page is not fetched or rendered again).
+- **Only one host of a name is the subject's own.** A host whose registrable name is all the words of the query's
+  subject joined was `official` on every top-level domain an organization uses: `modelcontextprotocol.dev`, `.app`,
+  `.co` and `model-context-protocol.com` beside the project's `.io`. In a pool of results only one registrable domain of
+  the name is: the one the tables name, else the one the providers ranked highest (the agreement of the angles on its
+  best result). The others are `other`.
+
+### Stated
+
+- `web_map`'s start page is read through the one loader, in the browser where the loader puts it (a page with little
+  text and scripts). The browser resolves names itself, as it does for a scraped page: the guard is a check at one
+  moment, and a name that answers a public address to it and another to the browser is the one thing it does not stop.
+
+### Changed
+
+- The `playwright` extra asks for 1.48 (it asked for 1.40): a Playwright that cannot route web sockets is not used
+  (`browser_unavailable`), the guard does not run with a gap that is not the browser's own.
+- New field `redirected_to` (`web_map`, `web_crawl_status`, `web_crawl_results`): where an address led when that is
+  another site. The text of the nine tools a model reads is 11,998 characters (11,932 in 1.4.1; the budget test allows
+  12,000).
+
+### Measured (2026-10-25, this Mac, one run each, 1.4.1 against this branch, from folders of their own)
+
+The owner's calls of round B, through the MCP handler with default settings, to show that nothing round B gained is lost;
+the last two rows are the new behavior on a real address that forwards to another registrable domain.
+
+| Call | 1.4.1 | 1.4.2 |
+|---|---|---|
+| `web_search` "Model Context Protocol specification" | the specification page `official` first, then the architecture page and two blog posts `official` | the same specification page first and the same four `official` (Yahoo's order of the next two varies between runs) |
+| `web_scrape` the blog posts of senoldogan.dev (en, tr) | `browser`, 4,602 and 4,366 characters, settled in 2.3 and 2.1 s | the same text, settled in 2.0 and 1.9 s |
+| `web_scrape` / `web_extract` `/bu-sayfa-yok-12345` | `soft_404`, `looks_missing: true`, no field | the same |
+| `web_scrape("not a url at all")` | `invalid_request` | the same |
+| `web_map` of `senoldogan.dev` and `www.senoldogan.dev` | 44 URLs each, `host: www.senoldogan.dev`, `redirected_from` for the apex | the same (a `www.` flip is the same site) |
+| crawl of `modelcontextprotocol.io/docs`, 5 pages; of `senoldogan.dev`, 4 pages, depth 1 | `stopped_by: max_pages`, `not_visited: 32`; 4 pages of `www`, `not_visited: 28` | the same |
+| `web_map("https://wikipedia.com")` (forwards to `www.wikipedia.org`) | wikipedia.org's address, `host` and robots.txt (errors `blocked`, `http_error`) | `url` the address asked for, 1 URL, `redirected_to: https://www.wikipedia.org/`, nothing of wikipedia.org's robots.txt used |
+| crawl of `https://wikipedia.com`, 3 pages | the page `https://www.wikipedia.org/` | the same one page, and `redirected_to` |
+
+### Tests
+
+Each fix has tests that fail on 1.4.1: `tests/test_web_site_boundary.py` (66: an apex that forwards every path, with and
+without `include_subdomains`, `use_sitemap` and a crawl; a page that stays while its robots.txt and sitemap forward; a
+start page that is not there; a sitemap an index names that forwards; the REST routes; the `www.`, `http` and same-domain
+moves that must stay; the registrable-domain table), `tests/test_web_browser_guard.py` (the handlers against fakes of what
+Playwright hands them, and a real headless browser against two local servers: a socket and a window to a refused host
+reach nothing, every other way a script asks stays held, a socket to an allowed host still delivers its message),
+`tests/test_web_browser_hang.py` (a fake page that never answers, the service, twelve calls at the MCP server's eight
+slots, and a real browser against the spinning page), `tests/test_web_missing_pages.py` and `tests/test_web_page_cache.py`
+(a map and then a scrape), `tests/test_web_search_official_name.py` (the reviewer's lookalikes in one pool). On Python 3.11
+with Playwright 1,854 tests pass; on 3.10 and 3.12 without it, as on the CI job, 1,847 pass and the seven that run a real
+browser are skipped.
+
+### Not closed, and said so in [docs/web-tools.md](docs/web-tools.md)
+
+- A web socket opened inside a Web Worker (dedicated or shared) is not routed by Playwright and reaches the host the
+  guard would have refused: measured with `route_web_socket` on, the handshake of a worker reached the server. What
+  closes it is a pinning proxy for the browser, not a longer list.
+- Ranking is all a pool has to tell a site from its lookalikes: one the engines put above the project's own is the one
+  called official, and a name found on one domain only is official however it got there. A host classified alone, with
+  no pool, is official as before.
+- The same-site table does not know every registry: two hosts of one it does not know are taken for one site.
+
 ## 1.4.1 (2026-10-25)
 
 1.4.0 reached PyPI from the first complete state of round B (`8d26b4b`), before its review and before the notes

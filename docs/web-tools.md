@@ -2229,3 +2229,64 @@ that came back were the comment. The browsers were Playwright 1.64 with the inst
   other, through the same checks. `WEB_TOOLS_SOFT_404_CHECK=false` keeps the first from being made.
 - The nine tools and their arguments are the same; the text a model reads grew by 428 characters (11,932 of the 12,000 the
   budget test allows).
+
+## The review of 1.4.1 (1.4.2, 2026-10-25)
+
+An independent security review of 1.3.1 to 1.4.1 read round B for what a page, a site or a redirect could make the
+server do that it should not. It found six things; 1.4.2 closes them, one commit each, with a test that fails on 1.4.1
+(its probes are the scenarios).
+
+| Finding | What 1.4.2 does | Tests |
+|---|---|---|
+| A redirect decides which site a map or a crawl reads: an apex that forwards every path to `other.test` made `web_map` list its sitemaps' addresses and a crawl read its pages (and `internal.other.test` with `include_subdomains`); so did a robots.txt or a sitemap that forwards while the page stays put, and a start page that was not there | The landing is the site only for a `www.` flip, `http` to `https` or the same registrable domain; any other is the one page the address leads to, as on 1.3.1, with `redirected_to`; a file another site answered is not read ([A site whose address redirects](#a-site-whose-address-redirects)) | `tests/test_web_site_boundary.py` |
+| The guard holds no web socket and no window: `new WebSocket(...)` and `window.open(...)` reached a host it refuses | Held on the browser context: its requests, its web sockets (closed with 1008 unless the address may be requested), its windows (closed as they open) ([Security boundaries](#security-boundaries)) | `tests/test_web_browser_guard.py` |
+| A page that blocks the main thread hangs `render()` for ever, with its context slot and a tool slot | The whole render is bounded, ends with `timeout`, closes its context for at most 5 s and restarts a browser that does not answer ([Pages drawn by scripts are waited for](#pages-drawn-by-scripts-are-waited-for)) | `tests/test_web_browser_hang.py` |
+| A page first read by `web_map` is cached unjudged: a later scrape gets no `soft_404` and sends no probe | A page kept without the question is asked it when a read that wants the verdict takes it from the cache, and kept with the answer | `tests/test_web_missing_pages.py`, `tests/test_web_page_cache.py` |
+| A lookalike is typed `official`: `modelcontextprotocol.dev`, `.app`, `.co`, `model-context-protocol.com` beside `.io` | Of the hosts of one name in a pool, only the one the tables name or the providers rank highest is `official` ([Search: an organization's own site](#search-an-organizations-own-site)) | `tests/test_web_search_official_name.py` |
+| `web_map`'s start page is read in the browser, which resolves names itself | Stated, not changed: the loader puts it in the browser as it puts a scraped page; the guard is a check at one moment ([Security boundaries](#security-boundaries)) | the existing `TestOneLoader` |
+
+### What is not closed
+
+- **A web socket opened inside a Web Worker.** Playwright's `route_web_socket` routes the sockets of a page and its frames
+  and not those of a dedicated or a shared worker: measured with the route on, a worker's handshake reached the local
+  server it had been told to refuse. A page that wants to reach a refused host can do it from a worker. What closes it is
+  a proxy the browser is made to use, which pins and checks each connection as the HTTP fetcher does, not a longer list;
+  it is not in 1.4.2.
+- **Ranking is the evidence for a name's own site.** The engines' first result is taken to be the project's; one they
+  rank above it is called official and the project's own site is not (a pool that holds both). A name found on one
+  domain only is official, whoever registered it.
+- **The same-site table is a table.** `docs.example.com` and `www.example.com` are one site; two hosts of a registry the
+  table (`sources.py`: the registries' second levels, and the hosts that give a subdomain to anyone) does not know are
+  taken for one site as well, which is the failure to keep in mind: the redirect is followed and the other host's
+  robots.txt and sitemaps are read, as they were on 1.4.1.
+
+### What it measured live (2026-10-25, this Mac, one run each, default settings)
+
+The owner's calls of round B, through the MCP handler, 1.4.1 from a pristine export of its source and 1.4.2 from the
+branch, one after the other from folders of their own (Playwright 1.64 with the installed Google Chrome, headless). The
+point is that nothing of round B's gains is lost; the last two rows are the new behavior on a real address that forwards
+to another registrable domain.
+
+| Call | 1.4.1 | 1.4.2 |
+|---|---|---|
+| `web_search` "Model Context Protocol specification" | 2.9 s; `modelcontextprotocol.io/specification/2026-07-28` `official` first, its architecture page and the project's two blog posts `official` | 3.2 s; the same specification page first and the same four `official` (Yahoo's order of the next two and the fifth result differ from run to run) |
+| `web_scrape` the post on `www` (en) | 6.3 s (the browser starting); `browser`, 4,602 characters, settled in 2.3 s | 3.5 s; `browser`, 4,602 characters, settled in 2.0 s |
+| `web_scrape` the post on the apex (tr) | 3.6 s; 4,366 characters, settled in 2.1 s | 2.8 s; 4,366 characters, settled in 1.9 s |
+| `web_scrape` `/bu-sayfa-yok-12345` | 5.4 s; `soft_404`, `looks_missing: true` | 5.7 s; the same |
+| `web_extract` the same page / the real post | every field `null`, `soft_404` / the post's title and description | the same / the same |
+| `web_scrape("not a url at all")` | `invalid_request`, "…is not a web address…" | the same |
+| `web_map("https://senoldogan.dev")` | 3.8 s; 44 URLs, `host: www.senoldogan.dev`, `redirected_from` | 2.8 s; the same (a `www.` flip is the same site) |
+| `web_map("https://www.senoldogan.dev")` | 2.5 s; 44 URLs | 3.2 s; 44 URLs |
+| crawl of `https://modelcontextprotocol.io/docs`, `max_pages: 5` | `completed`, `stopped_by: max_pages`, `not_visited: 32` | the same |
+| crawl of `https://senoldogan.dev`, `max_pages: 4`, `max_depth: 1` | 4 pages of `www`, `stopped_by: max_pages`, `not_visited: 28` | the same 4 pages |
+| `web_map("https://wikipedia.com")` (forwards to `www.wikipedia.org`) | `url`, `host` and the pages read were wikipedia.org's (`redirected_from: https://wikipedia.com/`); its robots.txt was read (errors `blocked`, `http_error`) | `url: https://wikipedia.com/`, 1 URL, `redirected_to: https://www.wikipedia.org/`; wikipedia.org's robots.txt dropped (the error `blocked` is gone) |
+| crawl of `https://wikipedia.com`, 3 pages | the page `https://www.wikipedia.org/` (3,601 characters) | the same one page, and the job says `redirected_to: https://www.wikipedia.org/` |
+
+### For Dot
+
+- New field `redirected_to` in `web_map`, `web_crawl_status` and `web_crawl_results` (absent when the address did not lead
+  to another site). The tools and their arguments are the same; the text of the nine tools is 11,998 characters (the
+  budget test allows 12,000).
+- A render can now end with `timeout` where it hung: a page that blocks the browser is read from its HTTP text, with
+  `browser_render_failed:timeout`. A Playwright older than 1.48 is not used (`browser_unavailable`; the extra asks for 1.48).
+- `official` in a search result is one host of a name, the one the providers ranked highest.

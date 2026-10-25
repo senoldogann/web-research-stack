@@ -4,7 +4,7 @@ name: Release
 # trusted publishing: no token is stored. pypi.org is told once, by the owner, to trust this
 # repository, this workflow (release.yml) and the environment "pypi" for that project.
 #
-#   git tag v1.4.0 && git push origin v1.4.0
+#   git tag v1.4.2 && git push origin v1.4.2
 
 on:
   push:

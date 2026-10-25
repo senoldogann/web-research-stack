@@ -72,11 +72,11 @@ def _trio(**kinds: str) -> tuple[Scripted, Scripted, Scripted]:
 
 
 class TestSettings:
-    def test_the_default_chain_is_lite_then_yahoo_then_google(self) -> None:
+    def test_the_default_chain_is_google_then_yahoo_then_lite(self) -> None:
         assert WebToolsSettings().search_fallback_providers == [
-            "duckduckgo_lite",
-            "yahoo",
             "google",
+            "yahoo",
+            "duckduckgo_lite",
         ]
 
     def test_the_chain_is_read_from_its_variable(self, monkeypatch: pytest.MonkeyPatch) -> None:

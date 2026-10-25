@@ -4,6 +4,17 @@ The package is `dotagent-web-research`; the MCP server is `web-research-mcp`
 (`web_scraper.mcp_server`). Behavior, settings and measurements are described in
 [docs/web-tools.md](docs/web-tools.md); this file says what a version changed.
 
+## 1.4.4 (2026-10-25)
+
+### Highlights
+- **Stealth Camoufox Search Integration**: Wired Camoufox anti-detect browser engine into search provider fallback.
+- **Google Search Adapter Upgrades**:
+  - Auto-injection of Google consent cookies (`CONSENT`, `SOCS`) preventing redirect loops and popups.
+  - Automatic dismissal of localized consent dialogues.
+  - Relative date filtering (`tbs=qdr:d`, `w`, `m`, `y`) alongside existing date ranges.
+  - Asynchronous background warm-up on service start for sub-second responses.
+- **Optimized Fallback Priority**: Updated default fallback chain to `["google", "yahoo", "duckduckgo_lite"]` so blocked DuckDuckGo requests fall seamlessly to high-precision Google search rather than degraded Yahoo results.
+
 ## 1.4.3 (2026-10-25)
 
 Camoufox bundled as a standard dependency.

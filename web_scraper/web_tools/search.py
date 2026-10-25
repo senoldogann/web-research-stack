@@ -265,6 +265,7 @@ class GoogleSearchAdapter:
             headless=True,
             allow_visible_browser=False,
         )
+        self._warmed = False
 
     async def search(
         self,
@@ -274,8 +275,6 @@ class GoogleSearchAdapter:
         date_filter: Optional[str] = None,
         options: Optional[SearchOptions] = None,
     ) -> list[SearchResult]:
-        # The legacy Google searcher has no relative date filter (day, week, month, year);
-        # it takes a range, a country (gl) and a language (hl).
         extra: dict[str, Any] = {}
         if options:
             country = (options.region or "").split("-")[0]
@@ -285,6 +284,14 @@ class GoogleSearchAdapter:
                 "date_from": options.date_from,
                 "date_to": options.date_to,
             }
+        if date_filter:
+            extra["date_filter"] = date_filter
+        if not self._warmed:
+            self._warmed = True
+            try:
+                await self._searcher.warm_up()
+            except Exception:
+                pass
         try:
             raw = await self._searcher.search(query, num_results=limit, **extra)
         except GoogleSearchBlocked as exc:
@@ -305,6 +312,12 @@ class GoogleSearchAdapter:
                 detail=type(exc).__name__,
             ) from exc
         return _from_dicts(raw)
+
+    async def warm_up(self) -> None:
+        await self._searcher.warm_up()
+
+    async def aclose(self) -> None:
+        await self._searcher.close_camoufox()
 
 
 def _failure(label: str, exc: Exception) -> WebToolError:

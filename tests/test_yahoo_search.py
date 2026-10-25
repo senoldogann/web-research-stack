@@ -284,12 +284,12 @@ class TestAdapterAndChain:
 
         assert exc.value.detail == "RuntimeError"
 
-    def test_the_default_chain_is_lite_then_yahoo_then_google(self) -> None:
-        assert DEFAULT_FALLBACK_PROVIDERS == ("duckduckgo_lite", "yahoo", "google")
+    def test_the_default_chain_is_google_then_yahoo_then_lite(self) -> None:
+        assert DEFAULT_FALLBACK_PROVIDERS == ("google", "yahoo", "duckduckgo_lite")
         assert WebToolsSettings().search_fallback_providers == [
-            "duckduckgo_lite",
-            "yahoo",
             "google",
+            "yahoo",
+            "duckduckgo_lite",
         ]
 
     @pytest.mark.asyncio

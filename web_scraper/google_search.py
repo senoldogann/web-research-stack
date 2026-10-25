@@ -31,9 +31,9 @@ from web_scraper.config import config
 from web_scraper.stealth import HeaderFactory
 from web_scraper.stealth_camoufox import (
     camoufox_lock,
-    close_page,
     get_camoufox_page,
     landing_allowed,
+    release_page,
     warm_up_camoufox,
 )
 from web_scraper.stealth_camoufox import (
@@ -287,7 +287,8 @@ class GoogleSearcher:
 
         The page is one of a context that is held to the address guard, it is read only if it ended at an
         address the guard allows, and the whole read is bounded: a page that stops answering would keep the
-        one lock every search takes, so it ends the read and takes its browser with it.
+        one lock every search takes, so it ends the read and takes its browser with it. A page that served
+        the whole search is kept for the next one (a new page costs Camoufox about 3 s); any other is closed.
         """
         page = await get_camoufox_page()
         if page is None:
@@ -297,16 +298,18 @@ class GoogleSearcher:
         timeout_ms = int(config.google_playwright_timeout_seconds * 1000)
         limit = config.google_playwright_timeout_seconds + _CAMOUFOX_READ_MARGIN_S
 
+        served = False
         try:
             async with camoufox_lock():
                 raw, html = await asyncio.wait_for(
                     self._read_camoufox_page(page, url, timeout_ms), timeout=limit
                 )
+            served = True
         except asyncio.TimeoutError as exc:
             await close_shared_camoufox()
             raise GoogleSearchBlocked("Camoufox did not finish reading Google in time") from exc
         finally:
-            await close_page(page)
+            await release_page(page, reuse=served)
 
         results = await self._results_from_raw(raw)
         if not results:

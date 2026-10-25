@@ -265,7 +265,6 @@ class GoogleSearchAdapter:
             headless=True,
             allow_visible_browser=False,
         )
-        self._warmed = False
 
     async def search(
         self,
@@ -286,12 +285,9 @@ class GoogleSearchAdapter:
             }
         if date_filter:
             extra["date_filter"] = date_filter
-        if not self._warmed:
-            self._warmed = True
-            try:
-                await self._searcher.warm_up()
-            except Exception:
-                pass
+        # No warm-up before the first search: it opened Google in a page of its own and closed it, so the
+        # search then made a page again (about 3 s each in Camoufox), and a warm-up that ran past its time
+        # shut down the browser the search was about to use. The search's own page is kept for the next.
         try:
             raw = await self._searcher.search(query, num_results=limit, **extra)
         except GoogleSearchBlocked as exc:

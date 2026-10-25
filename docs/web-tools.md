@@ -532,6 +532,12 @@ it ends and how. Nothing is fetched where the package is missing or too old to b
 Since 1.4.7 the command is `python -P -m camoufox fetch` (`-I` on Python 3.10) and runs in an empty folder of its
 own: it ran with the server's working folder on its import path and as its folder, and Dot starts the server in a
 run's workspace, so a `camoufox.py` a run wrote there was what ran, outside Dot's sandbox (a security review of 1.4.6).
+Camoufox's own check of its folder (`camoufox_path`) deletes the whole folder (`~/Library/Caches/camoufox`) when it
+holds files but not the flag of the layout this camoufox uses (`.0.5_FLAG`), before it looks at whether it may
+download; the check this server makes at every walled page and every Google search called it, and so could wipe an
+install of another version, a list of sites set or not. Since 1.4.7 such a folder is looked at first: the reason says
+it holds an install this camoufox does not use, Camoufox is not started, nothing is deleted, and no fetch is started for
+it (the fetch deletes it too): `python -m camoufox fetch` is yours to run.
 
 **When it runs.** On a wall, and only then:
 

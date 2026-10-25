@@ -243,10 +243,29 @@ def _camoufox_needs() -> tuple[str, bool]:
     try:
         from camoufox.addons import DefaultAddons, get_addon_path
         from camoufox.fpgen_model import is_pinned
-        from camoufox.pkgman import camoufox_path
+        from camoufox.multiversion import COMPAT_FLAG
+        from camoufox.pkgman import INSTALL_DIR, camoufox_path
     except ImportError:
         return (
             "this version of camoufox cannot be checked without starting it; install camoufox 0.5.8 or later",
+            False,
+        )
+    # camoufox_path() deletes its whole folder (~/Library/Caches/camoufox) when the folder holds files but not the
+    # flag of the layout this camoufox uses, before it looks at download_if_missing: the check that "downloads
+    # nothing" wiped an install of another version (a security review of 1.4.6). Such a folder is said and left as it
+    # is; the fetch, which deletes it too, is not started for it: it is the owner's to run.
+    try:
+        stale = (
+            os.path.isdir(INSTALL_DIR)
+            and bool(os.listdir(INSTALL_DIR))
+            and not COMPAT_FLAG.exists()
+        )
+    except Exception:  # noqa: BLE001 - a folder that cannot be looked at is not one to call the wipe on
+        return f"what it needs could not be checked ({fetch})", False
+    if stale:
+        return (
+            f"its folder ({INSTALL_DIR}) holds an install this camoufox does not use; "
+            "`python -m camoufox fetch` replaces it, deleting what is there",
             False,
         )
     try:

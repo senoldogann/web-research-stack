@@ -94,10 +94,24 @@ class Installed:
     """The camoufox package as the manager sees it: what it is asked, and what it starts."""
 
     def __init__(
-        self, tmp_path: Path, *, browser: bool = True, addon: bool = True, model: bool = True
+        self,
+        tmp_path: Path,
+        *,
+        browser: bool = True,
+        addon: bool = True,
+        model: bool = True,
+        stale: bool = False,
     ):
         self.tmp_path = tmp_path
         self.browser, self.addon, self.model = browser, addon, model
+        # camoufox's own folder (~/Library/Caches/camoufox), never the real one: with *stale* it holds an install
+        # of another layout (files, and not the flag of the one this camoufox uses).
+        self.folder = tmp_path / "camoufox-folder"
+        self.flag = self.folder / ".0.5_FLAG"
+        if stale:
+            self.folder.mkdir(parents=True, exist_ok=True)
+            (self.folder / "an-install-of-another-version.bin").write_text("x" * 64)
+        self.wiped = False
         self.path_asked: list[bool] = []
         self.started: list[dict[str, Any]] = []
         self.exited = 0
@@ -112,6 +126,13 @@ class Installed:
 
         def camoufox_path(download_if_missing: bool = True) -> Path:
             installed.path_asked.append(download_if_missing)
+            # What camoufox 0.5.8 does first, whatever download_if_missing says (pkgman.py, "Cleaning old data").
+            folder = installed.folder
+            if folder.is_dir() and any(folder.iterdir()) and not installed.flag.exists():
+                installed.wiped = True
+                for child in folder.iterdir():
+                    child.unlink()
+                folder.rmdir()
             if not installed.browser:
                 raise FileNotFoundError("Camoufox is not installed")
             return installed.tmp_path
@@ -141,7 +162,10 @@ class Installed:
                 DefaultAddons=DefaultAddons, get_addon_path=get_addon_path
             ),
             "camoufox.fpgen_model": types.SimpleNamespace(is_pinned=lambda: installed.model),
-            "camoufox.pkgman": types.SimpleNamespace(camoufox_path=camoufox_path),
+            "camoufox.multiversion": types.SimpleNamespace(COMPAT_FLAG=installed.flag),
+            "camoufox.pkgman": types.SimpleNamespace(
+                camoufox_path=camoufox_path, INSTALL_DIR=str(installed.folder)
+            ),
             "camoufox.async_api": types.SimpleNamespace(AsyncCamoufox=AsyncCamoufox),
         }
         for name, module in modules.items():
@@ -492,6 +516,33 @@ class TestWhatCamoufoxLacksIsFetchedApartFromTheRead:
         assert page.status_code == 403
         assert fetch.calls == 0 and browser_module.camoufox_fetch.task is None
         assert manager.snapshot()["stealth_fetching"] is False
+
+    def test_a_folder_of_another_camoufox_layout_is_said_and_never_wiped_by_the_check(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # camoufox_path() deletes its folder when it holds files but not the flag of its layout, before it looks at
+        # download_if_missing; the check that downloads nothing called it at every walled page and every Google
+        # search, so it wiped an install of another version, a list of sites set or not (a review of 1.4.6).
+        installed = Installed(tmp_path, stale=True)
+        installed.install(monkeypatch)
+
+        reason = browser_module.camoufox_missing()
+        _, fetchable = browser_module._camoufox_needs()
+
+        assert "holds an install this camoufox does not use" in reason
+        assert fetchable is False  # the fetch deletes it too: it is the owner's to run
+        assert installed.path_asked == [] and installed.wiped is False
+        assert (installed.folder / "an-install-of-another-version.bin").exists()
+
+    def test_a_folder_of_this_layout_is_checked_as_before(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        installed = Installed(tmp_path, stale=True)
+        installed.flag.touch()
+        installed.install(monkeypatch)
+
+        assert browser_module.camoufox_missing() == ""
+        assert installed.path_asked == [False] and installed.wiped is False
 
     @pytest.mark.asyncio
     async def test_a_manager_made_by_hand_does_not_fetch_unless_it_is_told_to(

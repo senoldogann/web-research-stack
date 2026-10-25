@@ -2505,17 +2505,23 @@ class WebToolsService:
         try:
             fetched = await (fetcher or self.fetcher).fetch(url)
         except FetchError as exc:
-            if (
-                browser
-                and exc.code == "blocked"
-                and exc.detail == "access_blocked"
-                and self.browser is not None
-            ):
+            can_stealth = getattr(self.browser, "has_stealth", False)
+            should_escalate = (
+                exc.detail == "access_blocked"
+                or (exc.detail == "captcha" and can_stealth)
+                or (exc.code == "http_error" and exc.status_code in {401, 403, 429})
+            )
+            if browser and should_escalate and self.browser is not None:
                 try:
+                    warning = (
+                        f"http_{exc.detail}"
+                        if exc.detail
+                        else (f"http_{exc.status_code}" if exc.status_code else f"http_{exc.code}")
+                    )
                     return await self._render_document(
                         url,
                         max_chars,
-                        warnings=["http_access_blocked"],
+                        warnings=[warning],
                     )
                 except WebToolError as render_error:
                     if render_error.code == "blocked":

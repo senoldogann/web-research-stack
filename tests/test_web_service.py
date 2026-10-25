@@ -195,6 +195,36 @@ async def test_scrape_does_not_open_a_browser_for_captcha() -> None:
     assert exc.value.code == "blocked"
     assert browser.calls == []
 
+    assert exc.value.code == "blocked"
+    assert browser.calls == []
+
+
+@pytest.mark.asyncio
+async def test_scrape_opens_stealth_browser_for_captcha_when_stealth_available() -> None:
+    url = "https://example.com/blocked"
+    fetcher = FakeFetcher(
+        {
+            url: FetchError(
+                "blocked",
+                "Target returned a captcha interstitial",
+                url=url,
+                status_code=403,
+                detail="captcha",
+            )
+        }
+    )
+    rendered_html = "<html><body><h1>Protected Content</h1><p>Solved with stealth browser</p></body></html>"
+    browser = FakeBrowser({url: BrowserPage(rendered_html, url, 200, "camoufox")})
+    browser.has_stealth = True
+    service = _service(fetcher, browser=browser)
+
+    result = await service.scrape(url)
+
+    assert result["fetched_with"] == "browser"
+    assert "Protected Content" in result["markdown"]
+    assert browser.calls == [url]
+    assert "http_captcha" in result["warnings"]
+
 
 @pytest.mark.asyncio
 async def test_browser_failure_keeps_partial_http_content_with_warning() -> None:

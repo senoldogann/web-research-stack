@@ -288,3 +288,61 @@ class TestTheOlderPlaywrightScraper:
         for url in ("http://127.0.0.1/", "http://[64:ff9b::7f00:1]/", "http://0177.0.0.1/"):
             result = await scraper.scrape(url)
             assert result.error is not None and "unsafe" in result.error.lower()
+
+
+class TestStealthEvasion:
+    def test_manager_has_stealth_when_camoufox_is_installed(self) -> None:
+        manager = HeadlessBrowserManager()
+        assert manager.has_stealth is True
+
+    def test_manager_snapshot_reports_stealth_capabilities(self) -> None:
+        manager = HeadlessBrowserManager()
+        snap = manager.snapshot()
+        assert "has_stealth" in snap
+        assert snap["has_stealth"] is True
+        assert "stealth_active" in snap
+        assert snap["stealth_active"] is False
+
+    @pytest.mark.asyncio
+    async def test_render_stealth_refuses_unsafe_target_before_starting_engine(self) -> None:
+        manager = HeadlessBrowserManager()
+        with pytest.raises(BrowserRenderError) as exc:
+            await manager.render_stealth("http://127.0.0.1:8080/private")
+        assert exc.value.code == "unsafe_target"
+
+    @pytest.mark.asyncio
+    async def test_primary_engine_escalates_to_stealth_on_interstitial_challenge(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        manager = HeadlessBrowserManager()
+        manager._engine = "chrome"
+        manager._browser = types.SimpleNamespace(is_connected=lambda: True)
+        monkeypatch.setattr(manager._guard, "allowed_now", lambda url: asyncio.sleep(0, result=True))
+
+        stealth_called = False
+
+        async def fake_render_stealth(url: str, **kwargs: Any) -> BrowserPage:
+            nonlocal stealth_called
+            stealth_called = True
+            return browser_module.BrowserPage(
+                html="<html><body><h1>Solved Title</h1><p>Real content after challenge</p></body></html>",
+                final_url=url,
+                status_code=200,
+                engine="camoufox",
+            )
+
+        async def fake_render_with_browser(browser: Any, engine: str, url: str, **kwargs: Any) -> BrowserPage:
+            return browser_module.BrowserPage(
+                html="<html><body><div class=\"cf-turnstile\">Verify you are human</div></body></html>",
+                final_url=url,
+                status_code=403,
+                engine="chrome",
+            )
+
+        monkeypatch.setattr(manager, "render_stealth", fake_render_stealth)
+        monkeypatch.setattr(manager, "_render_with_browser", fake_render_with_browser)
+
+        res = await manager.render("http://example.com/protected")
+        assert stealth_called is True
+        assert res.engine == "camoufox"
+        assert "Real content" in res.html

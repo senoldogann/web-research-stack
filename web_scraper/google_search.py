@@ -31,9 +31,13 @@ from web_scraper.config import config
 from web_scraper.stealth import HeaderFactory
 from web_scraper.stealth_camoufox import (
     camoufox_lock,
-    close_camoufox as close_shared_camoufox,
+    close_page,
     get_camoufox_page,
+    landing_allowed,
     warm_up_camoufox,
+)
+from web_scraper.stealth_camoufox import (
+    close_camoufox as close_shared_camoufox,
 )
 
 logger = logging.getLogger(__name__)
@@ -82,11 +86,10 @@ _EXTRACT_JS = """() => {
   return out;
 }"""
 
-# The shared Camoufox: starting it costs ~6 s, a search in it under one.
-# It holds ~2 GB across its processes, so it shuts down after a few idle
-# minutes rather than sitting in a desktop agent's memory all day.
-_CAMOUFOX_STATE: Dict[str, object] = {"browser": None, "manager": None, "last": 0.0}
-_CAMOUFOX_IDLE_S = 180.0
+# The shared Camoufox is in web_scraper/stealth_camoufox.py: starting it costs ~6 s, a search in it under one.
+# It holds ~2 GB across its processes, so it shuts down after a few idle minutes rather than sitting in a
+# desktop agent's memory all day. A search never waits for its read longer than the timeout and this margin.
+_CAMOUFOX_READ_MARGIN_S = 30.0
 
 # The shared Chrome: a normal browser, its window minimised over CDP.
 _CHROME_STATE: Dict[str, object] = {
@@ -241,7 +244,9 @@ class GoogleSearcher:
                 return
             async with _browser_lock():
                 try:
-                    await page.goto("https://www.google.com/ncr", wait_until="commit", timeout=20000)
+                    await page.goto(
+                        "https://www.google.com/ncr", wait_until="commit", timeout=20000
+                    )
                     try:
                         await page.wait_for_selector("form, div#rso, #search", timeout=15000)
                     except Exception:
@@ -279,6 +284,10 @@ class GoogleSearcher:
         Headless Chromium is caught by Google within a request; Camoufox
         spoofs the whole fingerprint (WebGL, fonts, screen, navigator), so the
         same query comes back with real results and no window on screen.
+
+        The page is one of a context that is held to the address guard, it is read only if it ended at an
+        address the guard allows, and the whole read is bounded: a page that stops answering would keep the
+        one lock every search takes, so it ends the read and takes its browser with it.
         """
         page = await get_camoufox_page()
         if page is None:
@@ -286,33 +295,18 @@ class GoogleSearcher:
 
         url = self._build_url(query, num_results, **extra)
         timeout_ms = int(config.google_playwright_timeout_seconds * 1000)
+        limit = config.google_playwright_timeout_seconds + _CAMOUFOX_READ_MARGIN_S
 
         try:
             async with camoufox_lock():
-                await page.goto(url, wait_until="commit", timeout=timeout_ms)
-                try:
-                    await page.wait_for_selector("div#rso, div#search", timeout=min(6000, timeout_ms // 2))
-                except Exception:
-                    await self._dismiss_consent(page)
-                    try:
-                        await page.wait_for_selector("div#rso, div#search", timeout=4000)
-                    except Exception:
-                        pass
-                try:
-                    await page.wait_for_function(
-                        "() => document.querySelectorAll('div#rso a h3, div#search a h3').length >= 3",
-                        timeout=3000,
-                    )
-                except Exception:
-                    pass
-
-                raw = await page.evaluate(_EXTRACT_JS)
-                html = await page.content() if not raw else ""
+                raw, html = await asyncio.wait_for(
+                    self._read_camoufox_page(page, url, timeout_ms), timeout=limit
+                )
+        except asyncio.TimeoutError as exc:
+            await close_shared_camoufox()
+            raise GoogleSearchBlocked("Camoufox did not finish reading Google in time") from exc
         finally:
-            try:
-                await page.close()
-            except Exception:
-                pass
+            await close_page(page)
 
         results = await self._results_from_raw(raw)
         if not results:
@@ -321,43 +315,31 @@ class GoogleSearcher:
                 raise GoogleSearchBlocked("Google served a bot check to Camoufox")
         return results
 
-    async def _camoufox_page(self):
-        """The tab every search reuses: a new page per query costs seconds."""
-        browser = await self._camoufox_browser()
-        if browser is None:
-            return None
-        state = _CAMOUFOX_STATE
-        page = state.get("page")
-        if page is None or page.is_closed():
-            page = await browser.new_page()
-            state["page"] = page
-        return page
-
-    async def _camoufox_browser(self):
-        """One Camoufox for the whole process: starting it costs ~6 seconds."""
-        state = _CAMOUFOX_STATE
-        now = time.monotonic()
-
-        if state["browser"] is not None and now - float(state["last"]) > _CAMOUFOX_IDLE_S:
-            await self.close_camoufox()
-
-        if state["browser"] is None:
+    async def _read_camoufox_page(self, page, url: str, timeout_ms: int) -> tuple:
+        """Open *url* in *page* and read the result list out of it (and, if there is none, its HTML)."""
+        await page.goto(url, wait_until="commit", timeout=timeout_ms)
+        try:
+            await page.wait_for_selector("div#rso, div#search", timeout=min(6000, timeout_ms // 2))
+        except Exception:
+            await self._dismiss_consent(page)
             try:
-                from camoufox.async_api import AsyncCamoufox
-            except ImportError:
-                logger.debug("camoufox is not installed; skipping the headless path")
-                return None
-            try:
-                manager = AsyncCamoufox(headless=True, humanize=True)
-                state["browser"] = await manager.__aenter__()
-                state["manager"] = manager
-            except Exception as exc:
-                logger.warning("Camoufox could not start: %s", exc)
-                state["browser"] = None
-                return None
+                await page.wait_for_selector("div#rso, div#search", timeout=4000)
+            except Exception:
+                pass
+        try:
+            await page.wait_for_function(
+                "() => document.querySelectorAll('div#rso a h3, div#search a h3').length >= 3",
+                timeout=3000,
+            )
+        except Exception:
+            pass
 
-        state["last"] = now
-        return state["browser"]
+        # A redirect the browser followed is not one the guard was asked about: where the page ended is.
+        if not await landing_allowed(page):
+            raise GoogleSearchBlocked("Google's page ended at an address that is not allowed")
+        raw = await page.evaluate(_EXTRACT_JS)
+        html = await page.content() if not raw else ""
+        return raw, html
 
     async def close_camoufox(self) -> None:
         """Shut the shared Camoufox down (idle timeout, or at process end)."""

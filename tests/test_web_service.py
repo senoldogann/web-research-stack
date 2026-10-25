@@ -213,7 +213,9 @@ async def test_scrape_opens_stealth_browser_for_captcha_when_stealth_available()
             )
         }
     )
-    rendered_html = "<html><body><h1>Protected Content</h1><p>Solved with stealth browser</p></body></html>"
+    rendered_html = (
+        "<html><body><h1>Protected Content</h1><p>Solved with stealth browser</p></body></html>"
+    )
     browser = FakeBrowser({url: BrowserPage(rendered_html, url, 200, "camoufox")})
     browser.has_stealth = True
     service = _service(fetcher, browser=browser)

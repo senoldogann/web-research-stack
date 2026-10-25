@@ -19,6 +19,7 @@ from web_scraper.web_tools.urls import (
     canonicalize_url,
     content_hash,
     matches_url_filters,
+    same_registrable_domain,
     site_scopes,
     upgrade_to_https,
     url_in_scope,
@@ -26,7 +27,8 @@ from web_scraper.web_tools.urls import (
 
 PageLoader = Callable[[str], Awaitable[dict[str, Any]]]
 # The URLs a site's sitemaps list (in scope of the crawl's options), the errors met reading them and,
-# optionally, the root of the host the site's address landed on when it is not the one asked for.
+# optionally, the root of another host of the same site the address landed on, and where a robots.txt or
+# sitemap that led to another site went.
 SeedLoader = Callable[["str", "CrawlOptions"], Awaitable[tuple[Any, ...]]]
 # A job is over in one of these: ``interrupted`` is what a restart (or a stop) of the server
 # made of a job that was queued or running; it is not resumed.
@@ -154,6 +156,9 @@ class CrawlJob:
     # The address the site's own pages are at when the one asked for redirected (apex to www): the host the
     # start page landed on is the site's own, so its links are in scope too. Empty until known.
     site_url: str = ""
+    # Where the address led when that is another site: the crawl reads the one page it leads to and follows
+    # nothing of that site. Empty when it did not.
+    redirected_to: str = ""
     results: list[dict[str, Any]] = field(default_factory=list)
     errors: list[dict[str, Any]] = field(default_factory=list)
     duplicate_entries: list[dict[str, str]] = field(default_factory=list)
@@ -180,6 +185,7 @@ class CrawlJob:
                 **{name: getattr(self, name) for name in _COUNTERS},
                 "stopped_by": self.stopped_by,
                 "not_visited_urls": list(self.not_visited_urls),
+                "redirected_to": self.redirected_to,
             },
             "errors": list(self.errors),
             "duplicates": list(self.duplicate_entries),
@@ -213,6 +219,7 @@ class CrawlJob:
             persisted=len(results),
             stopped_by=str(stopped_by) if stopped_by else None,
             not_visited_urls=[str(item) for item in progress.get("not_visited_urls") or []],
+            redirected_to=str(progress.get("redirected_to") or ""),
             **counters,
         )
 
@@ -226,7 +233,7 @@ class CrawlJob:
                 int(self.pages_attempted / max(self.options.max_pages, 1) * 100),
             )
         )
-        return {
+        snapshot: dict[str, Any] = {
             "job_id": self.job_id,
             "url": self.url,
             "status": self.status,
@@ -252,6 +259,9 @@ class CrawlJob:
             "errors": list(self.errors),
             "duplicates": list(self.duplicate_entries),
         }
+        if self.redirected_to:
+            snapshot["redirected_to"] = self.redirected_to
+        return snapshot
 
 
 class CrawlManager:
@@ -311,7 +321,7 @@ class CrawlManager:
         job = self._job(job_id)
         offset = max(offset, 0)
         limit = max(min(limit, self._settings.max_crawl_pages), 1)
-        return {
+        listing: dict[str, Any] = {
             "job_id": job.job_id,
             "status": job.status,
             "stopped_by": job.stopped_by,
@@ -324,6 +334,9 @@ class CrawlManager:
             "errors": list(job.errors),
             "duplicates": list(job.duplicate_entries),
         }
+        if job.redirected_to:
+            listing["redirected_to"] = job.redirected_to
+        return listing
 
     async def cancel(self, job_id: str) -> dict[str, Any]:
         self._prune()
@@ -542,7 +555,11 @@ class CrawlManager:
             found = await self._seeder(job.url, job.options)
             urls, errors = found[0], found[1]
             if len(found) > 2 and found[2]:
-                job.site_url = str(found[2])  # the host the address landed on is the site's own
+                self._note_landing(job, str(found[2]))  # the host of the site the address landed on
+            if len(found) > 3 and found[3] and not job.redirected_to:
+                job.redirected_to = str(
+                    found[3]
+                )  # a robots.txt or sitemap that led to another site
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - the links still lead the crawl
@@ -604,7 +621,7 @@ class CrawlManager:
             return None
 
         if depth == 0 and url == job.url:
-            self._note_landing(job, str(payload.get("url") or ""))
+            self._note_landing(job, str(payload.get("url") or ""), page=True)
         digest = str(payload.get("content_hash") or content_hash(str(payload.get("markdown", ""))))
         if digest in seen_hashes:
             job.duplicates += 1
@@ -658,14 +675,22 @@ class CrawlManager:
             return False
         return matches_url_filters(url, options.include_patterns, options.exclude_patterns)
 
-    def _note_landing(self, job: CrawlJob, landed: str) -> None:
-        """Take the host the start page landed on as the site's own when it is not the start address's."""
+    def _note_landing(self, job: CrawlJob, landed: str, *, page: bool = False) -> None:
+        """Take the host the start page landed on as the site's own when it is another host of the same
+        site (``same_registrable_domain``: apex to ``www``, one subdomain of a registrable domain to
+        another). A landing on another site is not the site: the crawl reads that one page and follows none
+        of its links, and the job says where the address led (the start page's landing over a file's,
+        which is told only when the page did not lead anywhere)."""
         try:
             address = canonicalize_url(landed)
         except UnsafeUrlError:
             return
-        if urlsplit(address).hostname != urlsplit(job.url).hostname:
+        if urlsplit(address).hostname == urlsplit(job.url).hostname:
+            return
+        if same_registrable_domain(job.url, address):
             job.site_url = address
+        elif page or not job.redirected_to:
+            job.redirected_to = address
 
     def _record_error(self, job: CrawlJob, url: str, code: str, message: str) -> None:
         if len(job.errors) >= self._settings.max_crawl_errors:

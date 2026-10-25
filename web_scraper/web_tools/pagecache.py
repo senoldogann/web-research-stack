@@ -38,6 +38,10 @@ class CachedDocument:
     warnings: tuple[str, ...]
     # The fetch's own stages (network_ms, http_ms, browser_ms, ...): what it cost once.
     timings: dict[str, float]
+    # Whether the page was asked if its site gave it for any address (``soft_404`` in ``warnings`` when it did).
+    # A page read without the question (a map's start page) is asked it when a read that wants the answer gets
+    # it from here, and kept with the answer.
+    judged: bool = True
 
 
 class PageCache:
@@ -89,6 +93,13 @@ class PageCache:
         while len(self._entries) > self.max_entries or self._bytes > self.max_bytes:
             self._drop(next(iter(self._entries)))
         return True
+
+    def revise(self, key: str, document: CachedDocument) -> None:
+        """Put another reading of the page of *key* (the same HTML, with more known of it) where the document was,
+        with the time it has left; nothing is kept for a page that is no longer here."""
+        entry = self._entries.get(key)
+        if entry is not None:
+            self._entries[key] = (entry[0], entry[1], document)
 
     def id_for(self, key: str) -> Optional[str]:
         """The ``content_id`` of the document of *key*, if it is kept (and has not outlived the TTL)."""

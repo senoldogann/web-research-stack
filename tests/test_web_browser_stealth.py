@@ -337,8 +337,12 @@ class TestItCanBeTurnedOff:
         dependencies = pyproject.split("\ndependencies = [", 1)[1].split("\n]", 1)[0]
 
         # 0.5.8 is the release whose browser and fingerprint model the package names and checks; Camoufox needs
-        # Python 3.10, and this package still installs on 3.9 (the page is then read by Chrome alone).
-        assert "\"camoufox>=0.5.8; python_version >= '3.10'\"" in dependencies
+        # Python 3.10, and this package still installs on 3.9 (the page is then read by Chrome alone). Not on an
+        # Intel Mac (1.4.6), where indexed-zstd, which it needs, has no wheel (tests/test_packaging.py holds the marker).
+        assert (
+            "\"camoufox>=0.5.8; python_version >= '3.10'"
+            " and (sys_platform != 'darwin' or platform_machine != 'x86_64')\""
+        ) in dependencies
         assert "\nstealth = [" not in pyproject  # the extra of 1.4.2's plan is gone
         assert (
             "geoip" not in dependencies

@@ -1873,7 +1873,7 @@ deserves alone, and weighs them together.
 | the address, a day or a month | `url` | 0.35, 0.20 |
 | the snippet: a day, "3 days ago" or "yesterday", a month | `snippet` | 0.35, 0.30, 0.20 |
 | the title: a day, a month | `title` | 0.25, 0.20 |
-| a date the provider gave as a field (Brave `page_age`, Serper `date`) | `provider` | 0.45 |
+| a date the provider gave as a field (Brave `page_age`, Serper `date`, and since 1.4.7 the date DuckDuckGo shows beside some results' addresses, html and lite) | `provider` | 0.45 |
 
 `dateModified`, `article:modified_time`, `og:updated_time` and the like are *modified* signals:
 they give `date_modified` and are never the published date, so a story published on 22

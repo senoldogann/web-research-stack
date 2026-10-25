@@ -312,6 +312,7 @@ class DuckDuckGoSearcher:
                 "url": url,
                 "snippet": snippet[:300] if snippet else "",
                 "source": self._get_source_name(url),
+                "published": _stamp(container.find(class_="result__extras__url")),
             }
 
         except Exception:
@@ -409,6 +410,10 @@ class DuckDuckGoLiteSearcher(DuckDuckGoSearcher):
             if snippet is not None and current is not None and not current["snippet"]:
                 text = re.sub(r"\s+", " ", snippet.get_text("", strip=False)).strip()
                 current["snippet"] = text[:300]
+                continue
+            # The row after the snippet: the address as text, and for some results a date.
+            if current is not None and not current["published"]:
+                current["published"] = _stamp(row.find("span", class_="timestamp"))
 
         return results, self._extract_next_page_payload(soup)
 
@@ -421,7 +426,26 @@ class DuckDuckGoLiteSearcher(DuckDuckGoSearcher):
             url = self._decode_ddg_url(url)
         if not title or not url.startswith("http") or "duckduckgo.com" in url:
             return None
-        return {"title": title, "url": url, "snippet": "", "source": self._get_source_name(url)}
+        return {
+            "title": title,
+            "url": url,
+            "snippet": "",
+            "source": self._get_source_name(url),
+            "published": "",
+        }
+
+
+# The date DuckDuckGo shows beside a result's address, for some results: ``2026-09-12T00:00:00.0000000`` in a span
+# after the address (the html endpoint) or in ``span.timestamp`` (the lite one).
+_STAMP_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})T\d{2}:\d{2}:\d{2}")
+
+
+def _stamp(element: Any) -> str:
+    """The day of the date DuckDuckGo shows in *element* (``2026-09-12``), or ``""``."""
+    if element is None:
+        return ""
+    match = _STAMP_RE.search(element.get_text(" ", strip=True))
+    return match.group(1) if match else ""
 
 
 async def get_best_sources_ddg(

@@ -411,9 +411,27 @@ visible window was opened.
     rendered only if its host resolves to public addresses only at the moment
     the render is asked for, and every request the page makes is held to the
     same rule (`RequestGuard`: the verdict on a host is kept 30 seconds if it is
-    a yes, 300 if it is a no). What remains is the browser's own resolution: a
+    a yes, 300 if it is a no). What the guard holds, since 1.4.2: it is put on
+    the browser *context*, before its first page exists, so it holds the
+    requests of the page, of its frames and of its dedicated workers, and of a
+    window the page opens (a popup is a page of the context; 1.4.1 routed the
+    one page only, and `window.open("http://127.0.0.1:8080/…")` and everything
+    the window loaded reached the host); the **web sockets** of the page and its
+    frames (a socket is not a request a route sees: `new
+    WebSocket("ws://127.0.0.1:9222/…")` reached the host on 1.4.1; now a socket
+    to an address that may be requested is connected as before and any other is
+    closed with 1008, the page sees `close`); and a window is closed the moment
+    it opens (nothing waits for it, and its settle wait does not keep it alive).
+    A Playwright before 1.48 cannot route web sockets, and is not used (the
+    render says `browser_unavailable`; the `playwright` extra asks for 1.48).
+    What remains is the browser's own resolution: a
     name that answers a public address to that check and a private one to the
-    browser's lookup is rendered. The server's headless browser runs only for a
+    browser's lookup is rendered; **and a web socket opened inside a Web
+    Worker**, which Playwright does not route (it reaches the host the guard
+    would have refused; the fix is a pinning proxy, not a longer list). A
+    `web_map` of a site reads its start page through the same loader, so in the
+    same browser under the same rule: the browser resolves the name itself,
+    as it does for a scraped page. The server's headless browser runs only for a
     page that the pinned HTTP fetch showed to need rendering (little text and
     scripts), or that answered an access wall, and for the probe of the
     missing-page check of a host whose pages are drawn by scripts (its address is
@@ -1838,7 +1856,7 @@ Two IPv6 forms passed the checks as well: `::127.0.0.1` and `::192.168.1.1` (IPv
 | `127.1`, `0177.0.0.1`, `2130706433` | accepted or resolved (libcurl reads `0177.0.0.1` as 127.0.0.1) | refused |
 | A result link with `/url?` in it (Google) | requested to find the real address | only Google's own wrappers are |
 | The headless browser | checked on the event loop, a yes kept 300 s | checked off the loop, a yes kept 30 s; what remains is its own name resolution |
-| The older Playwright scraper | the first address only | its page's requests go through the browser's guard |
+| The older Playwright scraper | the first address only | its page's requests go through the browser's guard (1.3.1); its web sockets and the windows its page opens too (1.4.2) |
 | `release.yml`, `ci.yml` | actions by tag, `pip install build twine` | actions by full commit with the release in a comment, `build==1.6.1`, `twine==7.0.0` |
 
 `SafeFetcher(transport=...)` keeps its meaning: a transport of the caller's connects as it likes (a test's

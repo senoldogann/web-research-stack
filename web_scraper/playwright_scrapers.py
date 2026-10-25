@@ -88,12 +88,20 @@ class PlaywrightScraper:
             locale="en-US",
             timezone_id="America/New_York",
             permissions=["geolocation"],
+            service_workers="block",
         )
 
+        # What the page redirects to and loads, the web sockets it opens and the windows it opens are held
+        # to the same rule as the address it is given: a public page may not send the browser to the
+        # loopback or the home network. A Playwright that cannot hold them is not used, and the browser
+        # already started is not left running (an __aenter__ that raises has no __aexit__).
+        try:
+            await self._guard.hold(self._context)
+        except BaseException:
+            await self.__aexit__(None, None, None)
+            raise
         self._page = await self._context.new_page()
-        # What the page redirects to and loads is held to the same rule as the address it is given: a
-        # public page may not send the browser to the loopback or the home network.
-        await self._page.route("**/*", self._guard.route)
+        self._guard.close_popups(self._context, self._page)
 
         # Apply comprehensive stealth evasions (navigator, webgl, user-agent, etc.)
         await stealth_async(self._page)

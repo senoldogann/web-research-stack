@@ -37,6 +37,8 @@ _ALLOWED_KEPT_SECONDS = 30.0
 _REFUSED_KEPT_SECONDS = 300.0
 _CHECK_TIMEOUT_SECONDS = 5.0
 _HOSTS_KEPT_MAX = 1024
+# The status a web socket the guard refuses is closed with (RFC 6455: 1008, a policy violation).
+_REFUSED_SOCKET_CODE = 1008
 # Waiting for a page to settle (see ``HeadlessBrowserManager._settle``): how long the network may take to
 # go quiet, how often the page's text is looked at, and the time kept back from the render's own deadline
 # to read the page in.
@@ -177,6 +179,8 @@ class RequestGuard:
 
     def __init__(self) -> None:
         self._hosts: dict[str, _AllowedHost] = {}
+        # The windows being closed (a task nobody holds can be collected before it has run).
+        self._closing: set[asyncio.Future[Any]] = set()
 
     async def allowed_now(self, url: str) -> bool:
         """Whether *url* may be requested, judged now and off the event loop; any failure is a no."""
@@ -217,6 +221,57 @@ class RequestGuard:
         else:
             with contextlib.suppress(Exception):
                 await route.abort("blockedbyclient")
+
+    async def route_web_socket(self, socket: Any) -> None:
+        """A Playwright web socket route handler: connect the page's web socket to its server if the address
+        may be requested (``ws`` is ``http`` and ``wss`` is ``https`` to the rule), close it if not. A web
+        socket is not a request a route sees; left unrouted it reaches any host."""
+        try:
+            parts = urlsplit(socket.url)
+            scheme = {"ws": "http", "wss": "https"}.get(parts.scheme.lower())
+            allowed = scheme is not None and await self.allowed(
+                parts._replace(scheme=scheme).geturl()
+            )
+        except Exception:  # noqa: BLE001 - deny on any failure
+            allowed = False
+        with contextlib.suppress(Exception):
+            if allowed:
+                socket.connect_to_server()
+            else:
+                await socket.close(code=_REFUSED_SOCKET_CODE, reason="blocked by the guard")
+
+    async def hold(self, context: Any) -> None:
+        """Hold every page of a Playwright browser context to the rule, before the first page is made: the
+        requests they make (a window a page opens is a page of the same context, so its navigation and
+        everything it loads are held too), and the web sockets they open.
+
+        A Playwright too old to route web sockets (before 1.48) cannot hold them, and is not used: the
+        guard does not run with a gap that is not the browser's own.
+        """
+        route_web_socket = getattr(context, "route_web_socket", None)
+        if route_web_socket is None:
+            raise BrowserUnavailableError(
+                "This Playwright cannot hold a page's web sockets to the guard; "
+                "install playwright 1.48 or later"
+            )
+        await context.route("**/*", self.route)
+        await route_web_socket("**/*", self.route_web_socket)
+
+    def close_popups(self, context: Any, page: Any) -> None:
+        """Close every window that is not *page*: a page that opens one is not asking for a second page to
+        be read, and what the window loads is nobody's to read or to wait for."""
+
+        async def close(popup: Any) -> None:
+            with contextlib.suppress(Exception):
+                await popup.close()
+
+        def opened(popup: Any) -> None:
+            if popup is not page:
+                task = asyncio.ensure_future(close(popup))
+                self._closing.add(task)
+                task.add_done_callback(self._closing.discard)
+
+        context.on("page", opened)
 
 
 class HeadlessBrowserManager:
@@ -399,8 +454,9 @@ class HeadlessBrowserManager:
             try:
                 deadline = self._clock() + self.timeout_seconds
                 context = await self._create_context_for(browser, engine_name)
+                await self._guard.hold(context)
                 page = await context.new_page()
-                await page.route("**/*", self._guard.route)
+                self._guard.close_popups(context, page)
                 try:
                     response = await page.goto(
                         url,

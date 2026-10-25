@@ -329,6 +329,12 @@ every Chrome it starts. Without them its throwaway profile goes to the login key
 missing), macOS showed the owner a "Keychain Not Found" dialog for "Chrome", whose other button resets the keychains;
 that the dialog came from them is likely, not proven (the dialog's process had gone and the system log had no entry).
 
+Those two Chrome paths are held to the address guard since 1.4.7, as the search's Camoufox is: the context
+(Chrome's default one, over CDP) is held before the search's page exists, a window a page opens is closed, and the
+page is read only if it ended at an address the guard allows. A context the guard cannot hold is not searched in.
+Until then a script of the page reached any address: a security review of 1.4.6 had one fetch a private server on the
+loopback, and it was hit (`tests/test_google_chrome_guard.py` runs the installed Chrome against such a server).
+
 ### Verify that HTTP pages never start a browser
 
 The benchmark checks this directly:

@@ -188,7 +188,7 @@ async def get_camoufox_context():
                 try:
                     context = await browser.new_context()
                     # Before its first page exists: the requests of a page, a frame, a window and a web socket.
-                    await _guard().hold(context)
+                    await hold_context(context)
                 except Exception as exc:  # noqa: BLE001 - a context the guard does not hold is not used
                     _unavailable(f"its context could not be held to the address guard ({exc})")
                     if context is not None:
@@ -217,6 +217,18 @@ def _close_windows_of(page: Any) -> None:
         task.add_done_callback(_CLOSING.discard)
 
     page.on("popup", opened)
+
+
+async def hold_context(context: Any) -> None:
+    """Hold a browser context of the search to the address guard, before its first page exists: the Camoufox one,
+    and the Chrome ones ``GoogleSearcher`` starts itself when Camoufox cannot start. Raises if the guard cannot hold
+    it (a Playwright too old to route web sockets); such a context is not used."""
+    await _guard().hold(context)
+
+
+def close_windows_of(page: Any) -> None:
+    """Close every window *page* opens (``_close_windows_of``), for a page of a Chrome of the search too."""
+    _close_windows_of(page)
 
 
 async def get_camoufox_page():

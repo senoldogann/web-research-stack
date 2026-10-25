@@ -31,7 +31,9 @@ from web_scraper.config import config
 from web_scraper.stealth import HeaderFactory
 from web_scraper.stealth_camoufox import (
     camoufox_lock,
+    close_windows_of,
     get_camoufox_page,
+    hold_context,
     landing_allowed,
     release_page,
     warm_up_camoufox,
@@ -400,6 +402,8 @@ class GoogleSearcher:
                 )
             except Exception:
                 pass
+            if not await landing_allowed(page):
+                raise GoogleSearchBlocked("Google's page ended at an address that is not allowed")
             raw = await page.evaluate(_EXTRACT_JS)
             html = await page.content() if not raw else ""
 
@@ -443,7 +447,16 @@ class GoogleSearcher:
             async with async_playwright() as pw:
                 browser = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
                 context = browser.contexts[0] if browser.contexts else await browser.new_context()
+                # Held to the address guard before the search's page exists, as the Camoufox path is
+                # (it was not: a script of the page reached any address); a context the guard cannot
+                # hold is not used.
+                try:
+                    await hold_context(context)
+                except Exception as exc:  # noqa: BLE001 - an unheld context is not searched in
+                    logger.warning("headless Chrome not held to the address guard: %s", exc)
+                    return []
                 page = await context.new_page()
+                close_windows_of(page)
                 try:
                     await page.goto(url, wait_until="commit", timeout=timeout_ms)
                     try:
@@ -453,6 +466,11 @@ class GoogleSearcher:
                         )
                     except Exception:
                         pass
+                    # A redirect the browser followed is not one the guard was asked about.
+                    if not await landing_allowed(page):
+                        raise GoogleSearchBlocked(
+                            "Google's page ended at an address that is not allowed"
+                        )
                     raw = await page.evaluate(_EXTRACT_JS)
                     if not raw:
                         html = await page.content()
@@ -512,7 +530,11 @@ class GoogleSearcher:
             await self._wait_for_cdp(port)
             browser = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
             context = browser.contexts[0] if browser.contexts else await browser.new_context()
+            # Held to the address guard before the tab every search uses exists; if it cannot be,
+            # this Chrome is not used (the except below stops it).
+            await hold_context(context)
             page = await context.new_page()
+            close_windows_of(page)
             if not config.google_allow_visible_browser:
                 await self._minimize(page)
         except Exception as exc:

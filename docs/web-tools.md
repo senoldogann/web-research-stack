@@ -1941,9 +1941,20 @@ Text that shows up before the content and is long enough to be a page (a cookie 
 counts as text: a page that shows only that when the network goes quiet is read as that, and is not called a shell.
 
 Every request the browser makes is checked as in 1.3.1 (`RequestGuard`: the address of the host, a yes kept 30 s, a no
-300 s); what the browser's own name resolution does is still what [Security boundaries](#security-boundaries) says.
+300 s), and since 1.4.2 so are the web sockets and the windows of the page; what the browser's own name resolution does
+is still what [Security boundaries](#security-boundaries) says.
 The wait is `timings.settle_ms` of the answer (`browser_ms` is the whole render), and the browser's own record says
 why it ended: `stable`, or `cap` (the time ran out first).
+
+**A page that blocks the browser (1.4.2).** A page whose script spins (`while (true) {}`) leaves `page.evaluate` and
+`page.content` unanswered for ever. On 1.4.1 and before the render waited on them with nothing around it: with
+`BROWSER_TIMEOUT_SECONDS` at 10 it was still going after 40 s, it kept one of the manager's context slots and, above it,
+one of the MCP server's eight tool slots (eight such pages and the server answered nothing). Now the whole render is
+bounded by `BROWSER_TIMEOUT_SECONDS` and 5 seconds, and ends with `timeout`: the service has the page the HTTP fetch
+read and says `browser_render_failed:timeout` (a scrape of a page that is only drawn by scripts is `timeout`), its
+context is closed whatever happened (a renderer stuck in a loop dies with its context), a context that does not close
+in 5 seconds is given up and the browser that did not answer is shut down and started again by the next render, and the
+shutdown of a browser is bounded as well. Tests: `tests/test_web_browser_hang.py`.
 
 **A page that is still a shell says so.** After the read, a page whose text is a loading placeholder, an empty app root
 or next to nothing, while its HTML has scripts, is not a short page: it is one that was not read.

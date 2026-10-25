@@ -13,6 +13,7 @@ the three angles of a discover search, before any ranking), and the clock is the
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import date, datetime
 from pathlib import Path
@@ -214,6 +215,169 @@ def _candidates() -> list[DiscoveryCandidate]:
                     {angle: rank},
                 )
     return list(pool.values())
+
+
+FAMILY = [
+    "https://modelcontextprotocol.io/specification/2026-07-28",  # the project's own
+    "https://modelcontextprotocol.dev/specification/2026-07-28",  # whoever registers the name elsewhere
+    "https://modelcontextprotocol.app/specification",
+    "https://modelcontextprotocol.co/spec",
+    "https://model-context-protocol.com/specification",
+]
+
+
+def _pool(urls: list[str], angles: tuple[str, ...] = ("base",)) -> list[DiscoveryCandidate]:
+    """A pool in which each address has the rank of its place in *urls* in every one of *angles*."""
+    return [
+        DiscoveryCandidate(
+            SearchResult(
+                f"Model Context Protocol specification {n}", url, "The specification.", ""
+            ),
+            dict.fromkeys(angles, rank),
+        )
+        for rank, (n, url) in enumerate(enumerate(urls))
+    ]
+
+
+def _types(rows: list[dict[str, Any]]) -> dict[str, str]:
+    return {row["url"]: row["source_type"] for row in rows}
+
+
+class TestOnlyOneOfAFamilyOfNamesIsOfficial:
+    """The same name on several top-level domains an organization uses is one site and its lookalikes: 1.4.1 made
+    every one of them ``official`` (``modelcontextprotocol.dev``, ``.app``, ``.co``, ``model-context-protocol.com``
+    beside the project's ``.io``). In a pool, only the host the providers rank highest among those of the name is."""
+
+    def test_the_one_ranked_first_is_official_and_the_others_are_not(self) -> None:
+        rows = annotate_candidates(QUERY, _pool(FAMILY + [LOOKALIKE]))
+
+        types = _types(rows)
+        assert types[FAMILY[0]] == "official"
+        assert [types[url] for url in FAMILY[1:]] == ["other"] * 4
+        assert types[LOOKALIKE] == "other"  # not an organization's top-level domain: as before
+
+    def test_its_subdomains_are_official_with_it_and_a_forum_still_is_not(self) -> None:
+        pool = _pool(
+            [
+                FAMILY[0],
+                FAMILY[1],
+                "https://blog.modelcontextprotocol.io/posts/1",
+                "https://docs.modelcontextprotocol.io/start",
+                "https://discuss.modelcontextprotocol.io/t/1",
+                "https://blog.modelcontextprotocol.dev/posts/1",
+            ]
+        )
+
+        types = _types(annotate_candidates(QUERY, pool))
+
+        assert (
+            types[FAMILY[0]] == types["https://blog.modelcontextprotocol.io/posts/1"] == "official"
+        )
+        assert types["https://docs.modelcontextprotocol.io/start"] == "official"
+        assert types["https://discuss.modelcontextprotocol.io/t/1"] == "other"
+        assert types[FAMILY[1]] == types["https://blog.modelcontextprotocol.dev/posts/1"] == "other"
+
+    def test_the_providers_ranking_is_the_evidence_whichever_host_it_favours(self) -> None:
+        # Nothing else tells the project's host from a copy: the one the providers put first is the one.
+        types = _types(annotate_candidates(QUERY, _pool(list(reversed(FAMILY)))))
+
+        assert types[FAMILY[-1]] == "official"
+        assert [types[url] for url in FAMILY[:-1]] == ["other"] * 4
+
+    def test_agreement_of_several_angles_outweighs_one_first_place(self) -> None:
+        real = DiscoveryCandidate(
+            SearchResult(
+                "Model Context Protocol specification", FAMILY[0], "The specification.", ""
+            ),
+            {"base": 2, "current": 2, "background": 2},
+        )
+        copy = DiscoveryCandidate(
+            SearchResult(
+                "Model Context Protocol specification", FAMILY[1], "The specification.", ""
+            ),
+            {"base": 0},
+        )
+
+        types = _types(annotate_candidates(QUERY, [copy, real]))
+
+        assert types[FAMILY[0]] == "official" and types[FAMILY[1]] == "other"
+
+    def test_the_best_ranked_page_of_a_host_stands_for_the_host(self) -> None:
+        # The lookalike's first place is its one page; the project has a page at 0 too and others behind it.
+        pool = _pool([FAMILY[0], FAMILY[1], "https://modelcontextprotocol.dev/b"])
+        pool += _pool(["https://modelcontextprotocol.io/clients"] * 1)
+
+        types = _types(annotate_candidates(QUERY, pool))
+
+        assert types[FAMILY[0]] == types["https://modelcontextprotocol.io/clients"] == "official"
+        assert types[FAMILY[1]] == types["https://modelcontextprotocol.dev/b"] == "other"
+
+    def test_a_host_the_tables_name_is_the_one_even_when_a_lookalike_is_ranked_above_it(
+        self,
+    ) -> None:
+        rules = sources.DEFAULT_RULES.extended(first_party=["modelcontextprotocol.io"])
+        pool = _pool([FAMILY[1], FAMILY[2], FAMILY[0]])
+
+        types = _types(annotate_candidates(QUERY, pool, rules=rules))
+
+        assert types[FAMILY[0]] == "official"
+        assert types[FAMILY[1]] == types[FAMILY[2]] == "other"
+
+    def test_a_name_that_only_one_host_is_found_on_is_official_as_before(self) -> None:
+        # No ranking can tell a lone host from the project's own: the older rule stands.
+        types = _types(annotate_candidates(QUERY, _pool([FAMILY[1], LOOKALIKE])))
+
+        assert types[FAMILY[1]] == "official" and types[LOOKALIKE] == "other"
+
+    def test_a_pool_that_is_not_about_the_name_has_no_family(self) -> None:
+        types = _types(annotate_candidates("something else entirely", _pool(FAMILY)))
+
+        assert set(types.values()) == {"other"}
+
+    def test_the_older_rule_for_a_name_of_one_word_is_not_a_family(self) -> None:
+        pool = _pool(
+            ["https://docs.frobnicator.com/start", "https://docs.frobnicator.dev/start"],
+        )
+
+        types = _types(annotate_candidates("frobnicator specification", pool))
+
+        assert set(types.values()) == {
+            "official"
+        }  # _site_named_by: the organization's docs, any of them
+
+    def test_a_search_says_it_the_same_way(self) -> None:
+        class Provider:
+            name = "family"
+            headless = False
+
+            async def search(self, query: str, limit: int, **options: Any) -> list[SearchResult]:
+                return [
+                    SearchResult(f"Model Context Protocol specification {n}", url, "Spec.", "")
+                    for n, url in enumerate(FAMILY)
+                ]
+
+        service = WebToolsService(
+            settings=WebToolsSettings(
+                search_provider="family",
+                search_angle_delay_ms=0,
+                search_jitter_min_ms=0,
+                search_jitter_max_ms=0,
+                search_fallback_providers=[],
+                search_resolve_dates="off",
+            ),
+            fetcher=None,  # type: ignore[arg-type]
+            search_adapters={"family": Provider()},
+            cache=InMemoryTTLCache(ttl_seconds=60, max_entries=10),
+        )
+
+        async def run() -> dict[str, Any]:
+            return await service.search(QUERY, compact=True, limit=10)
+
+        answer = asyncio.run(run())
+
+        types = {item["url"]: item["source_type"] for item in answer["results"]}
+        assert [url for url, kind in types.items() if kind == "official"] == [FAMILY[0]]
+        assert len(types) == len(FAMILY)
 
 
 class TestWhoIsOfficialByName:

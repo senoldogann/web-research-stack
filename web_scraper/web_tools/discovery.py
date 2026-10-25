@@ -49,6 +49,8 @@ ANGLE_ORDER = {"base": 0, "current": 1, "background": 2, "primary": 3}
 ANGLE_WEIGHTS = {"base": 1.0, "current": 0.9, "background": 0.75, "primary": 0.8}
 
 _RRF_K = 10.0
+# The place of a result that no angle ranked (a candidate made by hand): after every ranked one.
+_UNRANKED = 10_000
 _BM25_K1 = 1.2
 _BM25_FIELDS = (
     ("title", 3.0, 0.5),
@@ -925,6 +927,7 @@ def classify_source_type(
     news: bool = False,
     query: str = "",
     rules: Optional[SourceRules] = None,
+    subject_home: Optional[str] = None,
 ) -> str:
     """Classify a result URL: official, academic, news, press_release, social, reference,
     code, community, aggregator or other.
@@ -937,7 +940,12 @@ def classify_source_type(
     (``docs.stripe.com`` for "stripe webhooks"); and a host whose registrable name is all the words of
     the query's subject joined (``modelcontextprotocol.io`` for "Model Context Protocol specification"),
     every page of it and of its subdomains, on a top-level domain an organization uses (not
-    ``modelcontextprotocol.info``). A site that collects other outlets' stories is ``aggregator``.
+    ``modelcontextprotocol.info``). Of the hosts that have that name on several of them
+    (``modelcontextprotocol.dev``, ``.app``, ``model-context-protocol.com``: a lookalike is as good a
+    name) only one is the subject's own, *subject_home*: the registrable domain a pool of results is
+    ranked to have (``subject_home_of``). A host alone, with no pool to be told from its lookalikes by
+    (*subject_home* unset), is the subject's own. A site that collects other outlets' stories is
+    ``aggregator``.
     """
     rules = rules or DEFAULT_RULES
     try:
@@ -951,12 +959,7 @@ def classify_source_type(
     if not host:
         return "other"
 
-    if (
-        _host_matches(host, _OFFICIAL_HOSTS)
-        or _host_matches(host, _PUBLIC_SECTOR_HOSTS)
-        or _GOVERNMENT_SUFFIX.search(host)
-        or rules.is_first_party(host, path)
-    ):
+    if _named_by_the_tables(host, path, rules):
         return "official"
     if _host_matches(host, _ACADEMIC_HOSTS) or _ACADEMIC_SUFFIX.search(host):
         return "academic"
@@ -976,7 +979,7 @@ def classify_source_type(
         return "aggregator"
     if query and (
         _site_named_by(host, path, _query_words(query))
-        or _site_is_the_subject(host, _query_words(query))
+        or _site_is_the_subject(host, _query_words(query), subject_home)
     ):
         return "official"
     # A docs-looking path alone does not make a host official: mirrors (mdn.org.cn, runebook.dev) copy another
@@ -1028,7 +1031,37 @@ def _subject_words(words: list[str]) -> list[str]:
     ]
 
 
-def _site_is_the_subject(host: str, words: list[str]) -> bool:
+def _named_by_the_tables(host: str, path: str, rules: SourceRules) -> bool:
+    """Whether the tables say a site is an organization's own: a known first-party host, a public body, a
+    government's top-level domain, or what WEB_TOOLS_OFFICIAL_HOSTS added."""
+    return bool(
+        _host_matches(host, _OFFICIAL_HOSTS)
+        or _host_matches(host, _PUBLIC_SECTOR_HOSTS)
+        or _GOVERNMENT_SUFFIX.search(host)
+        or rules.is_first_party(host, path)
+    )
+
+
+def _subject_name(words: list[str]) -> str:
+    """The name of what a query is about, if a host could be named by it: its subject words joined, of at
+    least two words and six letters (a name of one word is ``_site_named_by``'s, a shorter one is not a name)."""
+    subject = _subject_words(words)
+    joined = "".join(subject)
+    return joined if len(subject) >= 2 and len(joined) >= 6 else ""
+
+
+def _has_the_name(host: str, name: str) -> bool:
+    """Whether a host's registrable name is *name* (hyphens aside) on a top-level domain an organization
+    uses, and it is not a forum on the domain."""
+    if not name or registrable_label(host).replace("-", "") != name:
+        return False
+    if not has_organization_suffix(host):
+        return False
+    subdomain, _ = split_host(host)
+    return (subdomain.split(".")[0] if subdomain else "") not in COMMUNITY_SUBDOMAINS
+
+
+def _site_is_the_subject(host: str, words: list[str], home: Optional[str] = None) -> bool:
     """Whether a host is the site of what the query is about: its registrable name is all the words of
     the subject joined (``modelcontextprotocol`` for "Model Context Protocol specification").
 
@@ -1036,16 +1069,70 @@ def _site_is_the_subject(host: str, words: list[str]) -> bool:
     not only those that are an organization speaking. Not a subject of one word, which a site's name
     says less surely (``_site_named_by`` is that rule), not a name of fewer than six letters, not a
     forum on the domain, and not the same name on a top-level domain that organizations do not use
-    (``.info``, ``.biz``, ``.xyz``, ``.net``: where a copy of a site is put).
+    (``.info``, ``.biz``, ``.xyz``, ``.net``: where a copy of a site is put). When *home* is given (the
+    registrable domain of the name a pool of results is ranked to have, ``subject_home_of``) the host
+    must be of it: the same name on another of the top-level domains that are used is a lookalike.
     """
-    subject = _subject_words(words)
-    joined = "".join(subject)
-    if len(subject) < 2 or len(joined) < 6:
+    name = _subject_name(words)
+    if not _has_the_name(host, name):
         return False
-    if registrable_label(host).replace("-", "") != joined or not has_organization_suffix(host):
-        return False
-    subdomain, _ = split_host(host)
-    return (subdomain.split(".")[0] if subdomain else "") not in COMMUNITY_SUBDOMAINS
+    return home is None or split_host(host)[1] == home
+
+
+def subject_home_of(
+    query: str,
+    candidates: Iterable[DiscoveryCandidate],
+    rules: Optional[SourceRules] = None,
+) -> Optional[str]:
+    """Of the hosts in a pool that have the name of what the query is about, the one registrable domain that
+    is the subject's own: the one the tables name, else the one the providers ranked highest (the
+    reciprocal-rank agreement of its best result over the angles, then its best place, then its name).
+    ``None`` when no host of the pool has the name. The same name on several top-level domains
+    (``modelcontextprotocol.io`` and the copies of it on ``.dev``, ``.app`` and ``.co``) is one site and its
+    lookalikes, and ranking is all a pool has to tell them apart by: the real site is the one the engines
+    put first.
+    """
+    name = _subject_name(_query_words(query))
+    if not name:
+        return None
+    rules = rules or DEFAULT_RULES
+    ranked: dict[str, tuple[float, int]] = {}
+    named: Optional[str] = None
+    for candidate in candidates:
+        host, path = _host_and_path(candidate.result.url)
+        if not _has_the_name(host, name):
+            continue
+        domain = split_host(host)[1]
+        if named is None and _named_by_the_tables(host, path, rules):
+            named = domain
+        agreement = _agreement(candidate)
+        place = min(candidate.angle_ranks.values(), default=_UNRANKED)
+        held = ranked.get(domain)
+        ranked[domain] = (
+            (agreement, place) if held is None else (max(held[0], agreement), min(held[1], place))
+        )
+    if not ranked:
+        return None
+    return named or min(ranked, key=lambda domain: (-ranked[domain][0], ranked[domain][1], domain))
+
+
+def _host_and_path(url: str) -> tuple[str, str]:
+    """A result's host (lower case, no ``www.``) and path; empty for an address that has none."""
+    try:
+        parsed = urlsplit(url)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        path = (parsed.path or "").lower()
+    except ValueError:
+        return "", ""
+    return (host[4:] if host.startswith("www.") else host), path
+
+
+def _agreement(candidate: DiscoveryCandidate) -> float:
+    """How much the angles of a search agree on a result: its reciprocal ranks, each angle weighted."""
+    return sum(
+        ANGLE_WEIGHTS.get(name, 0.5) / (_RRF_K + rank)
+        for name, rank in candidate.angle_ranks.items()
+    )
 
 
 def _field_tokens(text: str) -> list[str]:
@@ -1161,6 +1248,9 @@ def annotate_candidates(
     news = wants_news(query)
     window = detect_date_filter(query, year=now.year)
     facts = _QueryFacts.of(query, news, primary_first, rules or DEFAULT_RULES)
+    # The same name on several top-level domains is one site and its lookalikes: only the one the providers
+    # ranked highest is the subject's own.
+    home = subject_home_of(query, items, facts.rules)
     rows = [
         _annotate_candidate(
             query,
@@ -1172,6 +1262,7 @@ def annotate_candidates(
             window,
             (dates or {}).get(item.result.url),
             facts,
+            home,
         )
         for index, item in enumerate(items)
     ]
@@ -1245,11 +1336,14 @@ def _annotate_candidate(
     window: Optional[str],
     resolution: Optional[DateResolution] = None,
     facts: Optional[_QueryFacts] = None,
+    subject_home: Optional[str] = None,
 ) -> dict[str, Any]:
     facts = facts or _QueryFacts.of(query, news, None, DEFAULT_RULES)
     result = candidate.result
     url = result.url
-    source_type = classify_source_type(url, news=news, query=query, rules=facts.rules)
+    source_type = classify_source_type(
+        url, news=news, query=query, rules=facts.rules, subject_home=subject_home
+    )
     year = infer_publication_year(
         result.title,
         result.snippet,
@@ -1277,10 +1371,7 @@ def _annotate_candidate(
         key=lambda name: (ANGLE_ORDER.get(name, 99), candidate.angle_ranks[name]),
     )
 
-    rrf = sum(
-        ANGLE_WEIGHTS.get(name, 0.5) / (_RRF_K + rank)
-        for name, rank in candidate.angle_ranks.items()
-    )
+    rrf = _agreement(candidate)
     # What a site's kind is worth counts in proportion to how much of the query a result's title
     # and snippet hold, for a query about what holds several organizations: the page of one of
     # them is not the story of both.

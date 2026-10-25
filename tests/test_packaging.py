@@ -32,7 +32,7 @@ class TestMetadata:
 
         assert re.search(r'^name = "dotagent-web-research"$', project, re.M)
         assert re.search(rf'^version = "{re.escape(web_scraper.__version__)}"$', project, re.M)
-        assert web_scraper.__version__ == "1.4.5"
+        assert web_scraper.__version__ == "1.4.6"
 
     def test_the_import_package_stays_web_scraper(self) -> None:
         packages = _section("tool.setuptools.packages.find")
@@ -70,6 +70,29 @@ class TestMetadata:
             "pypdf",
             "camoufox",
         ]
+
+    def test_camoufox_is_left_out_on_an_intel_mac_alone(self) -> None:
+        """1.4.6: camoufox's fpgen needs indexed-zstd, whose only wheel for a Mac is Apple silicon's; on an Intel Mac
+        it was built from its C++ source, and an install without Xcode's tools stopped."""
+        from packaging.requirements import Requirement
+
+        block = re.search(r"^dependencies = \[(.*?)^\]", _section("project"), re.M | re.S)
+        assert block is not None
+        line = next(
+            item for item in re.findall(r'"([^"]+)"', block.group(1)) if item.startswith("camoufox")
+        )
+        marker = Requirement(line).marker
+        assert marker is not None
+
+        def wanted(platform: str, machine: str, python: str = "3.13") -> bool:
+            return marker.evaluate(
+                {"sys_platform": platform, "platform_machine": machine, "python_version": python}
+            )
+
+        assert not wanted("darwin", "x86_64")
+        assert wanted("darwin", "arm64")
+        assert wanted("linux", "x86_64") and wanted("linux", "aarch64")
+        assert not wanted("darwin", "arm64", "3.9")
 
 
 class TestCommands:

@@ -78,7 +78,10 @@ class PlaywrightScraper:
 
         self._playwright = await async_playwright().start()
         self._browser = await self._playwright.chromium.launch(
-            headless=self.headless, args=["--no-sandbox"]
+            headless=self.headless,
+            args=["--no-sandbox"],
+            # Playwright switches Chromium's popup blocker off; a window a script opens is blocked again.
+            ignore_default_args=["--disable-popup-blocking"],
         )
 
         # Create context with anti-detection settings

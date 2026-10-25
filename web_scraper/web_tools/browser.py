@@ -686,6 +686,11 @@ class HeadlessBrowserManager:
         launch_options: dict[str, Any] = {
             "headless": True,
             "args": list(candidate.args),
+            # Playwright starts Chromium with --disable-popup-blocking; without it a window that a page opens
+            # without anyone having clicked (window.open in a script, a form with target=_blank) is blocked, as
+            # Firefox blocks it. A window that was closed as it opened raced with its own first requests: a
+            # request that Playwright has paused is let go when the page goes (measured with a real Chrome).
+            "ignore_default_args": ["--disable-popup-blocking"],
         }
         if candidate.channel:
             launch_options["channel"] = candidate.channel

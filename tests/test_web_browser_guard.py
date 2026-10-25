@@ -279,11 +279,47 @@ class TestARealBrowserAgainstARealSite:
             await manager.stop()
             site.close()
 
-        # The socket was closed by the guard (1008), not refused by a host that was never asked, and the
-        # window was closed; nothing, not the handshake, the window's page nor what it loads, reached the host.
+        # The socket was closed by the guard (1008), not refused by a host that was never asked, and no window
+        # was opened (Chrome's popup blocker is on, so window.open gives a script none); nothing, not the
+        # handshake, the window's page nor what it loads, reached the host.
         assert "socket-closed-1008" in rendered.html
-        assert "window-closed-true" in rendered.html
+        assert "window-closed-none" in rendered.html
         assert refused.seen == []
+
+    @pytest.mark.asyncio
+    async def test_a_window_on_an_allowed_site_cannot_ask_a_refused_host_for_anything(
+        self, refused: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The window is on a site the guard allows, so its navigation would be let through; its own script then asks
+        # the refused host. Closing the window as it opened raced with the window's first requests (a request that
+        # Playwright has paused is let go when its page goes): once in seven runs of the reviewer's battery the
+        # fetch got through to the host. Chrome's popup blocker, which Playwright switches off, is on again, so
+        # a script gets no window and there is nothing to race.
+        refused_url = f"http://{self.REFUSED}:{refused.port}"
+        site = LocalSite(
+            {
+                "/": (
+                    "<!doctype html><html><head><title>Opener</title></head><body><main>"
+                    f"<p>{'A page that is complete as it arrives. ' * 12}</p></main>"
+                    "<script>window.open('/inner');</script></body></html>"
+                ),
+                "/inner": (
+                    "<html><body>inner<script>"
+                    f"fetch('{refused_url}/inner-fetch', {{mode: 'no-cors'}}).catch(function () {{}});"
+                    "</script></body></html>"
+                ),
+            }
+        )
+        self._browser_with(monkeypatch, **{self.ALLOWED: site.port})
+        manager = await started_browser(post_load_wait_ms=1_500)
+        try:
+            await manager.render(f"http://{self.ALLOWED}:{site.port}/")
+        finally:
+            await manager.stop()
+            site.close()
+
+        assert refused.seen == []
+        assert "/inner" not in site.seen  # the window's page was never even asked for
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("guarded", [True, False], ids=["guarded", "control-unguarded"])

@@ -529,6 +529,9 @@ that asked is returned as Chrome read it. A page that meets a wall after the fet
 `WEB_TOOLS_BROWSER_STEALTH_FETCH=false` leaves it to you: run that command yourself, once. The fetch is bounded (30
 minutes), is not tried again for 30 minutes after it failed, stops with the server, and the log says when it starts, when
 it ends and how. Nothing is fetched where the package is missing or too old to be asked (before 0.5.8).
+Since 1.4.7 the command is `python -P -m camoufox fetch` (`-I` on Python 3.10) and runs in an empty folder of its
+own: it ran with the server's working folder on its import path and as its folder, and Dot starts the server in a
+run's workspace, so a `camoufox.py` a run wrote there was what ran, outside Dot's sandbox (a security review of 1.4.6).
 
 **When it runs.** On a wall, and only then:
 

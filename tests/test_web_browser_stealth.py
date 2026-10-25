@@ -46,6 +46,8 @@ from web_scraper.web_tools.service import WebToolsService
 from web_scraper.web_tools.settings import WebToolsSettings
 
 HANG = 10.0
+# The command as the package has it: tests/conftest.py puts a harmless one in its place for every test.
+_REAL_FETCH_COMMAND = browser_module._STEALTH_FETCH_COMMAND
 LONG = "A page with something to say, and enough of it to be one. " * 5
 CHALLENGE = '<html><body><div class="cf-turnstile">Verify you are human</div></body></html>'
 
@@ -516,6 +518,62 @@ class TestWhatCamoufoxLacksIsFetchedApartFromTheRead:
         assert await fetch.run_command() == (False, "Error: no space left")
         command("import sys; sys.exit(4)")
         assert await fetch.run_command() == (False, "exit status 4")
+
+    @pytest.mark.asyncio
+    async def test_a_camoufox_py_in_the_server_s_working_folder_is_not_what_the_command_runs(
+        self, tmp_path: Path
+    ) -> None:
+        # Dot starts the server in the run's workspace, which a run can write: "-m camoufox" ran a camoufox.py
+        # planted there, outside Dot's sandbox (a security review of 1.4.6). The flag of the real command keeps
+        # the working folder off the child's import path; the module here is one no installed package has.
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        ran = tmp_path / "ran"
+        (workspace / "planted_fetch_probe.py").write_text(
+            f"open({str(ran)!r}, 'w').write('the planted file ran')\n", encoding="utf-8"
+        )
+        assert _REAL_FETCH_COMMAND[2:] == ("-m", "camoufox", "fetch")
+
+        process = await asyncio.create_subprocess_exec(
+            *_REAL_FETCH_COMMAND[:2],
+            "-m",
+            "planted_fetch_probe",
+            cwd=workspace,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(process.wait(), HANG)
+        control = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "planted_fetch_probe", cwd=workspace
+        )
+        await asyncio.wait_for(control.wait(), HANG)
+
+        assert (
+            process.returncode != 0
+        )  # no module of that name: the planted file was not on the path
+        assert (
+            ran.read_text() == "the planted file ran"
+        )  # it did run without the flag (the control)
+        ran.unlink()
+        assert not ran.exists()
+
+    @pytest.mark.asyncio
+    async def test_the_command_runs_in_a_folder_of_its_own(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        monkeypatch.chdir(workspace)
+        monkeypatch.setattr(
+            browser_module,
+            "_STEALTH_FETCH_COMMAND",
+            (sys.executable, "-c", "import os; print(os.listdir('.'), os.getcwd())"),
+        )
+
+        done, printed = await browser_module.CamoufoxFetch().run_command()
+
+        assert done is True and printed.startswith("[] ")  # an empty folder
+        assert str(workspace) not in printed and os.path.realpath(workspace) not in printed
 
     @pytest.mark.asyncio
     async def test_a_command_that_does_not_end_is_stopped(

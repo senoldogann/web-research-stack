@@ -9,7 +9,11 @@ and runs on a machine that has one. Nothing reaches beyond this machine.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import socketserver
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Optional
 
@@ -55,7 +59,8 @@ def complete(title: str = "Complete") -> str:
 
 
 class LocalSite:
-    """An HTTP server on the loopback that serves *pages* by path and records every path asked for."""
+    """An HTTP server on the loopback that serves *pages* by path and records every path asked for (a
+    GET, or a POST, which it answers with nothing)."""
 
     def __init__(self, pages: dict[str, str]) -> None:
         self.pages = pages
@@ -72,6 +77,12 @@ class LocalSite:
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
+
+            def do_POST(self) -> None:  # noqa: N802 - the name http.server calls
+                site.seen.append(self.path)
+                self.send_response(200)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
 
             def log_message(self, *args: Any) -> None:
                 return None
@@ -90,6 +101,59 @@ class LocalSite:
         self._server.server_close()
 
 
+class LocalSocket:
+    """A web socket server on the loopback: it answers the handshake, sends one text frame (*greeting*) and
+    holds the connection open for a while. ``opened`` is the paths of the handshakes it was asked for."""
+
+    def __init__(self, greeting: str = "hello from the socket") -> None:
+        self.opened: list[str] = []
+        outer = self
+
+        class Handler(socketserver.BaseRequestHandler):
+            def handle(self) -> None:
+                head = b""
+                while b"\r\n\r\n" not in head:
+                    chunk = self.request.recv(4096)
+                    if not chunk:
+                        return
+                    head += chunk
+                lines = head.decode("latin-1").split("\r\n")
+                outer.opened.append(lines[0].split(" ")[1])
+                headers = {
+                    name.strip().lower(): value.strip()
+                    for name, _, value in (line.partition(":") for line in lines[1:])
+                }
+                key = headers.get("sec-websocket-key", "")
+                accept = base64.b64encode(
+                    hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()
+                ).decode()
+                payload = greeting.encode()
+                self.request.sendall(
+                    (
+                        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+                        f"Connection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+                    ).encode()
+                    + bytes([0x81, len(payload)])
+                    + payload
+                )
+                time.sleep(3)
+
+        socketserver.ThreadingTCPServer.allow_reuse_address = True
+        self._server = socketserver.ThreadingTCPServer((LOOPBACK, 0), Handler)
+        self._server.daemon_threads = True
+        self.port: int = self._server.server_address[1]
+        threading.Thread(
+            target=self._server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+        ).start()
+
+    def url(self, path: str = "/") -> str:
+        return f"ws://{LOOPBACK}:{self.port}{path}"
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
 async def started_browser(**settings: Any) -> HeadlessBrowserManager:
     """A headless browser that is running, or the skip of the test that wanted one."""
     manager = HeadlessBrowserManager(preference="auto", **settings)
@@ -100,6 +164,12 @@ async def started_browser(**settings: Any) -> HeadlessBrowserManager:
     except Exception as exc:  # noqa: BLE001 - whatever stops a browser from starting is a reason to skip
         pytest.skip(f"no headless browser here: {type(exc).__name__}")
     return manager
+
+
+def host_resolver_rules(*names: str) -> str:
+    """The Chrome flag that makes every one of *names* the loopback for the browser: hosts of their own for
+    servers that are on the loopback together (the guard judges a host, not a port)."""
+    return "--host-resolver-rules=" + ", ".join(f"MAP {name} {LOOPBACK}" for name in names)
 
 
 def host_resolver_rule(name: str, address: Optional[str] = None) -> str:

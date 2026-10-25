@@ -70,7 +70,7 @@ command = "web-research-mcp"
 - **LLM Research Tool**: AI-powered web research with citations
 - **Async Architecture**: High-performance concurrent scraping
 - **Production Ready**: Docker, monitoring (Prometheus/Grafana), rate limiting, circuit breaker
-- **Security First**: SSRF protection, input validation, security headers. The server connects only to an address it checked in the same step: a host name is resolved once, every address must be public, and the connection goes to those addresses, never to a second lookup (so a DNS-rebinding answer cannot steer a read to the loopback or the home network); the IPv6 forms that carry a private IPv4 address are refused too. What this does not cover, the headless browser's own name resolution among it, is in [docs/web-tools.md](docs/web-tools.md#security-boundaries).
+- **Security First**: SSRF protection, input validation, security headers. The server connects only to an address it checked in the same step: a host name is resolved once, every address must be public, and the connection goes to those addresses, never to a second lookup (so a DNS-rebinding answer cannot steer a read to the loopback or the home network); the IPv6 forms that carry a private IPv4 address are refused too. The headless browser's guard holds the requests, the web sockets and the windows of a page (1.4.2). What this does not cover, the headless browser's own name resolution and a web socket opened inside a Web Worker among it, is in [docs/web-tools.md](docs/web-tools.md#security-boundaries).
 - **Multi-language UI**: English and Turkish language support
 - **Streaming Support**: Real-time research progress via Server-Sent Events (SSE)
 - **Code Block Preservation**: Scraper preserves code blocks from source pages with syntax highlighting
@@ -199,7 +199,7 @@ uv tool install dotagent-web-research
 - **LLM Araştırma Aracı**: Alıntılı AI destekli web araştırması
 - **Asenkron Mimari**: Yüksek performanslı eşzamanlı kazıma
 - **Üretim Hazır**: Docker, izleme (Prometheus/Grafana), hız sınırlama, circuit breaker
-- **Güvenlik Öncelikli**: SSRF koruması, giriş doğrulama, güvenlik başlıkları. Sunucu yalnızca aynı adımda denetlediği bir adrese bağlanır: ana makine adı bir kez çözülür, her adres genel (public) olmalıdır ve bağlantı o adreslere yapılır, ikinci bir sorguya değil (DNS rebinding yanıtı bir okumayı loopback'e ya da ev ağına yöneltemez); özel IPv4 adresi taşıyan IPv6 biçimleri de reddedilir. Kapsamadığı şeyler (başsız tarayıcının kendi ad çözümlemesi dahil) [docs/web-tools.md](docs/web-tools.md#security-boundaries) içindedir.
+- **Güvenlik Öncelikli**: SSRF koruması, giriş doğrulama, güvenlik başlıkları. Sunucu yalnızca aynı adımda denetlediği bir adrese bağlanır: ana makine adı bir kez çözülür, her adres genel (public) olmalıdır ve bağlantı o adreslere yapılır, ikinci bir sorguya değil (DNS rebinding yanıtı bir okumayı loopback'e ya da ev ağına yöneltemez); özel IPv4 adresi taşıyan IPv6 biçimleri de reddedilir. Başsız tarayıcının bekçisi bir sayfanın isteklerini, web soketlerini ve açtığı pencereleri tutar (1.4.2). Kapsamadığı şeyler (başsız tarayıcının kendi ad çözümlemesi ve bir Web Worker'ın içinde açılan web soketi dahil) [docs/web-tools.md](docs/web-tools.md#security-boundaries) içindedir.
 - **Çok Dilli UI**: İngilizce ve Türkçe dil desteği
 - **Yayın Akışı**: Sunucu Tarafından Gönderilen Olaylar (SSE) ile gerçek zamanlı araştırma ilerlemesi
 - **Kod Bloğu Koruma**: Kaynak sayfalardan kod blokları söz dizimi vurgulamasıyla korunur

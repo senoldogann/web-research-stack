@@ -110,10 +110,26 @@ class FakePage:
 
 
 class FakeContext:
+    """A Playwright browser context: what the guard is held to is routed on it, before its page is made."""
+
     def __init__(self, page: FakePage) -> None:
         self.page = page
+        self.routes: list[tuple[str, Any]] = []
+        self.socket_routes: list[tuple[str, Any]] = []
+        self.listeners: list[tuple[str, Any]] = []
+        self.made_page_after: list[str] = []
+
+    async def route(self, pattern: str, handler: Any) -> None:
+        self.routes.append((pattern, handler))
+
+    async def route_web_socket(self, pattern: str, handler: Any) -> None:
+        self.socket_routes.append((pattern, handler))
+
+    def on(self, event: str, handler: Any) -> None:
+        self.listeners.append((event, handler))
 
     async def new_page(self) -> FakePage:
+        self.made_page_after = [f"route:{len(self.routes)}", f"sockets:{len(self.socket_routes)}"]
         return self.page
 
     async def close(self) -> None:
@@ -123,12 +139,14 @@ class FakeContext:
 class FakeChrome:
     def __init__(self, page: FakePage) -> None:
         self.page = page
+        self.contexts: list[FakeContext] = []
 
     def is_connected(self) -> bool:
         return True
 
     async def new_context(self, **options: Any) -> FakeContext:
-        return FakeContext(self.page)
+        self.contexts.append(FakeContext(self.page))
+        return self.contexts[-1]
 
 
 @pytest.fixture(autouse=True)
@@ -282,7 +300,14 @@ class TestWaitingForAPageToSettle:
 
         await rendering
 
-        assert page.routes == [("**/*", manager._guard.route)]
+        # On the context, not the page (a window the page opens is a page of the context), and before the page
+        # exists; its web sockets too, which a route does not see.
+        (context,) = manager._browser.contexts
+        assert context.routes == [("**/*", manager._guard.route)]
+        assert context.socket_routes == [("**/*", manager._guard.route_web_socket)]
+        assert context.made_page_after == ["route:1", "sockets:1"]
+        assert page.routes == []
+        assert [event for event, _ in context.listeners] == ["page"]
 
     @pytest.mark.asyncio
     async def test_a_target_that_is_not_public_is_refused_before_any_waiting(

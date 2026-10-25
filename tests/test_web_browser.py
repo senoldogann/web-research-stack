@@ -15,6 +15,7 @@ from web_scraper.playwright_scrapers import PlaywrightScraper
 from web_scraper.web_tools import browser as browser_module
 from web_scraper.web_tools.browser import (
     BrowserRenderError,
+    BrowserUnavailableError,
     HeadlessBrowserManager,
     RequestGuard,
     browser_launch_candidates,
@@ -233,6 +234,69 @@ class _Page:
         return None
 
 
+class _Context:
+    """A Playwright browser context that records what is routed on it and when its page was made."""
+
+    def __init__(self, page: _Page, *, sockets: bool = True) -> None:
+        self.page = page
+        self.routes: list[tuple[str, Any]] = []
+        self.socket_routes: list[tuple[str, Any]] = []
+        self.listeners: list[tuple[str, Any]] = []
+        self.routed_before_the_page = False
+        if sockets:
+            self.route_web_socket = self._route_web_socket
+
+    async def route(self, pattern: str, handler: Any) -> None:
+        self.routes.append((pattern, handler))
+
+    async def _route_web_socket(self, pattern: str, handler: Any) -> None:
+        self.socket_routes.append((pattern, handler))
+
+    def on(self, event: str, handler: Any) -> None:
+        self.listeners.append((event, handler))
+
+    async def new_page(self) -> _Page:
+        self.routed_before_the_page = bool(self.routes and self.socket_routes)
+        return self.page
+
+
+def _fake_playwright(monkeypatch: pytest.MonkeyPatch, context: _Context) -> list[str]:
+    """Playwright as the older scraper imports it, around *context*; the list says what was shut down."""
+    log: list[str] = []
+
+    class Browser:
+        async def new_context(self, **options: Any) -> _Context:
+            assert options["service_workers"] == "block"
+            return context
+
+        async def close(self) -> None:
+            log.append("browser closed")
+
+    class Started:
+        chromium = types.SimpleNamespace(launch=lambda **options: _launched(Browser()))
+
+        async def stop(self) -> None:
+            log.append("playwright stopped")
+
+    async def _launched(browser: Browser) -> Browser:
+        return browser
+
+    async def stealth(page: Any) -> None:
+        return None
+
+    async def start() -> Started:
+        return Started()
+
+    api = types.ModuleType("playwright.async_api")
+    api.async_playwright = lambda: types.SimpleNamespace(start=start)  # type: ignore[attr-defined]
+    stealth_module = types.ModuleType("playwright_stealth")
+    stealth_module.stealth_async = stealth  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
+    monkeypatch.setitem(sys.modules, "playwright.async_api", api)
+    monkeypatch.setitem(sys.modules, "playwright_stealth", stealth_module)
+    return log
+
+
 class TestTheOlderPlaywrightScraper:
     """It checked the address it was given and nothing the page then asked for."""
 
@@ -241,43 +305,31 @@ class TestTheOlderPlaywrightScraper:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         page = _Page()
-
-        class Context:
-            async def new_page(self) -> _Page:
-                return page
-
-        class Browser:
-            async def new_context(self, **options: Any) -> Context:
-                return Context()
-
-            async def close(self) -> None:
-                return None
-
-        class Started:
-            chromium = types.SimpleNamespace(launch=lambda **options: _launched(Browser()))
-
-            async def stop(self) -> None:
-                return None
-
-        async def _launched(browser: Browser) -> Browser:
-            return browser
-
-        async def stealth(page: Any) -> None:
-            return None
-
-        async def start() -> Started:
-            return Started()
-
-        api = types.ModuleType("playwright.async_api")
-        api.async_playwright = lambda: types.SimpleNamespace(start=start)  # type: ignore[attr-defined]
-        stealth_module = types.ModuleType("playwright_stealth")
-        stealth_module.stealth_async = stealth  # type: ignore[attr-defined]
-        monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
-        monkeypatch.setitem(sys.modules, "playwright.async_api", api)
-        monkeypatch.setitem(sys.modules, "playwright_stealth", stealth_module)
+        context = _Context(page)
+        _fake_playwright(monkeypatch, context)
 
         async with PlaywrightScraper() as scraper:
-            assert page.routes == [("**/*", scraper._guard.route)]
+            # The context is held (a window the page opens is a page of it), its web sockets too, and
+            # all of it before the page is made.
+            assert context.routes == [("**/*", scraper._guard.route)]
+            assert context.socket_routes == [("**/*", scraper._guard.route_web_socket)]
+            assert context.routed_before_the_page is True
+            assert [event for event, _ in context.listeners] == ["page"]
+            assert page.routes == []
+
+    @pytest.mark.asyncio
+    async def test_a_playwright_that_cannot_hold_sockets_is_not_used_and_leaves_nothing_running(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        context = _Context(_Page(), sockets=False)
+        log = _fake_playwright(monkeypatch, context)
+
+        with pytest.raises(BrowserUnavailableError, match="web sockets"):
+            async with PlaywrightScraper():
+                raise AssertionError("the scraper must not be entered")
+
+        # An __aenter__ that raises has no __aexit__: the browser it had started is shut down by it.
+        assert log == ["browser closed", "playwright stopped"] and context.routes == []
 
     @pytest.mark.asyncio
     async def test_it_still_refuses_an_address_it_is_given_before_it_opens_a_page(

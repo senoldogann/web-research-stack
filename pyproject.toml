@@ -52,7 +52,8 @@ dev = [
 ]
 
 playwright = [
-    "playwright>=1.40.0",
+    # 1.48 routes web sockets (BrowserContext.route_web_socket), which the browser's guard needs.
+    "playwright>=1.48.0",
     "playwright-stealth>=1.0.6",
 ]
 

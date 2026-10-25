@@ -310,6 +310,8 @@ class WebToolsService:
                 settle_max_ms=settings.browser_settle_max_ms,
                 settle_stable_ms=settings.browser_settle_stable_ms,
                 shell_chars=settings.browser_render_min_chars,
+                stealth_enabled=settings.browser_stealth,
+                stealth_fetch=settings.browser_stealth_fetch,
             )
             if settings.browser_enabled
             else None

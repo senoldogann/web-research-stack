@@ -190,6 +190,13 @@ class WebToolsSettings:
     # A page whose readable text is shorter than this while its HTML has scripts is read again in the
     # browser; the text of a rendered page is a shell's under a quarter of it.
     browser_render_min_chars: int = 200
+    # A page the browser could not read (a captcha, an access wall, a timeout) is read once more in Camoufox
+    # when the package camoufox is installed and has fetched what it needs. false never does.
+    browser_stealth: bool = True
+    # What Camoufox lacks (its browser: about 100 MB to download and 2.3 GB on disk; the model its fingerprints are
+    # drawn from; its ad blocker) is fetched by `python -m camoufox fetch`, once, in the background, the first time a
+    # page needs it. false never fetches by itself: run that command yourself.
+    browser_stealth_fetch: bool = True
 
     # Telling a page a site gives for an address it has nothing at (a soft 404) costs a request: a page that
     # does not say it is itself (no canonical link to its own address) makes the server ask its host, once
@@ -438,6 +445,8 @@ class WebToolsSettings:
             browser_settle_stable_ms=_int("WEB_TOOLS_BROWSER_SETTLE_STABLE_MS", 600),
             browser_max_contexts=_int("WEB_TOOLS_BROWSER_MAX_CONTEXTS", 4),
             browser_render_min_chars=_int("WEB_TOOLS_BROWSER_RENDER_MIN_CHARS", 200),
+            browser_stealth=_bool("WEB_TOOLS_BROWSER_STEALTH", True),
+            browser_stealth_fetch=_bool("WEB_TOOLS_BROWSER_STEALTH_FETCH", True),
             soft_404_check=_bool("WEB_TOOLS_SOFT_404_CHECK", True),
             markdown_max_chars=_int("WEB_TOOLS_MARKDOWN_MAX_CHARS", 50_000),
             max_links=_int("WEB_TOOLS_MAX_LINKS", 500),

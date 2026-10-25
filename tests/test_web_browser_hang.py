@@ -127,7 +127,11 @@ def _short_limits(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _manager(chrome: Chrome, **settings: Any) -> HeadlessBrowserManager:
-    manager = HeadlessBrowserManager(post_load_wait_ms=0, settle_stable_ms=0, **settings)
+    # The first engine's own bound is under test: a Camoufox on the machine must not be started for the
+    # timeout (tests/test_web_browser_stealth.py is where both engines are blocked).
+    manager = HeadlessBrowserManager(
+        post_load_wait_ms=0, settle_stable_ms=0, stealth_enabled=False, **settings
+    )
     manager.timeout_seconds = 0.4  # the constructor keeps it to a second or more
     manager._browser = chrome
     manager._engine = "chromium"
@@ -273,7 +277,9 @@ class TestARealBrowserAgainstAPageThatSpins:
     async def test_the_render_ends_and_the_same_browser_reads_the_next_page(
         self, site: LocalSite
     ) -> None:
-        manager = await started_browser(timeout_seconds=3.0, max_contexts=2)
+        # The first engine's own bound is under test: where Camoufox is installed a timeout would read the
+        # page again in it (tests/test_web_browser_camoufox.py has that).
+        manager = await started_browser(timeout_seconds=3.0, max_contexts=2, stealth_enabled=False)
         try:
             began = time.monotonic()
             with pytest.raises(BrowserRenderError) as raised:

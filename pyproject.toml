@@ -38,7 +38,10 @@ dependencies = [
     "click>=8.1.0",
     "tqdm>=4.66.0",
     "pypdf>=5.1.0",
-    "camoufox>=0.5.8",
+    # A page that the headless Chrome is turned away from (a bot check) is read once more in Camoufox. 0.5.8 is the
+    # release whose browser and fingerprint model are named and checked by the package. It needs Python 3.10, and
+    # it needs playwright older than 1.63 (docs/web-tools.md says what installing it brings).
+    "camoufox>=0.5.8; python_version >= '3.10'",
 ]
 
 [project.optional-dependencies]

@@ -39,6 +39,14 @@ _CHECK_TIMEOUT_SECONDS = 5.0
 _HOSTS_KEPT_MAX = 1024
 # The status a web socket the guard refuses is closed with (RFC 6455: 1008, a policy violation).
 _REFUSED_SOCKET_CODE = 1008
+# The whole render is bounded: its own timeout and this margin (a page whose script blocks the browser's main
+# thread leaves ``page.evaluate`` and ``page.content`` unanswered for ever, and a render that waits on them
+# keeps a context slot and, above it, a tool slot). A context that has not closed after
+# ``_CLOSE_TIMEOUT_SECONDS`` is given up, with the browser that did not answer; so is a browser that has not
+# shut down after ``_STOP_TIMEOUT_SECONDS``.
+_HARD_LIMIT_MARGIN_SECONDS = 5.0
+_CLOSE_TIMEOUT_SECONDS = 5.0
+_STOP_TIMEOUT_SECONDS = 5.0
 # Waiting for a page to settle (see ``HeadlessBrowserManager._settle``): how long the network may take to
 # go quiet, how often the page's text is looked at, and the time kept back from the render's own deadline
 # to read the page in.
@@ -342,11 +350,14 @@ class HeadlessBrowserManager:
 
     @property
     def running(self) -> bool:
-        browser_active = bool(self._browser is not None and self._browser.is_connected())
         stealth_active = bool(
             self._stealth_browser is not None and self._stealth_browser.is_connected()
         )
-        return browser_active or stealth_active
+        return self._primary_running or stealth_active
+
+    @property
+    def _primary_running(self) -> bool:
+        return bool(self._browser is not None and self._browser.is_connected())
 
     @property
     def has_stealth(self) -> bool:
@@ -389,9 +400,10 @@ class HeadlessBrowserManager:
     async def start(self) -> None:
         """Start the first available headless engine, reusing a live browser."""
         async with self._start_lock:
-            if self.running:
+            # The primary engine, not any: a stealth browser that is up is not one to render the page with.
+            if self._primary_running:
                 return
-            await self._shutdown_locked()
+            await self._shutdown_primary_locked()
 
             for candidate in browser_launch_candidates(self.preference):
                 try:
@@ -413,7 +425,7 @@ class HeadlessBrowserManager:
                 logger.info("Web tools using headless %s", candidate.engine)
                 return
 
-            await self._shutdown_locked()
+            await self._shutdown_primary_locked()
             raise BrowserUnavailableError(
                 "No headless browser available; install Playwright Chromium/Chrome or Camoufox"
             )
@@ -447,46 +459,90 @@ class HeadlessBrowserManager:
         url: str,
         post_load_wait_ms: Optional[int] = None,
     ) -> BrowserPage:
+        """Render *url* in a fresh context of *browser* (one engine's render), every request guarded.
+
+        The page is read once it has settled (``_settle``), not after a fixed wait: a page whose
+        script draws its content a second or three after the load is read with its content. The
+        render is bounded (``timeout_seconds`` and a margin) whichever engine it is: a page that
+        blocks the browser's main thread leaves every call to it unanswered, and the render ends with a
+        ``timeout`` and frees its slot, its context closed (a renderer stuck in a loop dies with it).
+        """
         least_ms = self.post_load_wait_ms if post_load_wait_ms is None else post_load_wait_ms
         async with self._context_gate:
             self._active += 1
-            context = None
+            opened: list[Any] = []
             try:
-                deadline = self._clock() + self.timeout_seconds
-                context = await self._create_context_for(browser, engine_name)
-                await self._guard.hold(context)
-                page = await context.new_page()
-                self._guard.close_popups(context, page)
                 try:
-                    response = await page.goto(
-                        url,
-                        wait_until="domcontentloaded",
-                        timeout=int(self.timeout_seconds * 1000),
+                    return await asyncio.wait_for(
+                        self._render(browser, engine_name, url, least_ms, opened),
+                        timeout=self.timeout_seconds + _HARD_LIMIT_MARGIN_SECONDS,
                     )
-                except Exception as exc:  # noqa: BLE001 - normalise Playwright errors
-                    name = type(exc).__name__.lower()
-                    code = "timeout" if "timeout" in name else "navigation_failed"
-                    raise BrowserRenderError(code, "Browser navigation failed") from exc
-
-                settled = await self._settle(page, least_ms, deadline)
-                html = await self._content(page)
-                final_url = page.url
-                status = response.status if response else 0
-                return BrowserPage(
-                    html=html,
-                    final_url=final_url,
-                    status_code=status,
-                    engine=engine_name,
-                    settled_ms=round(settled.waited_ms, 2),
-                    text_chars=settled.chars,
-                    settle=settled.reason,
-                )
+                except asyncio.TimeoutError as exc:
+                    raise BrowserRenderError(
+                        "timeout", "The page did not finish rendering in time"
+                    ) from exc
             finally:
-                if context is not None:
-                    with contextlib.suppress(Exception):
-                        await context.close()
-                self._active -= 1
-                self._last_used = time.monotonic()
+                try:
+                    for context in opened:
+                        await self._close_context(context, browser)
+                finally:
+                    self._active -= 1
+                    self._last_used = time.monotonic()
+
+    async def _render(
+        self, browser: Any, engine_name: str, url: str, least_ms: int, opened: list[Any]
+    ) -> BrowserPage:
+        """The render itself: a context (put in *opened* the moment it exists, to be closed whatever happens),
+        the page, its navigation, the wait for it to settle and its HTML."""
+        deadline = self._clock() + self.timeout_seconds
+        context = await self._create_context_for(browser, engine_name)
+        opened.append(context)
+        await self._guard.hold(context)
+        page = await context.new_page()
+        self._guard.close_popups(context, page)
+        try:
+            response = await page.goto(
+                url,
+                wait_until="domcontentloaded",
+                timeout=int(self.timeout_seconds * 1000),
+            )
+        except Exception as exc:  # noqa: BLE001 - normalise Playwright errors
+            name = type(exc).__name__.lower()
+            code = "timeout" if "timeout" in name else "navigation_failed"
+            raise BrowserRenderError(code, "Browser navigation failed") from exc
+
+        settled = await self._settle(page, least_ms, deadline)
+        html = await self._content(page)
+        final_url = page.url
+        status = response.status if response else 0
+        return BrowserPage(
+            html=html,
+            final_url=final_url,
+            status_code=status,
+            engine=engine_name,
+            settled_ms=round(settled.waited_ms, 2),
+            text_chars=settled.chars,
+            settle=settled.reason,
+        )
+
+    async def _close_context(self, context: Any, browser: Any) -> None:
+        """Close a context of *browser*, for at most ``_CLOSE_TIMEOUT_SECONDS``. A browser that does not
+        answer a close is not one to render with: it is shut down, and the next render starts another."""
+        try:
+            await asyncio.wait_for(context.close(), timeout=_CLOSE_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            logger.warning("Headless browser did not close a context in time; restarting it")
+            await self._abandon(browser)
+        except Exception:  # noqa: BLE001 - a context that is already gone has nothing to close
+            return
+
+    async def _abandon(self, browser: Any) -> None:
+        """Shut down a browser that did not answer: the stealth engine alone when it is the one (the
+        primary goes on rendering), else the primary and with it everything, as ``stop`` does."""
+        if browser is not None and browser is self._stealth_browser:
+            await self._stop_stealth()
+        else:
+            await self.stop()
 
     async def render(
         self,
@@ -687,28 +743,46 @@ class HeadlessBrowserManager:
                     await task
             await self._shutdown_locked()
 
-    async def _shutdown_locked(self) -> None:
+    async def _stop_stealth(self) -> None:
+        """Shut the stealth browser down (the primary engine goes on)."""
+        async with self._stealth_lock:
+            await self._shutdown_stealth()
+
+    async def _shutdown_stealth(self) -> None:
+        # Each step is bounded: a browser that stopped answering is the one being shut down.
         if self._stealth_browser is not None and self._stealth_browser is not self._browser:
             with contextlib.suppress(Exception):
-                await self._stealth_browser.close()
+                await asyncio.wait_for(self._stealth_browser.close(), timeout=_STOP_TIMEOUT_SECONDS)
         if (
             self._stealth_manager is not None
             and self._stealth_manager is not self._camoufox_manager
         ):
             with contextlib.suppress(Exception):
-                await self._stealth_manager.__aexit__(None, None, None)
+                await asyncio.wait_for(
+                    self._stealth_manager.__aexit__(None, None, None),
+                    timeout=_STOP_TIMEOUT_SECONDS,
+                )
         self._stealth_browser = None
         self._stealth_manager = None
 
+    async def _shutdown_locked(self) -> None:
+        async with self._stealth_lock:
+            await self._shutdown_stealth()
+        await self._shutdown_primary_locked()
+
+    async def _shutdown_primary_locked(self) -> None:
         if self._browser is not None:
             with contextlib.suppress(Exception):
-                await self._browser.close()
+                await asyncio.wait_for(self._browser.close(), timeout=_STOP_TIMEOUT_SECONDS)
         if self._camoufox_manager is not None:
             with contextlib.suppress(Exception):
-                await self._camoufox_manager.__aexit__(None, None, None)
+                await asyncio.wait_for(
+                    self._camoufox_manager.__aexit__(None, None, None),
+                    timeout=_STOP_TIMEOUT_SECONDS,
+                )
         if self._playwright is not None:
             with contextlib.suppress(Exception):
-                await self._playwright.stop()
+                await asyncio.wait_for(self._playwright.stop(), timeout=_STOP_TIMEOUT_SECONDS)
         self._browser = None
         self._camoufox_manager = None
         self._playwright = None

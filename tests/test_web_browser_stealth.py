@@ -358,18 +358,18 @@ class FakeFetch:
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fetch = self
 
-        async def run(manager: HeadlessBrowserManager) -> tuple[bool, str]:
+        async def run(self: browser_module.CamoufoxFetch) -> tuple[bool, str]:
             fetch.calls += 1
             await fetch.release.wait()
             if fetch.result[0] and fetch.puts_it_there:
                 fetch.installed.browser = True
             return fetch.result
 
-        monkeypatch.setattr(HeadlessBrowserManager, "_run_fetch", run)
+        monkeypatch.setattr(browser_module.CamoufoxFetch, "run_command", run)
 
 
 async def _finished(manager: HeadlessBrowserManager) -> None:
-    task = manager._fetch_task
+    task = browser_module.camoufox_fetch.task
     if task is not None:
         await asyncio.wait_for(task, HANG)
 
@@ -464,7 +464,7 @@ class TestWhatCamoufoxLacksIsFetchedApartFromTheRead:
             await _finished(manager)
 
         assert "it finished, but its browser is not installed" in caplog.text
-        assert manager._fetch_failed_at is not None
+        assert browser_module.camoufox_fetch.failed_at is not None
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("case", ["may_not", "no_package", "too_old"])
@@ -484,7 +484,7 @@ class TestWhatCamoufoxLacksIsFetchedApartFromTheRead:
         page = await asyncio.wait_for(manager.render("https://page.test/"), HANG)
 
         assert page.status_code == 403
-        assert fetch.calls == 0 and manager._fetch_task is None
+        assert fetch.calls == 0 and browser_module.camoufox_fetch.task is None
         assert manager.snapshot()["stealth_fetching"] is False
 
     @pytest.mark.asyncio
@@ -504,14 +504,14 @@ class TestWhatCamoufoxLacksIsFetchedApartFromTheRead:
                 browser_module, "_STEALTH_FETCH_COMMAND", (sys.executable, "-c", code)
             )
 
-        manager = HeadlessBrowserManager()
+        fetch = browser_module.CamoufoxFetch()
 
         command("print('Syncing repositories...'); print('Camoufox installed')")
-        assert await manager._run_fetch() == (True, "Camoufox installed")
+        assert await fetch.run_command() == (True, "Camoufox installed")
         command("import sys; print('Error: no space left', file=sys.stderr); sys.exit(3)")
-        assert await manager._run_fetch() == (False, "Error: no space left")
+        assert await fetch.run_command() == (False, "Error: no space left")
         command("import sys; sys.exit(4)")
-        assert await manager._run_fetch() == (False, "exit status 4")
+        assert await fetch.run_command() == (False, "exit status 4")
 
     @pytest.mark.asyncio
     async def test_a_command_that_does_not_end_is_stopped(
@@ -527,7 +527,7 @@ class TestWhatCamoufoxLacksIsFetchedApartFromTheRead:
         )
         monkeypatch.setattr(browser_module, "_STEALTH_FETCH_TIMEOUT_SECONDS", 1.5)
 
-        result = await asyncio.wait_for(HeadlessBrowserManager()._run_fetch(), HANG)
+        result = await asyncio.wait_for(browser_module.CamoufoxFetch().run_command(), HANG)
 
         assert result == (False, "it did not finish in time")
         await _gone(int(pidfile.read_text()))
@@ -544,7 +544,7 @@ class TestWhatCamoufoxLacksIsFetchedApartFromTheRead:
         monkeypatch.setattr(
             browser_module, "_STEALTH_FETCH_COMMAND", (sys.executable, "-c", script, str(pidfile))
         )
-        task = asyncio.ensure_future(HeadlessBrowserManager()._run_fetch())
+        task = asyncio.ensure_future(browser_module.CamoufoxFetch().run_command())
         for _ in range(200):
             if pidfile.exists() and pidfile.read_text():
                 break

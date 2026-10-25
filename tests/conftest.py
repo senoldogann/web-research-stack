@@ -70,13 +70,15 @@ def _camoufox_reaches_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _nothing_is_fetched(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No test downloads Camoufox. The manager fetches what Camoufox lacks by running a command; if a test lets it,
-    the command it runs is this one, which does nothing and fails."""
+    """No test downloads Camoufox. What Camoufox lacks is fetched by running a command; if a test lets that happen,
+    the command it runs is this one, which does nothing and fails. Each test also has a fetch of its own (the
+    process has one), so that what one test started or saw fail is not what the next one finds."""
     from web_scraper.web_tools import browser as browser_module
 
     monkeypatch.setattr(
         browser_module, "_STEALTH_FETCH_COMMAND", (sys.executable, "-c", "raise SystemExit(3)")
     )
+    monkeypatch.setattr(browser_module, "camoufox_fetch", browser_module.CamoufoxFetch())
 
 
 @pytest.fixture

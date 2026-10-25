@@ -51,9 +51,9 @@ pytestmark = [
 ]
 
 
-def _manager(monkeypatch: pytest.MonkeyPatch, **allowed: int) -> HeadlessBrowserManager:
-    """A manager that reads with Camoufox, which resolves the test names to the loopback, and a guard that allows
-    only the requests to *allowed* (name to port)."""
+def _options(monkeypatch: pytest.MonkeyPatch, **allowed: int) -> None:
+    """Camoufox as these tests start it: it resolves the test names to the loopback, reaches nothing else, and the
+    guard allows only the requests to *allowed* (name to port)."""
     prefixes = tuple(f"http://{name}:{port}/" for name, port in allowed.items())
     monkeypatch.setattr(
         browser_module, "browser_request_allowed", lambda url: url.startswith(prefixes)
@@ -63,6 +63,12 @@ def _manager(monkeypatch: pytest.MonkeyPatch, **allowed: int) -> HeadlessBrowser
     monkeypatch.setitem(browser_module._STEALTH_OPTIONS, "firefox_user_prefs", prefs)
     monkeypatch.setitem(browser_module._STEALTH_OPTIONS, "humanize", False)
     monkeypatch.setitem(browser_module._STEALTH_OPTIONS, "proxy", NOWHERE)
+
+
+def _manager(monkeypatch: pytest.MonkeyPatch, **allowed: int) -> HeadlessBrowserManager:
+    """A manager that reads with Camoufox, which resolves the test names to the loopback, and a guard that allows
+    only the requests to *allowed* (name to port)."""
+    _options(monkeypatch, **allowed)
     # A Camoufox that starts on a Mac that is busy with other work takes its time; these tests are not about the
     # time a read may take (the ones that are set their own).
     manager = HeadlessBrowserManager(post_load_wait_ms=1_500, timeout_seconds=90)
@@ -380,3 +386,74 @@ class TestATargetThatEscalatesToCamoufox:
             await manager.stop()
 
         assert page.engine == "camoufox" and LONG in page.html
+
+
+class TestTheContextOfTheGoogleSearchIsHeld:
+    """``web_scraper/stealth_camoufox.py``: the one Camoufox that every Google search uses, with its one context."""
+
+    @pytest.fixture
+    def search_browser(self, monkeypatch: pytest.MonkeyPatch) -> Any:
+        from web_scraper import stealth_camoufox as stealth
+
+        for key in ("browser", "manager", "context"):
+            monkeypatch.setitem(stealth._CAMOUFOX_STATE, key, None)
+        for name in ("_CAMOUFOX_LOCK", "_START_LOCK", "_GUARD"):
+            monkeypatch.setattr(stealth, name, None)
+        return stealth
+
+    @pytest.mark.asyncio
+    async def test_the_requests_and_the_windows_of_a_search_page_reach_nothing(
+        self, search_browser: Any, refused: LocalSite, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        site = LocalSite({"/": _vectors(refused)})
+        _options(monkeypatch, **{"allowed.test": site.port})
+        page = await search_browser.get_camoufox_page()
+        try:
+            assert page is not None
+            await page.goto(f"http://allowed.test:{site.port}/", wait_until="domcontentloaded")
+            await asyncio.sleep(3.5)
+            html = await page.content()
+            landing = await search_browser.landing_allowed(page)
+        finally:
+            await search_browser.close_camoufox()
+            site.close()
+
+        assert "Vectors" in html and landing is True
+        assert refused.seen == []
+
+    @pytest.mark.asyncio
+    async def test_the_consent_cookies_are_in_the_context_for_google_and_nowhere_else(
+        self, search_browser: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _options(monkeypatch)
+        page = await search_browser.get_camoufox_page()
+        try:
+            assert page is not None
+            cookies = await page.context.cookies()
+        finally:
+            await search_browser.close_camoufox()
+
+        assert {(c["name"], c["domain"]) for c in cookies} == {
+            ("CONSENT", ".google.com"),
+            ("SOCS", ".google.com"),
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_page_that_ended_at_a_refused_address_is_not_a_landing_the_search_reads(
+        self, search_browser: Any, refused: LocalSite, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        site = LocalSite({"/": "<html><body>home</body></html>"})
+        _options(monkeypatch, **{"allowed.test": site.port})
+        page = await search_browser.get_camoufox_page()
+        try:
+            assert page is not None
+            await page.goto(f"http://allowed.test:{site.port}/", wait_until="domcontentloaded")
+            ended_on_the_site = await search_browser.landing_allowed(page)
+            monkeypatch.setattr(browser_module, "browser_request_allowed", lambda url: False)
+            search_browser._GUARD = None  # a verdict kept for a host is forgotten
+            ended_on_a_refused_address = await search_browser.landing_allowed(page)
+        finally:
+            await search_browser.close_camoufox()
+            site.close()
+
+        assert ended_on_the_site is True and ended_on_a_refused_address is False

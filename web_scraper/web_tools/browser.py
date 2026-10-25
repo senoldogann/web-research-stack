@@ -267,6 +267,134 @@ def camoufox_missing() -> str:
     return _camoufox_needs()[0]
 
 
+class CamoufoxFetch:
+    """The fetch of what Camoufox lacks (``python -m camoufox fetch``): one at a time, in the background, and not
+    tried again soon after a failure. One for the process (``camoufox_fetch``): every user of Camoufox, the reads
+    of a page after a bot check and the Google search alike, asks the same one, so that two fetches never write
+    to Camoufox's folder at once."""
+
+    def __init__(self) -> None:
+        self.task: Optional[asyncio.Task[None]] = None
+        self.failed_at: Optional[float] = None
+
+    @property
+    def running(self) -> bool:
+        return self.task is not None and not self.task.done()
+
+    def begin(self) -> bool:
+        """Start a fetch unless one is under way or the last one failed lately. Whether one is under way now."""
+        if self.running:
+            return True
+        if (
+            self.failed_at is not None
+            and time.monotonic() - self.failed_at < _STEALTH_FETCH_RETRY_SECONDS
+        ):
+            return False
+        self.task = asyncio.create_task(self._fetch())
+        return True
+
+    async def _fetch(self) -> None:
+        """Fetch what Camoufox lacks, once, apart from any read, and say in the log how it went."""
+        command = _STEALTH_FETCH_HINT
+        logger.info(
+            "Camoufox is not all on this machine yet: running `%s` once, in the background (about 100 MB to "
+            "download and 2.3 GB on disk, from GitHub and addons.mozilla.org); a page that meets a wall "
+            "meanwhile stays as the first browser read it",
+            command,
+        )
+        try:
+            fetched, detail = await self.run_command()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - a fetch that cannot run is not a server that cannot
+            fetched, detail = False, type(exc).__name__
+        if fetched:
+            still_missing = await asyncio.to_thread(camoufox_missing)
+            if not still_missing:
+                self.failed_at = None
+                logger.info("Camoufox fetched: a page that meets a wall from now on is read in it")
+                return
+            detail = f"it finished, but {still_missing}"
+        self.failed_at = time.monotonic()
+        logger.warning(
+            "Fetching Camoufox failed (%s); it is tried again in %d minutes, or run `%s` yourself",
+            detail or "it printed nothing",
+            int(_STEALTH_FETCH_RETRY_SECONDS // 60),
+            command,
+        )
+
+    async def run_command(self) -> tuple[bool, str]:
+        """Run the command that fetches what Camoufox lacks, bounded; whether it succeeded, and the last line
+        it printed (or why it did not finish)."""
+        process = await asyncio.create_subprocess_exec(
+            *_STEALTH_FETCH_COMMAND,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        printed = b""
+
+        async def read() -> None:
+            nonlocal printed
+            assert process.stdout is not None
+            while chunk := await process.stdout.read(4096):
+                printed = (printed + chunk)[-_STEALTH_FETCH_TAIL_BYTES:]
+            await process.wait()
+
+        try:
+            await asyncio.wait_for(read(), timeout=_STEALTH_FETCH_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            return False, "it did not finish in time"
+        finally:
+            # Still running means it timed out or the server is closing: it does not go on without us.
+            if process.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    process.kill()
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(process.wait(), timeout=_STOP_TIMEOUT_SECONDS)
+        text = printed.decode("utf-8", "replace").replace("\r", "\n")
+        last = next((line.strip() for line in reversed(text.splitlines()) if line.strip()), "")
+        if process.returncode == 0:
+            return True, last[:300]
+        return False, last[:300] or f"exit status {process.returncode}"
+
+
+camoufox_fetch = CamoufoxFetch()
+
+
+async def start_camoufox(*, fetch: bool) -> tuple[Any, Any]:
+    """Start Camoufox from what is on this machine, within ``_STEALTH_START_TIMEOUT_SECONDS``; its manager (to
+    be closed with ``__aexit__``) and its browser. Never downloads in the middle of the caller's read: when
+    something is lacking and *fetch* is true, ``camoufox_fetch`` is asked to fetch it in the background, and
+    this raises ``BrowserUnavailableError`` (with the reason) all the same."""
+    missing, fetchable = await asyncio.to_thread(_camoufox_needs)
+    if missing:
+        if fetch and fetchable and camoufox_fetch.begin():
+            raise BrowserUnavailableError(
+                f"Camoufox is not started: {missing}; this server is fetching it in the background, "
+                "and a page that meets a wall after that is read in it"
+            )
+        raise BrowserUnavailableError(f"Camoufox is not started: {missing}")
+    from camoufox.async_api import AsyncCamoufox
+
+    options = {
+        name: dict(value) if isinstance(value, dict) else value
+        for name, value in _STEALTH_OPTIONS.items()
+    }
+    manager = AsyncCamoufox(**options)
+    try:
+        browser = await asyncio.wait_for(
+            manager.__aenter__(), timeout=_STEALTH_START_TIMEOUT_SECONDS
+        )
+    except asyncio.TimeoutError as exc:
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(
+                manager.__aexit__(None, None, None), timeout=_STOP_TIMEOUT_SECONDS
+            )
+        raise BrowserUnavailableError("Camoufox did not start in time") from exc
+    return manager, browser
+
+
 class RequestGuard:
     """Holds the requests of a browser page to the public-address rule, one verdict per host kept for a while.
 
@@ -448,9 +576,6 @@ class HeadlessBrowserManager:
         self._guard = RequestGuard()
         # Why the stealth engine last could not start ("" when it did, or was not asked for).
         self._stealth_reason = ""
-        # The fetch of what Camoufox lacks that is under way (or was), and when the last one failed.
-        self._fetch_task: Optional[asyncio.Task[None]] = None
-        self._fetch_failed_at: Optional[float] = None
         # The time the wait for a page measures and sleeps by; a test sets its own.
         self._clock: Callable[[], float] = time.monotonic
         self._sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep
@@ -479,114 +604,10 @@ class HeadlessBrowserManager:
             return True
         return camoufox_installed()
 
-    def _begin_fetch(self) -> bool:
-        """Start fetching what Camoufox lacks, in the background, when that is allowed, nothing is under way and
-        the last try (if any) is not recent. Whether a fetch is under way now."""
-        if not self.stealth_fetch:
-            return False
-        task = self._fetch_task
-        if task is not None and not task.done():
-            return True
-        failed = self._fetch_failed_at
-        if failed is not None and self._clock() - failed < _STEALTH_FETCH_RETRY_SECONDS:
-            return False
-        self._fetch_task = asyncio.create_task(self._fetch_camoufox())
-        return True
-
-    async def _fetch_camoufox(self) -> None:
-        """Fetch what Camoufox lacks, once, apart from any read, and say in the log how it went."""
-        command = _STEALTH_FETCH_HINT
-        logger.info(
-            "Camoufox is not all on this machine yet: running `%s` once, in the background (about 100 MB to "
-            "download and 2.3 GB on disk, from GitHub and addons.mozilla.org); a page that meets a wall "
-            "meanwhile stays as the first browser read it",
-            command,
-        )
-        try:
-            fetched, detail = await self._run_fetch()
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - a fetch that cannot run is not a server that cannot
-            fetched, detail = False, type(exc).__name__
-        if fetched:
-            still_missing = await asyncio.to_thread(camoufox_missing)
-            if not still_missing:
-                self._fetch_failed_at = None
-                logger.info("Camoufox fetched: a page that meets a wall from now on is read in it")
-                return
-            detail = f"it finished, but {still_missing}"
-        self._fetch_failed_at = self._clock()
-        logger.warning(
-            "Fetching Camoufox failed (%s); it is tried again in %d minutes, or run `%s` yourself",
-            detail or "it printed nothing",
-            int(_STEALTH_FETCH_RETRY_SECONDS // 60),
-            command,
-        )
-
-    async def _run_fetch(self) -> tuple[bool, str]:
-        """Run the command that fetches what Camoufox lacks, bounded; whether it succeeded, and the last line
-        it printed (or why it did not finish)."""
-        process = await asyncio.create_subprocess_exec(
-            *_STEALTH_FETCH_COMMAND,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        printed = b""
-
-        async def read() -> None:
-            nonlocal printed
-            assert process.stdout is not None
-            while chunk := await process.stdout.read(4096):
-                printed = (printed + chunk)[-_STEALTH_FETCH_TAIL_BYTES:]
-            await process.wait()
-
-        try:
-            await asyncio.wait_for(read(), timeout=_STEALTH_FETCH_TIMEOUT_SECONDS)
-        except asyncio.TimeoutError:
-            return False, "it did not finish in time"
-        finally:
-            # Still running means it timed out or the server is closing: it does not go on without us.
-            if process.returncode is None:
-                with contextlib.suppress(ProcessLookupError):
-                    process.kill()
-                with contextlib.suppress(Exception):
-                    await asyncio.wait_for(process.wait(), timeout=_STOP_TIMEOUT_SECONDS)
-        text = printed.decode("utf-8", "replace").replace("\r", "\n")
-        last = next((line.strip() for line in reversed(text.splitlines()) if line.strip()), "")
-        if process.returncode == 0:
-            return True, last[:300]
-        return False, last[:300] or f"exit status {process.returncode}"
-
     async def _launch_camoufox(self) -> tuple[Any, Any]:
         """Start Camoufox from what is installed, within ``_STEALTH_START_TIMEOUT_SECONDS``; its manager and
         its browser. Raises ``BrowserUnavailableError`` (with the reason) when it cannot be started here."""
-        missing, fetchable = await asyncio.to_thread(_camoufox_needs)
-        if missing:
-            if fetchable and self._begin_fetch():
-                raise BrowserUnavailableError(
-                    f"Camoufox is not started: {missing}; this server is fetching it in the background, "
-                    "and a page that meets a wall after that is read in it"
-                )
-            raise BrowserUnavailableError(f"Camoufox is not started: {missing}")
-        from camoufox.async_api import AsyncCamoufox
-
-        options = {
-            name: dict(value) if isinstance(value, dict) else value
-            for name, value in _STEALTH_OPTIONS.items()
-        }
-        manager = AsyncCamoufox(**options)
-        try:
-            browser = await asyncio.wait_for(
-                manager.__aenter__(), timeout=_STEALTH_START_TIMEOUT_SECONDS
-            )
-        except asyncio.TimeoutError as exc:
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(
-                    manager.__aexit__(None, None, None), timeout=_STOP_TIMEOUT_SECONDS
-                )
-            raise BrowserUnavailableError("Camoufox did not start in time") from exc
-        return manager, browser
+        return await start_camoufox(fetch=self.stealth_fetch)
 
     async def _ensure_stealth_browser(self) -> Any:
         async with self._stealth_lock:
@@ -1042,7 +1063,7 @@ class HeadlessBrowserManager:
             "stealth_enabled": self.stealth_enabled,
             "stealth_reason": self._stealth_reason,
             "stealth_fetch": self.stealth_fetch,
-            "stealth_fetching": bool(self._fetch_task is not None and not self._fetch_task.done()),
+            "stealth_fetching": camoufox_fetch.running,
             "stealth_active": bool(
                 self._stealth_browser is not None and self._stealth_browser.is_connected()
             ),

@@ -62,6 +62,15 @@ def score_results(
             or (current_year is not None and result.get("year") == current_year)
             for result in top
         )
+    # By the day: a query about what happens now (``fresh_days``) wants a result of the last days among the first
+    # three; "current" is a year, and a story of three weeks ago is current in October.
+    fresh_days = row.get("fresh_days")
+    fresh_at_3 = None
+    if isinstance(fresh_days, int) and fresh_days > 0:
+        fresh_at_3 = any(
+            isinstance(result.get("age_days"), int) and 0 <= result["age_days"] <= fresh_days
+            for result in top[:3]
+        )
     domains = [_host(str(result.get("url", ""))) for result in top]
     return {
         "ndcg_at_5": round(ndcg_at_k(grades, k), 4),
@@ -69,6 +78,10 @@ def score_results(
         "relevant_at_5": len(relevant_ranks),
         "official_hit_at_3": official,
         "freshness_hit_at_5": freshness,
+        "fresh_at_3": fresh_at_3,
+        "dated_at_5": round(sum(1 for result in top if result.get("date")) / len(top), 4)
+        if top
+        else 0.0,
         "unique_domains_at_5": len({domain for domain in domains if domain}),
     }
 
@@ -89,5 +102,7 @@ def summarize(answered: Sequence[Mapping[str, Any]], failures: int = 0) -> dict[
         "mean_mrr": mean("mrr"),
         "official_hit_at_3": mean("official_hit_at_3"),
         "freshness_hit_at_5": mean("freshness_hit_at_5"),
+        "fresh_at_3": mean("fresh_at_3"),
+        "mean_dated_at_5": mean("dated_at_5"),
         "mean_unique_domains_at_5": mean("unique_domains_at_5"),
     }

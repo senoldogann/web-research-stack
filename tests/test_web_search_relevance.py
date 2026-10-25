@@ -66,6 +66,23 @@ def test_score_results_reports_relevance_official_and_freshness() -> None:
     assert score["unique_domains_at_5"] == 3
 
 
+def test_a_query_about_now_is_scored_by_the_day_and_not_by_the_year() -> None:
+    # A story of three weeks ago is "current" in October; a query with fresh_days wants one of the last days
+    # among the first three.
+    row = {"query": "syysmyrsky", "expected_domains": ["yle.fi"], "fresh_days": 7}
+    old = {"url": "https://yle.fi/a/1", "date": "2026-10-06", "age_days": 19, "recency": "current"}
+    new = {"url": "https://yle.fi/a/2", "date": "2026-10-24", "age_days": 1, "recency": "current"}
+    undated = {"url": "https://yle.fi/a/3", "date": None, "age_days": None}
+
+    late = score_results(row, [old, undated, old, new], k=5, current_year=2026)
+    early = score_results(row, [new, old, undated], k=5, current_year=2026)
+    unasked = score_results({"query": "x", "expected_domains": ["yle.fi"]}, [new], k=5)
+
+    assert late["fresh_at_3"] is False and early["fresh_at_3"] is True
+    assert unasked["fresh_at_3"] is None
+    assert late["dated_at_5"] == 0.75 and early["dated_at_5"] == 0.6667
+
+
 def test_summarize_counts_only_answered_queries() -> None:
     answered = [
         {"ndcg_at_5": 1.0, "mrr": 1.0, "official_hit_at_3": True},
@@ -91,3 +108,28 @@ def test_query_fixture_is_valid_and_unique() -> None:
         for domain in row["expected_domains"]:
             assert domain == domain.lower()
             assert "." in domain
+
+
+def test_the_provider_query_set_is_valid() -> None:
+    # benchmarks/search_eval_queries.json: providers side by side (scripts/evaluate_web_search.py --provider).
+    from scripts.evaluate_web_search import _ROW_OPTIONS
+
+    rows = json.loads((QUERIES.parent / "search_eval_queries.json").read_text(encoding="utf-8"))
+
+    assert len(rows) >= 20
+    assert len({row["query"] for row in rows}) == len(rows)
+    for row in rows:
+        assert row["query"].strip() and row["kind"] in {
+            "docs",
+            "news",
+            "official",
+            "tr",
+            "fi",
+            "local",
+        }
+        assert row["expected_domains"]
+        assert all(domain == domain.lower() and "." in domain for domain in row["expected_domains"])
+        assert set(row.get("options", {})) <= {*_ROW_OPTIONS, "depth"}
+        assert row.get("fresh_days") is None or (
+            isinstance(row["fresh_days"], int) and row["fresh_days"] > 0
+        )

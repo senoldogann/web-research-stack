@@ -2124,6 +2124,19 @@ forum on the domain (`discuss.`, `community.`, `forum.`...). A lookalike on anot
 holds on `com org io dev ai app co` (and `co.uk`, `com.au` and the other second levels of `com`, `co` and `org`), not on
 `.info`, `.net`, `.xyz`, `.biz` and the rest, where a copy of a site is put.
 
+**One host of a name is.** The same name on several of those top-level domains (`modelcontextprotocol.io`, and
+`modelcontextprotocol.dev`, `.app`, `.co` and `model-context-protocol.com` beside it) is one site and its lookalikes,
+and 1.4.1 called every one of them `official`. In a pool of results only one registrable domain of the name is: the
+one the tables name (`WEB_TOOLS_OFFICIAL_HOSTS` included), else the one the providers ranked highest. Ranked highest
+is the agreement of the search's angles on its best result (the reciprocal ranks, weighted by angle, that the score
+already uses), then its best place, then its name; a host the engines put at the head of three angles is not
+outweighed by one that one angle put first. Its subdomains are official with it, and the others are `other`. This is
+what ranking can say and no more: the project's site is taken to be the one the engines put first, and a lookalike
+they rank above it is the one called official (the real one then is `other`); a name found on one domain only is
+official, however it got there. A host classified alone (`classify_source_type(url, query=...)`, with no pool, no
+`subject_home`) cannot be told from its lookalikes and is official as before. Tests:
+`tests/test_web_search_official_name.py`.
+
 **It leads.** `primary_first` is on, unless a call says, for a query that asks for a specification, documentation or an
 API reference (`specification`, `spec`, `documentation`, `docs`, "API reference"; their Turkish, Finnish and German
 words) and is not a news query. Only the organization's own pages lead (official +0.12, academic +0.05; an outlet that

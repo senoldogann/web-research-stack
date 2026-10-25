@@ -331,3 +331,25 @@ async def test_only_googles_wrapper_links_are_requested(monkeypatch: pytest.Monk
 
     assert requested == [wrapper]
     assert resolved == ["https://example.com/real", stranger, "https://example.com/plain"]
+
+
+@pytest.mark.parametrize("headless", [True, False])
+def test_a_chrome_the_search_starts_never_reaches_the_owner_s_keychain(
+    monkeypatch: pytest.MonkeyPatch, headless: bool
+) -> None:
+    # A throwaway profile's cookie key went to the login keychain ("Chrome Safe Storage"); where none was found,
+    # macOS asked the owner on screen ("Keychain Not Found"), next to a button that resets their keychains.
+    import web_scraper.google_search as google_module
+
+    started: list[list[str]] = []
+
+    def popen(args: list[str], **kwargs: object) -> object:
+        started.append(args)
+        return object()
+
+    monkeypatch.setattr(GoogleSearcher, "_chrome_binary", lambda self: "/Applications/Chrome")
+    monkeypatch.setattr(google_module.subprocess, "Popen", popen)
+
+    GoogleSearcher()._start_chrome(9222, "/tmp/profile", headless=headless)
+
+    assert "--use-mock-keychain" in started[0] and "--password-store=basic" in started[0]

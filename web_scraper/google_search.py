@@ -636,6 +636,12 @@ class GoogleSearcher:
             "--no-default-browser-check",
             "--disable-background-networking",
             "--disable-sync",
+            # Chrome keeps the key of a profile's cookies and passwords in the login keychain ("Chrome Safe
+            # Storage"). A throwaway profile has no business there, and where no keychain is found macOS
+            # asks the owner on screen ("Keychain Not Found") with a button that resets their keychains.
+            # Playwright passes the same two to every Chrome it starts (the second is Linux's).
+            "--use-mock-keychain",
+            "--password-store=basic",
             "--window-size=400,300"
             if not config.google_allow_visible_browser
             else "--window-size=1366,900",

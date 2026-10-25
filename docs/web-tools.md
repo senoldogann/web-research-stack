@@ -322,6 +322,13 @@ its older minimise-window path for its own endpoints. The web tools never use it
 `GoogleSearchAdapter` constructs `GoogleSearcher(headless=True,
 allow_visible_browser=False)`, and the page fetcher does not call Google at all.
 
+The Chrome that `google_search.py` starts itself (its headless path, tried when the search's Camoufox cannot start, and
+the minimise-window path) is given `--use-mock-keychain` and `--password-store=basic` since 1.4.7, as Playwright gives
+every Chrome it starts. Without them its throwaway profile goes to the login keychain for the key of its cookies
+("Chrome Safe Storage"). On 2026-10-25, after searches on this Mac had taken that path (Camoufox's fingerprint model was
+missing), macOS showed the owner a "Keychain Not Found" dialog for "Chrome", whose other button resets the keychains;
+that the dialog came from them is likely, not proven (the dialog's process had gone and the system log had no entry).
+
 ### Verify that HTTP pages never start a browser
 
 The benchmark checks this directly:

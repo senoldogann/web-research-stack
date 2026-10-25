@@ -376,6 +376,62 @@ class TestProviderCooldown:
         assert response["queries"][0]["fallback"]["reason"] == "provider_cooldown"
         assert response["queries"][0]["fallback"]["error"]["detail"] == "captcha"
 
+    @pytest.mark.asyncio
+    async def test_a_failed_primary_with_every_fallback_cooling_asks_the_one_nearest_its_end(
+        self,
+    ) -> None:
+        # Until 1.4.9 the search failed here with no call: a cooldown failed a search.
+        ddg = ScriptedSearch("duckduckgo", error=_bot_detected())
+        google = ScriptedSearch("google")
+        yahoo = ScriptedSearch("yahoo")
+        service = _service(ddg, google, yahoo, search_fallback_providers=["google", "yahoo"])
+        for name, rest in (("google", 300.0), ("yahoo", 30.0)):
+            health = service._provider_health_for(name)
+            health.cooldown_until = health.clock() + rest
+
+        response = await service.search("oulu weather", depth="fast")
+
+        assert response["provider"] == "yahoo"
+        assert google.calls == [] and yahoo.calls == ["oulu weather"]
+        fallback = response["queries"][0]["fallback"]
+        assert fallback["to"] == "yahoo" and fallback["error"] is None
+        assert [(entry["provider"], entry["status"]) for entry in fallback["tried"]] == [
+            ("duckduckgo", "failed"),
+            ("google", "skipped"),
+            ("yahoo", "skipped"),
+            ("yahoo", "answered"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_the_last_resort_is_asked_once_and_a_refusal_fails_the_search(self) -> None:
+        ddg = ScriptedSearch("duckduckgo", error=_bot_detected())
+        google = ScriptedSearch("google", error=_bot_detected())
+        yahoo = ScriptedSearch("yahoo", error=_bot_detected())
+        service = _service(ddg, google, yahoo, search_fallback_providers=["google", "yahoo"])
+        for name in ("google", "yahoo"):
+            health = service._provider_health_for(name)
+            health.cooldown_until = health.clock() + 300.0
+
+        with pytest.raises(WebToolError) as failed:
+            await service.search("oulu weather", depth="fast")
+
+        assert failed.value.detail == "bot_detected"
+        assert len(google.calls) + len(yahoo.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_cooling_fallback_is_the_last_resort_after_the_others_failed(self) -> None:
+        ddg = ScriptedSearch("duckduckgo", error=_bot_detected())
+        google = ScriptedSearch("google")
+        yahoo = ScriptedSearch("yahoo", error=_bot_detected())
+        service = _service(ddg, google, yahoo, search_fallback_providers=["google", "yahoo"])
+        health = service._provider_health_for("google")
+        health.cooldown_until = health.clock() + 300.0
+
+        response = await service.search("oulu weather", depth="fast")
+
+        assert response["provider"] == "google"
+        assert yahoo.calls == ["oulu weather"] and google.calls == ["oulu weather"]
+
     def test_cooldown_starts_at_the_base_and_doubles_to_the_cap(self) -> None:
         health = ProviderHealth()
 

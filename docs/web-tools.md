@@ -1977,7 +1977,10 @@ September and updated on 21 October disagrees with nothing.
   (`..._PROVIDER_FAILURE_LIMIT`). It lasts 10 minutes (`..._PROVIDER_COOLDOWN_SECONDS`), twice as
   long for each time a provider that came back is refused again, up to an hour
   (`..._MAX_COOLDOWN_SECONDS`); a provider that cools is skipped in the chain (`tried` says
-  `skipped`, `provider_cooldown`) and asked only as a last resort. When the cooldown is over the
+  `skipped`, `provider_cooldown`) and asked only as a last resort: a skipped primary when every
+  fallback failed, and a failed primary's skipped fallback nearest the end of its cooldown, once
+  (since 1.4.9; until then a failed primary with every fallback cooling failed the search with no
+  call, a cooldown failing a search it was only to steer). When the cooldown is over the
   provider is on probation: its record of failures is cleared and the next call is the probe, an
   answer clears the rest. A cut angle (the search's own budget) is no failure.
 - **Google's walls (1.4.8, 1.4.9).** Google is a wall only when a path saw a bot check (a CAPTCHA, "unusual

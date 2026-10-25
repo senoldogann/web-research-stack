@@ -2029,7 +2029,11 @@ own."). `status_code` stays what the site said (200). `web_extract` returns no f
 field is `null` with provenance `not_found` (a `required` one is reported as it is when the page has nothing), and its
 `title`, `description`, `canonical_url` and `date*` are empty. `web_scrape` keeps the text it read, so that the caller
 can see what the site gave. A crawl records a `soft_404` page as an error of the job (`failed` counts it as a 404 is)
-and does not follow its links. The verdict is made before a page is kept, so a cached page says the same.
+and does not follow its links. The verdict is made before a page is kept, so a cached page says the same. A page
+that `web_map` read first (its start page: a map has no use for the verdict, and asks none) is kept without it, and
+is judged when a scrape or an extract takes it from the cache, and kept with the verdict (1.4.1 kept it unjudged: a
+scrape of a catch-all page after a map of it said nothing and sent no probe, and a root the map had read was not
+remembered by its title); what read a page first does not decide what is said of it.
 
 **What it costs.** One request to the same host, through the same checks, the first time a page that does not name
 itself is read from a host (and one browser read when the host's pages are drawn by scripts); nothing for a page that

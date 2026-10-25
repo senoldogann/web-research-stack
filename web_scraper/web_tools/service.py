@@ -2367,19 +2367,30 @@ class WebToolsService:
         are errors), PDFs, a page with nothing to read, a failed browser render, a page that is
         still a shell and anything read with ``cache=False`` (archived copies, crawled pages) never
         are. ``judge`` asks whether a site gave this page for an address it has nothing at
-        (``_judge_missing``): off for a probe, and for the other forms and copies of a walled page.
+        (``_judge_missing``): off for a probe, a map's start page and the other forms and copies of a
+        walled page. A page kept without the question is asked it when a read that wants it takes the page
+        from the cache.
         """
         key = self._page_key(url) if cache else None
+        judged = judge and fetcher is None
         if key is not None:
             started = time.perf_counter()
             stored = self._pages.get(key)
             if stored is not None:
                 self.metrics.count("page_cache_hits_total")
-                return self._document_from_cache(stored, max_chars, started)
+                document = self._document_from_cache(stored, max_chars, started)
+                if judged and not stored.judged:
+                    # Kept by a read that did not ask (a map's start page): asked now, and kept with the
+                    # answer, so what read a page first does not decide what is said of it.
+                    await self._judge_missing(document)
+                    self._pages.revise(
+                        key, replace(stored, warnings=tuple(document.warnings), judged=True)
+                    )
+                return document
         document = await self._fetch_document(
             url, max_chars=max_chars, browser=browser, fetcher=fetcher
         )
-        if judge and fetcher is None:
+        if judged:
             await self._judge_missing(document)
         if key is not None and _storable(document):
             self._pages.put(
@@ -2392,6 +2403,7 @@ class WebToolsService:
                     fetched_with=document.fetched_with,
                     warnings=tuple(document.warnings),
                     timings=dict(document.timings),
+                    judged=judged,
                 ),
             )
         return document

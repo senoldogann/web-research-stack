@@ -409,6 +409,89 @@ class TestAPageThatNamesItselfAndIsTitledAsTheRoot:
         assert "looks_missing" not in answer and site.probes == []
 
 
+class TestWhatReadAPageFirstDoesNotDecideTheVerdict:
+    """``web_map`` reads its start page without asking whether the site gave it for any address (a map has no
+    use for the verdict), and the page it read is kept. A scrape of that page a moment later came from the
+    cache: no ``soft_404`` and no probe, where a scrape that had read the page itself said so. The verdict is
+    given when a read that wants it gets the page from the cache, and kept with the page."""
+
+    @pytest.mark.asyncio
+    async def test_a_page_a_map_read_first_is_judged_when_it_is_scraped(self, soft: Site) -> None:
+        service = _service()
+
+        try:
+            mapped = await service.map(soft.url("/blog/lost"))
+            scraped = await service.scrape(soft.url("/blog/lost"))
+        finally:
+            await service.close()
+
+        assert mapped["urls"] == [soft.url("/blog/lost")]
+        assert "soft_404" in scraped["warnings"] and scraped["looks_missing"] is True
+        # The page the map read is not read again; the one request the verdict needs is its probe.
+        assert soft.asked.count("/blog/lost") == 1 and len(soft.probes) == 1
+
+    @pytest.mark.asyncio
+    async def test_the_verdict_is_kept_with_the_page_and_asked_for_once(self, soft: Site) -> None:
+        service = _service()
+
+        try:
+            await service.map(soft.url("/blog/lost"))
+            first = await service.scrape(soft.url("/blog/lost"))
+            second = await service.extract(soft.url("/blog/lost"), {"title": {}})
+        finally:
+            await service.close()
+
+        assert first["looks_missing"] is True and second["looks_missing"] is True
+        assert second["data"] == {"title": None} and second["cache_hit"] is True
+        assert len(soft.probes) == 1 and soft.asked.count("/blog/lost") == 1
+
+    @pytest.mark.asyncio
+    async def test_a_page_that_is_a_page_is_not_flagged_by_being_read_by_a_map_first(
+        self, soft: Site
+    ) -> None:
+        service = _service()
+
+        try:
+            await service.map(soft.url("/blog/post-1"))
+            scraped = await service.scrape(soft.url("/blog/post-1"))
+        finally:
+            await service.close()
+
+        assert scraped["warnings"] == [] and "looks_missing" not in scraped
+        assert soft.asked.count("/blog/post-1") == 1  # not read again
+
+    @pytest.mark.asyncio
+    async def test_a_root_a_map_read_first_is_remembered_by_its_title_for_the_pages_after_it(
+        self, world: World
+    ) -> None:
+        site = TestAPageThatNamesItselfAndIsTitledAsTheRoot._framework(world)
+        service = _service()
+
+        try:
+            await service.map(site.url("/"))
+            await service.scrape(site.url("/"))
+            answer = await service.scrape(site.url("/nothing-here"))
+        finally:
+            await service.close()
+
+        assert answer["looks_missing"] is True and len(site.probes) == 1
+
+    @pytest.mark.asyncio
+    async def test_with_the_check_off_nothing_is_asked_and_the_cache_is_used(
+        self, soft: Site
+    ) -> None:
+        service = _service(soft_404_check=False)
+
+        try:
+            await service.map(soft.url("/blog/lost"))
+            scraped = await service.scrape(soft.url("/blog/lost"))
+        finally:
+            await service.close()
+
+        assert "looks_missing" not in scraped and soft.probes == []
+        assert soft.asked.count("/blog/lost") == 1  # the map's read is the scrape's
+
+
 class TestAPageDrawnByScriptsIsComparedAsItWasDrawn:
     """The HTTP answer is one shell for every address; what tells a page from the fallback is what the browser
     draws, so the probe is read as the page was: through the same loader, in the browser."""

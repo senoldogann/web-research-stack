@@ -60,6 +60,11 @@ class GoogleSearchBlocked(Exception):
         self.wall = wall
 
 
+class GoogleBackendMissing(GoogleSearchBlocked):
+    """A path this Mac does not have (no Camoufox, no Chrome, no Playwright): it asked Google nothing, so it neither
+    met a wall nor read a page."""
+
+
 # One Chrome at a time: the research pipeline asks Google for several query
 # variants at once, and each search would otherwise open its own window.
 _BROWSER_LOCK: Optional[asyncio.Semaphore] = None
@@ -188,9 +193,18 @@ class GoogleSearcher:
             if value is not None
         }
 
+        blocked: List[str] = []
+        # What the paths met. A wall a strong path met (Camoufox, the minimised Chrome) is Google's answer to this
+        # Mac, unless another strong path read Google's page clean. One a weak path met (the HTTP search, headless
+        # Chrome, which Google refuses almost always) is that path's, unless no strong path was there to ask (an
+        # Intel Mac, or Camoufox's browser not fetched) and no browser read Google's page clean.
+        strong_wall = weak_wall = strong_ran = served_strong = served_any = False
         try:
             results = await self._search_http(query, num_results, **extra)
-        except Exception as exc:  # network error, curl_cffi missing, bot check
+        except GoogleSearchBlocked as exc:
+            blocked.append(f"http: {exc}")
+            weak_wall = exc.wall
+        except Exception as exc:  # network error, curl_cffi missing
             logger.debug("Google HTTP search failed for %r: %s", query, exc)
 
         global _BACKEND_LOGGED
@@ -209,31 +223,45 @@ class GoogleSearcher:
             paths = ((self._search_camoufox, "camoufox", "none"),)
             paths += ((self._search_headless_chrome, "chrome-headless", "none"),)
 
-        blocked: List[str] = []
-        walled = False
         for path, backend, window in paths:
             if results or not config.google_use_playwright:
                 break
+            strong = backend != "chrome-headless"
             try:
                 results = await path(query, num_results, **extra)
+            except GoogleBackendMissing as exc:
+                # Not on this Mac (no Camoufox, no Chrome): it asked Google nothing.
+                blocked.append(f"{backend}: {exc}")
+                continue
             except GoogleSearchBlocked as exc:
                 # A refused backend must not end the search: the next may pass.
                 blocked.append(f"{backend}: {exc}")
-                walled = walled or exc.wall
+                strong_ran = strong_ran or strong
+                if strong:
+                    strong_wall = strong_wall or exc.wall
+                else:
+                    weak_wall = weak_wall or exc.wall
                 continue
+            strong_ran = strong_ran or strong
+            served_strong = served_strong or strong
+            served_any = True
             if results and not _BACKEND_LOGGED:
                 logger.info("google search backend=%s window=%s", backend, window)
                 _BACKEND_LOGGED = True
 
         if not results:
-            # A wall only when a backend saw one. Said of every empty answer, it put Google in its
-            # cooldown (10 minutes, up to an hour) after one slow page or one query that found
-            # nothing, and a search with DuckDuckGo and Yahoo refusing then had no provider at all.
+            # A wall only as said above. Said of every empty answer, it put Google in its cooldown (10
+            # minutes, up to an hour) after one slow page or one query that found nothing, and a search with
+            # DuckDuckGo and Yahoo refusing then had no provider at all. Unsaid of the only paths a Mac without
+            # Camoufox has, Google was asked twice more before its cooldown.
+            wall = (strong_wall and not served_strong) or (
+                weak_wall and not strong_ran and not served_any
+            )
             detail = f" ({'; '.join(blocked)})" if blocked else ""
             raise GoogleSearchBlocked(
-                ("Google served a bot check" if walled else "Google gave no results it could read")
+                ("Google served a bot check" if wall else "Google gave no results it could read")
                 + detail,
-                wall=walled,
+                wall=wall,
             )
 
         return results[:num_results]
@@ -284,6 +312,8 @@ class GoogleSearcher:
         ) as client:
             client.cookies.update(self.CONSENT_COOKIE)
             response = await client.get(url, headers=HeaderFactory.get_headers(url))
+            if response.status_code == 429 or "/sorry/" in str(response.url):
+                raise GoogleSearchBlocked("Google served a bot check to the HTTP search", wall=True)
             response.raise_for_status()
 
         return self._parse_results(response.text)
@@ -306,7 +336,7 @@ class GoogleSearcher:
         """
         page = await get_camoufox_page()
         if page is None:
-            return []
+            raise GoogleBackendMissing("Camoufox is not available")
 
         url = self._build_url(query, num_results, **extra)
         timeout_ms = int(config.google_playwright_timeout_seconds * 1000)
@@ -320,8 +350,15 @@ class GoogleSearcher:
                 )
             served = True
         except asyncio.TimeoutError as exc:
+            # A page that hung on Google's bot check is a wall, not a slow page.
+            hung_on_wall = "/sorry/" in (page.url or "")
             await close_shared_camoufox()
-            raise GoogleSearchBlocked("Camoufox did not finish reading Google in time") from exc
+            raise GoogleSearchBlocked(
+                "Google's bot check held Camoufox's page"
+                if hung_on_wall
+                else "Camoufox did not finish reading Google in time",
+                wall=hung_on_wall,
+            ) from exc
         finally:
             await release_page(page, reuse=served)
 
@@ -396,7 +433,7 @@ class GoogleSearcher:
         """
         page = await self._chrome_page()
         if page is None:
-            return []
+            raise GoogleBackendMissing("Chrome is not available")
 
         url = self._build_url(query, num_results, **extra)
         timeout_ms = int(config.google_playwright_timeout_seconds * 1000)
@@ -436,12 +473,13 @@ class GoogleSearcher:
         """
         now = time.monotonic()
         if now < _HEADLESS_STATE["blocked_until"]:
-            return []
+            # Not asked again: Google refused it within the hour (a wall only where it is all this Mac has).
+            raise GoogleSearchBlocked("Google refused headless Chrome within the hour", wall=True)
 
         try:
             from playwright.async_api import async_playwright
-        except ImportError:
-            return []
+        except ImportError as exc:
+            raise GoogleBackendMissing("Playwright is not installed") from exc
 
         url = self._build_url(query, num_results, **extra)
         timeout_ms = int(config.google_playwright_timeout_seconds * 1000)
@@ -450,7 +488,7 @@ class GoogleSearcher:
         process = self._start_chrome(port, profile, headless=True)
         if process is None:
             shutil.rmtree(profile, ignore_errors=True)
-            return []
+            raise GoogleBackendMissing("Chrome is not available")
 
         raw: List[Dict] = []
         html = ""
@@ -466,7 +504,9 @@ class GoogleSearcher:
                     await hold_context(context)
                 except Exception as exc:  # noqa: BLE001 - an unheld context is not searched in
                     logger.warning("headless Chrome not held to the address guard: %s", exc)
-                    return []
+                    raise GoogleBackendMissing(
+                        "headless Chrome could not be held to the address guard"
+                    ) from exc
                 page = await context.new_page()
                 close_windows_of(page)
                 try:
@@ -497,7 +537,7 @@ class GoogleSearcher:
             if "unusual traffic" in lowered or "captcha" in lowered or "enablejs" in lowered:
                 _HEADLESS_STATE["blocked_until"] = time.monotonic() + _HEADLESS_COOLDOWN_S
                 logger.info("headless Chrome was refused; trying it again in an hour")
-            return []
+                raise GoogleSearchBlocked("Google served a bot check to headless Chrome", wall=True)
         return results
 
     async def _chrome_page(self):

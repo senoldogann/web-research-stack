@@ -4,44 +4,254 @@ The package is `dotagent-web-research`; the MCP server is `web-research-mcp`
 (`web_scraper.mcp_server`). Behavior, settings and measurements are described in
 [docs/web-tools.md](docs/web-tools.md); this file says what a version changed.
 
-## 1.4.4 (2026-10-25)
+## 1.4.5 (2026-10-25)
 
-### Highlights
-- **Stealth Camoufox Search Integration**: Wired Camoufox anti-detect browser engine into search provider fallback.
-- **Google Search Adapter Upgrades**:
-  - Auto-injection of Google consent cookies (`CONSENT`, `SOCS`) preventing redirect loops and popups.
-  - Automatic dismissal of localized consent dialogues.
-  - Relative date filtering (`tbs=qdr:d`, `w`, `m`, `y`) alongside existing date ranges.
-  - Asynchronous background warm-up on service start for sub-second responses.
-- **Optimized Fallback Priority**: Updated default fallback chain to `["google", "yahoo", "duckduckgo_lite"]` so blocked DuckDuckGo requests fall seamlessly to high-precision Google search rather than degraded Yahoo results.
-
-## 1.4.3 (2026-10-25)
-
-Camoufox bundled as a standard dependency.
-
-### Added
-
-- **Zero-setup stealth browser installation:** Added `camoufox>=0.5.8` directly to package `dependencies`, ensuring that any client installing `dotagent-web-research` (including Dot desktop app users) receives the full bot evasion and Cloudflare Turnstile bypass engine out of the box without manual package installations.
-
-## 1.4.2 (2026-10-25)
-
-Bot evasion hardening and automatic challenge escalation.
-
-### Added
-
-- **Automatic stealth escalation for bot challenges & Turnstile.** `HeadlessBrowserManager`
-  now supports stealth browsing via Camoufox (`has_stealth`, `render_stealth()`). When the primary
-  engine (Chrome/Chromium) encounters a Cloudflare Turnstile, CAPTCHA, or challenge interstitial,
-  or times out while blocked, the render seamlessly escalates to Camoufox without failing the request.
-- **Bot challenge HTTP escalation.** In `service._fetch_document`, when an HTTP request receives a
-  bot challenge (`captcha`, `access_blocked`, or HTTP 401/403/429) and a stealth-capable browser is
-  available, `web_scrape` automatically escalates to headless browser rendering rather than
-  terminating prematurely.
+An independent security review of 1.3.1 to 1.4.1 found six things in round B, and the reading of a page in Camoufox that
+1.4.2 added had to be held to the same rules. 1.4.3 closes them, one commit each. Each has a test that fails before it:
+the reviewer's probes are the scenarios, against sites in memory or, for the browsers, a real headless browser and
+servers on the loopback (skipped where there is none, as on the CI job).
 
 ### Fixed
 
-- **Blink automation flag.** Added `--disable-blink-features=AutomationControlled` to standard
-  Chromium args, preventing the `navigator.webdriver = true` flag from triggering bot detection.
+- **A redirect no longer decides which site a map or a crawl reads.** 1.4.0 took whatever host the start page,
+  `robots.txt` or a sitemap landed on as the site. An address that forwarded every path to another site made `web_map`
+  read that site's robots.txt and sitemaps and return its addresses, made a crawl read its pages and, with
+  `include_subdomains`, a host nothing had redirected to (`internal.other.test`). A page that stayed put while only its
+  robots.txt or sitemap forwarded elsewhere did the same, and so did a start page that was not there. A landing is the
+  site only for a `www.` flip, `http` to `https` or the same registrable domain (`same_registrable_domain`: a short
+  table of the registries' second levels and of the hosts that hand a subdomain to anyone, not the Public Suffix List).
+  Any other is done as 1.3.1 did it: the one page the address leads to (a crawl reads it and follows none of its links),
+  and nothing of the other site's robots.txt, sitemaps or links used or listed (the fetcher still follows the redirect
+  of `robots.txt` and `sitemap.xml`, two requests whose answers are dropped, and a sitemap an index names that forwards
+  elsewhere is dropped too), and the answer says `redirected_to`. It holds for a page that was read after a wall, in
+  Chrome or in Camoufox: it goes by the address the page ended at.
+- **The browser's guard holds the web sockets and the windows of a page.** It was routed on the one page: a page's
+  `new WebSocket("ws://127.0.0.1:9222/...")` and `window.open("http://127.0.0.1:8080/...")` (the window's navigation,
+  its image and its fetches) reached a host the guard refuses. It is now put on the context, before its first page
+  exists: `context.route` for the requests (a window is a page of the context), `context.route_web_socket` for the
+  sockets (an address that may be requested is connected as before, any other is closed with 1008), and a window is
+  closed as it opens. The older Playwright scraper has the same. In Camoufox the requests and the windows are held and the
+  web sockets are not (below).
+- **A page that blocks the browser no longer hangs the render, its slots or the tool.** A page whose script spins
+  (`while (true) {}`) leaves `page.evaluate` and `page.content` unanswered for ever; the render waited on them with
+  nothing around it, kept a context slot and, above it, one of the MCP server's eight tool slots (with the manager's
+  timeout at 10 s it was still going after 40 s). Each read, in Chrome or in Camoufox, is now bounded by
+  `BROWSER_TIMEOUT_SECONDS` and 5 seconds and ends with `timeout` (the service has the HTTP text and says
+  `browser_render_failed:timeout`); a page that blocks both browsers ends in about twice that. The context is closed
+  whatever happened, for at most 5 seconds, and a browser that does not answer a close is shut down (Camoufox alone when
+  it is the one) and started again by the next read. The shutdown of a browser is bounded too.
+- **A page `web_map` read first is judged when it is scraped.** The map's start page is read without the missing-page
+  question and was kept in the page cache; a scrape of it within five minutes got no `soft_404` and sent no probe, and a
+  root the map had read was not remembered by its title. A read that wants the verdict and gets such a page from the
+  cache asks it then and keeps the answer with the page (the page is not fetched or rendered again). It holds for a page
+  that was read after a wall.
+- **Only one host of a name is the subject's own.** A host whose registrable name is all the words of the query's
+  subject joined was `official` on every top-level domain an organization uses: `modelcontextprotocol.dev`, `.app`,
+  `.co` and `model-context-protocol.com` beside the project's `.io`. In a pool of results only one registrable domain of
+  the name is: the one the tables name, else the one the providers ranked highest (the agreement of the angles on its
+  best result). The others are `other`.
+- **A page is returned only if it ended at an address the guard allows.** The guard is asked about the first address
+  of a request; a redirect the browser follows is not asked about again, so an allowed address that answered
+  `302 Location: http://127.0.0.1/...` was read from the loopback and handed back as the page. The address the page
+  ended at is now asked about once more, and a refused one ends the read with `unsafe_target`. The request to the refused
+  address is still made; what it answered is not returned.
+- **Camoufox is no longer downloaded by a page.** It fetched what it lacked the moment it started, in the middle of a
+  read (its browser and the model its fingerprints are drawn from from GitHub, its ad blocker, the latest, from
+  addons.mozilla.org). It is now started only from what `python -m camoufox fetch` has put on the machine; when
+  something is missing the page stays as Chrome read it, and the log says which command fetches the rest. Its start is
+  bounded (60 s).
+- **Camoufox's own calls to Mozilla and Google are off.** Within 25 s of each start it asked `aus5.mozilla.org`,
+  `update.googleapis.com`, `ciscobinary.openh264.org`, `edgedl.me.gvt1.com` and `www.google.com` for updates (measured
+  with a proxy that refused everything and wrote down what it was asked); none after. Its ad blocker's filter-list calls
+  remain and are listed in [docs/web-tools.md](docs/web-tools.md).
+- **`start()` looks at the first browser.** It returned early while only Camoufox was up, and the first read then found
+  no browser.
+- **The gate passes.** 1.4.2 as published failed `ruff check` (three findings) and `ruff format` (three files), its
+  `tests/test_packaging.py` still pinned 1.4.1, and three of its tests needed the package `camoufox`.
+
+### Added
+
+- **`dotagent-web-research[stealth]`**, an extra that adds `camoufox>=0.5.8` (Python 3.10 or later) and leaves out its
+  GeoIP database. `python -m camoufox fetch` then downloads, once, what it needs.
+- **`WEB_TOOLS_BROWSER_STEALTH`** (true): `false` never reads a page again in Camoufox, installed or not.
+- **`redirected_to`** in `web_map`, `web_crawl_status` and `web_crawl_results`: where an address led when that is another
+  site.
+
+### Stated
+
+- `web_map`'s start page is read through the one loader, in the browser where the loader puts it (a page with little
+  text and scripts). The browser resolves names itself, as it does for a scraped page: the guard is a check at one
+  moment, and a name that answers a public address to it and another to the browser is the one thing it does not stop.
+
+### Changed
+
+- The `playwright` extra asks for 1.48 (it asked for 1.40): a Playwright that cannot route web sockets is not used
+  (`browser_unavailable`), the guard does not run with a gap that is not the browser's own. Camoufox asks for a Playwright
+  older than 1.63.
+- The text of the nine tools a model reads is 11,998 characters (11,932 in 1.4.1; the budget test allows 12,000).
+
+### What holds in Camoufox, and what does not
+
+Measured with a real Camoufox 0.5.8 (Firefox 156, Playwright 1.62) and local servers
+(`tests/test_web_browser_camoufox.py`):
+
+| | Chrome | Camoufox |
+|---|---|---|
+| the requests of a page and of its frames | held | held |
+| a window the page opens | closed as it opens | Firefox blocks it unless someone clicked; closed if not |
+| the web sockets of a page | held | **not held** |
+| the requests of a dedicated worker | held | **not held** |
+| the requests of a shared worker | **not held** | **not held** |
+| a web socket opened inside a worker | **not held** | **not held** |
+| a redirect the browser follows | **not held**; the page it leads to is not returned | the same |
+| an address the guard refuses | not read | not read, by either browser |
+
+In Firefox Playwright puts its mock of `WebSocket` in the isolated world that Camoufox keeps Playwright's scripts in, so
+the page's own `WebSocket` is the browser's. The tests that say what should hold are marked `xfail`.
+
+### Measured (2026-10-25, this Mac, one run each, 1.4.1 against the branch before 1.4.2's Camoufox was merged into it)
+
+The owner's calls of round B, through the MCP handler with default settings, to show that nothing round B gained is lost;
+the last two rows are the new behavior on a real address that forwards to another registrable domain. They were not
+repeated after the merge: the run after it was on the loopback only.
+
+| Call | 1.4.1 | the branch |
+|---|---|---|
+| `web_search` "Model Context Protocol specification" | the specification page `official` first, then the architecture page and two blog posts `official` | the same specification page first and the same four `official` (Yahoo's order of the next two varies between runs) |
+| `web_scrape` the blog posts of senoldogan.dev (en, tr) | `browser`, 4,602 and 4,366 characters, settled in 2.3 and 2.1 s | the same text, settled in 2.0 and 1.9 s |
+| `web_scrape` / `web_extract` `/bu-sayfa-yok-12345` | `soft_404`, `looks_missing: true`, no field | the same |
+| `web_scrape("not a url at all")` | `invalid_request` | the same |
+| `web_map` of `senoldogan.dev` and `www.senoldogan.dev` | 44 URLs each, `host: www.senoldogan.dev`, `redirected_from` for the apex | the same (a `www.` flip is the same site) |
+| crawl of `modelcontextprotocol.io/docs`, 5 pages; of `senoldogan.dev`, 4 pages, depth 1 | `stopped_by: max_pages`, `not_visited: 32`; 4 pages of `www`, `not_visited: 28` | the same |
+| `web_map("https://wikipedia.com")` (forwards to `www.wikipedia.org`) | wikipedia.org's address, `host` and robots.txt (errors `blocked`, `http_error`) | `url` the address asked for, 1 URL, `redirected_to: https://www.wikipedia.org/`, nothing of wikipedia.org's robots.txt used |
+| crawl of `https://wikipedia.com`, 3 pages | the page `https://www.wikipedia.org/` | the same one page, and `redirected_to` |
+
+### Tests
+
+Each fix has tests that fail before it: `tests/test_web_site_boundary.py` (an apex that forwards every path, with and
+without `include_subdomains`, `use_sitemap` and a crawl; a page that stays while its robots.txt and sitemap forward; a
+start page that is not there; a sitemap an index names that forwards; the REST routes; the `www.`, `http` and same-domain
+moves that must stay; the registrable-domain table), `tests/test_web_browser_guard.py` (the handlers against fakes of what
+Playwright hands them, and a real headless browser against two local servers), `tests/test_web_browser_hang.py` (a fake
+page that never answers, the service, twelve calls at the MCP server's eight slots, and a real browser against the
+spinning page), `tests/test_web_browser_landing.py` (a page that ended at the loopback is not returned),
+`tests/test_web_missing_pages.py` and `tests/test_web_page_cache.py` (a map and then a scrape),
+`tests/test_web_search_official_name.py` (the reviewer's lookalikes in one pool), and for the page read after a wall
+`tests/test_web_browser_stealth.py` (fakes of Playwright and of the package camoufox: never a download, the start
+bounded, the switch, the contexts, the bound of both browsers, twelve calls at eight slots with both blocked),
+`tests/test_web_stealth_service.py` (a page read after a wall is judged for the landing and for `soft_404`) and
+`tests/test_web_browser_camoufox.py` (a real Camoufox: what is held, what is not, a target that escalates to it).
+On Python 3.11 with Playwright 1,890 tests pass, 9 are skipped (they need Camoufox) and 1 is expected to fail; on 3.10 and 3.12
+without Playwright, as on the CI job, 1,881 pass and 19 are skipped; in a throwaway Python 3.13 environment with Playwright 1.62
+and Camoufox 0.5.8, 1,896 pass and 4 are expected to fail (the gaps above).
+
+### Not closed, and said so in [docs/web-tools.md](docs/web-tools.md)
+
+- A web socket opened inside a Web Worker (dedicated or shared) is not routed by Playwright and reaches the host the
+  guard would have refused: measured with `route_web_socket` on, the handshake of a worker reached the server. What
+  closes it is a pinning proxy for the browser, not a longer list.
+- In Camoufox the web sockets of a page, a worker's requests and a redirect hop are not held either (above).
+- Ranking is all a pool has to tell a site from its lookalikes: one the engines put above the project's own is the one
+  called official, and a name found on one domain only is official however it got there. A host classified alone, with
+  no pool, is official as before.
+- The same-site table does not know every registry: two hosts of one it does not know are taken for one site.
+- Camoufox's ad blocker is left on, and makes the calls listed in the docs; taking it out could change what gets through,
+  and that has not been measured.
+
+## 1.4.4 (2026-10-25)
+
+Published from pull request #13 (`a5fb038`). It changes how a search is made when DuckDuckGo's page cannot be used.
+
+### Changed
+
+- **Google is the first fallback of a search.** `WEB_TOOLS_SEARCH_FALLBACK_PROVIDERS` defaults to `google, yahoo,
+  duckduckgo_lite` (it was `duckduckgo_lite, yahoo, google`): a search whose first provider fails goes to Google, then to
+  Yahoo, then to DuckDuckGo's lite page.
+- **Google is read in a Camoufox of its own.** `web_scraper/stealth_camoufox.py` keeps one headless Camoufox for the whole
+  process, with one browser context that every Google search reuses, and closes it after three idle minutes (looked at
+  when the next search comes). It is a second Camoufox, apart from the one 1.4.2 added for reading a page after a bot check.
+- **Google's consent wall is answered for the visitor.** The context is given two cookies when it is made,
+  `CONSENT=YES+cb` and `SOCS=CAESHAgBEhJnd3NfMjAyMzA4MTAtMF9SQzIaAmVuIAEaBgiAo_CmBg`, for `.google.com` only. Both are
+  written in the code and are the same for everyone: `SOCS` holds a Google web-server build (`gws_20230810-0_RC2`), a
+  language (`en`) and a date (2023-08-16), and nothing that names a person or a machine. They are not read from any
+  browser or profile, and they are kept in memory: measured with Camoufox 0.5.8, the browser's temporary profile has
+  none of them on disk. A consent dialog that still shows is answered by clicking the first of these buttons it finds:
+  "Accept all", "Reject all", "Tümünü kabul et", "Tümünü reddet", "Alle akzeptieren", "Hyväksy kaikki" (so "Accept
+  all" where both are offered).
+- **Date filters.** A search's `date_filter` (`day`, `week`, `month`, `year`) goes to Google as `tbs=qdr:d|w|m|y`.
+- **Warm-up.** The first Google search opens `https://www.google.com/ncr` once before it, so that the search is faster; the
+  REST server does the same in the background when it starts (`GOOGLE_WARMUP_ON_STARTUP`).
+
+
+## 1.4.3 (2026-10-25)
+
+Published from pull request #12 (`6b2e049`). It changes one thing: `camoufox` became a dependency of the package.
+
+### Changed
+
+- **Installing the package now installs Camoufox's Python package.** `camoufox>=0.5.8` is in `dependencies`, so
+  `pip install dotagent-web-research`, and Dot, which installs it, bring it, with the packages it needs. The way a page
+  is read did not change: Camoufox is used only when a site's bot check turns Chrome away (see 1.4.2). The package does
+  not contain the browser, which Camoufox downloads the first time it is started, and it does not make a bot check
+  pass: what it got through when checked is in the table under 1.4.2. What installing it brings, and what it costs, is
+  under 1.4.4.
+
+
+## 1.4.2 (2026-10-25)
+
+Published from pull request #11 (`d3a3e70`). This entry says in plain words what it does and what was found when it was
+checked; 1.4.3 changes some of it, and says where.
+
+### Added
+
+- **A page that meets a wall is read once more in Camoufox.** When a site's bot check turns the server's headless
+  Chrome away, the server reads the page again in Camoufox, a Firefox made to look like a person's browser, if the
+  package `camoufox` is installed (it is not a dependency of this package). It runs on a wall and only then: the plain
+  HTTP read is answered with a captcha, an access-blocked page, or HTTP 401, 403 or 429 (`web_scrape` and the other tools
+  sent only an access block to the browser before); Chrome reads a captcha or an access-blocked page; or Chrome
+  times out or cannot navigate. `HeadlessBrowserManager` has `has_stealth` and `render_stealth()`, and `render()` goes on
+  to Camoufox by itself. A page read that way says `fetched_with: browser` and why the plain read was refused
+  (`http_access_blocked`, `http_captcha`, `http_403`...).
+- **Chrome no longer says it is automated.** `--disable-blink-features=AutomationControlled` is one of its arguments, so
+  `navigator.webdriver` is not true.
+
+### What it gets through (measured on 2026-10-25, a handful of page loads per site)
+
+| Check | Chrome, 1.4.1 | Chrome, 1.4.2 | Camoufox |
+|---|---|---|---|
+| bot.sannysoft.com | 20 of 20 pass | 20 of 20 | 20 of 20 |
+| CreepJS "headless" / "like headless" | 67% / 44% | 33% / 44% | 0% / 0% |
+| nowsecure.nl (Cloudflare) | page | page | page |
+| reuters.com (DataDome) | 401 wall | 401 wall | page |
+| zillow.com (PerimeterX) | 403 wall | 403 wall | page |
+| g2.com (Cloudflare managed challenge) | 403 wall | 403 wall | 403 wall, with 12 s and with 25 s of waiting |
+| etsy.com (DataDome) | 403 wall | 403 wall | 403 wall |
+
+The flag lowers CreepJS's "headless" score and moves no wall. Camoufox was given the page by two of the four sites that
+walled Chrome and was walled again by the other two. Single runs against sites that change.
+
+### What it costs (found when 1.4.2 was checked)
+
+- **A download by itself, the first time a page needed it.** Camoufox fetches what it lacks the moment it starts, in the
+  middle of the read: its browser (about 100 MB, about 2.3 GB on disk) from the releases of `daijro/camoufox` on GitHub,
+  the model its fingerprints are drawn from from the releases of `scrapfly/fingerprint-generator` on GitHub, and its ad
+  blocker (the latest uBlock Origin, no checksum) from `addons.mozilla.org`. **1.4.3 stops this**: a page never causes a
+  download; `python -m camoufox fetch` does, once, when you run it.
+- **Calls of its own.** Camoufox calls Mozilla and Google by itself within 25 s of each start (updates of Firefox and of
+  its media plug-ins), and its ad blocker fetches its filter lists from GitHub, GitLab, jsDelivr and others. **1.4.3
+  switches the updates off**; the ad blocker's lists remain and are listed in the docs.
+- **One more read, and time.** A page that meets a wall is read up to three times (HTTP, Chrome, Camoufox); the first read
+  in Camoufox takes about 10 s because the browser starts with it.
+- **A site's terms still bind.** A site that turns automated readers away has said something about them; passing its bot
+  check does not make reading the page permitted.
+
+### What it did not do (1.4.3 fixes it)
+
+- It was not held like Chrome's page: no web sockets, no window, no time limit (a page that blocks the browser hung the
+  render, once for each browser).
+- The gate of the repository did not pass with it: `ruff check` found three things, `ruff format` three files, the
+  version pin of `tests/test_packaging.py` still said 1.4.1, and three of its tests needed the package `camoufox`, which
+  the CI job does not install.
 
 ## 1.4.1 (2026-10-25)
 

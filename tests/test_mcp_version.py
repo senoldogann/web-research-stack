@@ -32,7 +32,7 @@ def _git_answering(stdout: str = "727ec4f\n", returncode: int = 0, raises: Excep
     return run
 
 
-def test_the_version_is_1_4_1_in_the_package_and_in_pyproject() -> None:
+def test_the_version_is_1_4_3_in_the_package_and_in_pyproject() -> None:
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
     assert __version__ == "1.4.4"

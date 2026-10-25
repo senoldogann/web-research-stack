@@ -431,9 +431,16 @@ visible window was opened.
     render says `browser_unavailable`; the `playwright` extra asks for 1.48).
     What remains is the browser's own resolution: a
     name that answers a public address to that check and a private one to the
-    browser's lookup is rendered; **and a web socket opened inside a Web
-    Worker**, which Playwright does not route (it reaches the host the guard
-    would have refused; the fix is a pinning proxy, not a longer list). A
+    browser's lookup is rendered; **a redirect the browser follows**: the
+    guard is asked about the first address of a request only, and Chrome
+    follows a `Location` without asking it again, so a page or a subresource
+    whose allowed address answers `302 Location: http://127.0.0.1/…` is
+    rendered from the refused host (as on 1.3.1 and 1.4.1; the pinned HTTP
+    fetch refuses the same `Location`); **a shared worker's requests** and
+    the browser's own UDP (WebRTC, WebTransport); **and a web socket opened
+    inside a Web Worker**, which Playwright does not route (it reaches the
+    host the guard would have refused; the fix is a pinning proxy, not a
+    longer list). A
     `web_map` of a site reads its start page through the same loader, so in the
     same browser under the same rule: the browser resolves the name itself,
     as it does for a scraped page. The server's headless browser runs only for a
@@ -2377,6 +2384,12 @@ requests or a redirect hop, and those tests are written as the guard should hold
 
 ### What is not closed
 
+- **A redirect the browser follows.** The guard is asked about the first address of each request; Chrome follows a
+  redirect without asking it again. A page rendered in the browser (or a subresource of one) whose allowed address
+  answers a redirect to the loopback or the home network is read from there, as on 1.3.1 and 1.4.1, where the pinned
+  HTTP fetch refuses the same redirect. Closing it means answering each hop in the route (a redirect fetched without
+  following it, its `Location` judged, and handed to the browser as a redirect it asks for again) or a pinning proxy;
+  it is not in 1.4.2. A shared worker's requests and the browser's UDP (WebRTC, WebTransport) are not held either.
 - **A web socket opened inside a Web Worker.** Playwright's `route_web_socket` routes the sockets of a page and its frames
   and not those of a dedicated or a shared worker: measured with the route on, a worker's handshake reached the local
   server it had been told to refuse. A page that wants to reach a refused host can do it from a worker. What closes it is

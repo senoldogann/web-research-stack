@@ -72,7 +72,7 @@ An independent review of 1.4.1 found six things, and the reading in Camoufox had
 | `web_search` | Of the hosts that have the query subject's name on several top-level domains, only the one the providers rank highest is `official` (`modelcontextprotocol.io`, not `.dev`, `.app` or `.co`). |
 | the reading in Camoufox | A page never causes a download any more: Camoufox starts only from what `python -m camoufox fetch` put on the machine, within 60 s, and its updates of Firefox and of its media plug-ins (calls to Mozilla and Google) are off. Its requests and windows are held as Chrome's are; its web sockets, a worker's requests and a redirect are not (Playwright cannot hold them in Firefox). It is the extra `dotagent-web-research[stealth]`, and `WEB_TOOLS_BROWSER_STEALTH=false` turns it off. |
 
-Not held: a web socket opened inside a Web Worker (Playwright does not route it) and the browser's own name resolution.
+Not held: a redirect the browser follows (the guard sees a request's first address only), a shared worker's requests, a web socket opened inside a Web Worker (Playwright does not route it) and the browser's own name resolution.
 The `playwright` extra now asks for 1.48.
 
 [CHANGELOG.md](CHANGELOG.md) has the decisions; [docs/web-tools.md](docs/web-tools.md) the settings.
@@ -92,7 +92,7 @@ command = "web-research-mcp"
 - **LLM Research Tool**: AI-powered web research with citations
 - **Async Architecture**: High-performance concurrent scraping
 - **Production Ready**: Docker, monitoring (Prometheus/Grafana), rate limiting, circuit breaker
-- **Security First**: SSRF protection, input validation, security headers. The server connects only to an address it checked in the same step: a host name is resolved once, every address must be public, and the connection goes to those addresses, never to a second lookup (so a DNS-rebinding answer cannot steer a read to the loopback or the home network); the IPv6 forms that carry a private IPv4 address are refused too. The headless browser's guard holds the requests, the web sockets and the windows of a page (1.4.2). What this does not cover, the headless browser's own name resolution and a web socket opened inside a Web Worker among it, is in [docs/web-tools.md](docs/web-tools.md#security-boundaries).
+- **Security First**: SSRF protection, input validation, security headers. The server connects only to an address it checked in the same step: a host name is resolved once, every address must be public, and the connection goes to those addresses, never to a second lookup (so a DNS-rebinding answer cannot steer a read to the loopback or the home network); the IPv6 forms that carry a private IPv4 address are refused too. The headless browser's guard holds the first address of each request, the web sockets and the windows of a page (1.4.2). What this does not cover, the headless browser's own name resolution, a redirect it follows and a web socket opened inside a Web Worker among it, is in [docs/web-tools.md](docs/web-tools.md#security-boundaries).
 - **Multi-language UI**: English and Turkish language support
 - **Streaming Support**: Real-time research progress via Server-Sent Events (SSE)
 - **Code Block Preservation**: Scraper preserves code blocks from source pages with syntax highlighting

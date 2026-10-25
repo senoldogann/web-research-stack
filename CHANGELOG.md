@@ -4,6 +4,38 @@ The package is `dotagent-web-research`; the MCP server is `web-research-mcp`
 (`web_scraper.mcp_server`). Behavior, settings and measurements are described in
 [docs/web-tools.md](docs/web-tools.md); this file says what a version changed.
 
+## 1.4.8 (2026-10-25)
+
+A search that lost Google for ten minutes after one empty answer, a DuckDuckGo date a site could pose as, and a way to
+measure the providers side by side. Each fix has a test that fails before it.
+
+### Fixed
+
+- **Google is a wall only when it served a bot check.** Every empty answer of the Google search said "Google returned no
+  parseable results (consent page, bot check or JavaScript-only page)", and the adapter took "bot check" and "consent"
+  in it for a wall: one slow page or one query that found nothing put Google in its cooldown at once, ten minutes up to
+  an hour. Measured on 1.4.7, with DuckDuckGo refusing this Mac and Yahoo answering HTTP 500 to 8 of 23 queries, the
+  last four searches of a run failed in 2.4 to 4 s each, every fallback cooling, while Google answered the same query
+  in 3.7 s. A backend that sees a CAPTCHA or "unusual traffic" now says so (`GoogleSearchBlocked.wall`); any other empty
+  answer is `no_results`, a failure like another provider's, and three in a row start a cooldown.
+- **A DuckDuckGo date is the span DuckDuckGo writes, never the shown address** (a security review of 1.4.7, low). 1.4.7
+  read the date from the whole of `result__extras__url`, which holds the address shown for the result, made of the
+  site's own address: a link whose address held `2026-10-24T00:00:00` took that date as DuckDuckGo's (`provider`,
+  0.45). Only a span after the address whose whole text is the stamp is read now, and the lite page's `span.timestamp`
+  likewise.
+
+### Added
+
+- **Providers side by side.** `scripts/evaluate_web_search.py --provider X` (once or more) measures each provider alone,
+  its fallbacks off, and `chain` the server as it runs: answered, the median and 95th percentile time, nDCG@5, MRR, who
+  answered, `fresh_at_3` (a result of the last `fresh_days` among the first three, where `freshness_hit_at_5` goes by
+  the year) and `dated_at_5`. `benchmarks/search_eval_queries.json` holds 23 queries: docs, news, official pages,
+  Turkish and Finnish services, and local ones; a row may carry the search's options. docs/web-tools.md has the first
+  run (Google alone 23/23 at a median of 1.3 s; the chain 19/23).
+
+Nothing a caller passes changed: no tool argument, no `WEB_TOOLS_*` setting, no dependency. A Google failure that is no
+bot check reads `no_results` in `tried[].reason` and the error's `detail`, where it was the message's text.
+
 ## 1.4.7 (2026-10-25)
 
 Three findings of an independent security review of Dot's pin of 1.4.6, a macOS dialog that a Chrome of the Google search

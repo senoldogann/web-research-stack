@@ -4,6 +4,17 @@ The package is `dotagent-web-research`; the MCP server is `web-research-mcp`
 (`web_scraper.mcp_server`). Behavior, settings and measurements are described in
 [docs/web-tools.md](docs/web-tools.md); this file says what a version changed.
 
+## 1.4.6 (2026-10-25)
+
+### Fixed
+
+- **An Intel Mac installs the package again without Xcode's tools.** Since 1.4.3 `camoufox` is a dependency, and its
+  `fpgen` needs `indexed-zstd`, whose only wheel for a Mac is Apple silicon's (`macosx_15_0_arm64`). On an Intel Mac,
+  pip and uv built it from its C++ source, which a Mac without the Command Line Tools cannot do, and the install
+  stopped. `camoufox` is now left out on an Intel Mac (`sys_platform != 'darwin' or platform_machine != 'x86_64'`).
+  There a page that walls the headless Chrome stays walled, and Google is searched in the headless Chrome, as on any
+  install without `camoufox`. Everywhere else nothing changes.
+
 ## 1.4.5 (2026-10-25)
 
 An independent security review of 1.3.1 to 1.4.1 found six things in round B. Two Camoufoxes came after it, the one that

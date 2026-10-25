@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 # The name on PyPI: "web-scraper" and "web-research-mcp" are taken there by others. The import
 # package stays web_scraper, and so does the "web-scraper" command.
 name = "dotagent-web-research"
-version = "1.4.5"
+version = "1.4.6"
 description = "MCP server for web search and reading (search, scrape, map, extract, crawl) that Dot, an always-on agent for macOS, uses"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -40,8 +40,9 @@ dependencies = [
     "pypdf>=5.1.0",
     # A page that the headless Chrome is turned away from (a bot check) is read once more in Camoufox. 0.5.8 is the
     # release whose browser and fingerprint model are named and checked by the package. It needs Python 3.10, and
-    # it needs playwright older than 1.63 (docs/web-tools.md says what installing it brings).
-    "camoufox>=0.5.8; python_version >= '3.10'",
+    # it needs playwright older than 1.63 (docs/web-tools.md says what installing it brings). Not on an Intel Mac
+    # (1.4.6): its fpgen needs indexed-zstd, which has no wheel for one, and building it needs Xcode's tools.
+    "camoufox>=0.5.8; python_version >= '3.10' and (sys_platform != 'darwin' or platform_machine != 'x86_64')",
 ]
 
 [project.optional-dependencies]

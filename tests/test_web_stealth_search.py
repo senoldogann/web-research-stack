@@ -397,9 +397,10 @@ class TestTheSearchIsBoundedAndChecked:
         started.context.next_page = lambda: Page(hang=True)
         began = time.monotonic()
 
-        with pytest.raises(GoogleSearchBlocked, match="in time"):
+        with pytest.raises(GoogleSearchBlocked, match="in time") as refused:
             await asyncio.wait_for(GoogleSearcher()._search_camoufox("query", 5), HANG)
 
+        assert refused.value.wall is False  # a slow page is not a wall
         assert time.monotonic() - began < 5
         assert started.managers[0].exited == 1  # the browser that held the page is shut down
         assert stealth._CAMOUFOX_STATE["browser"] is None
@@ -409,6 +410,22 @@ class TestTheSearchIsBoundedAndChecked:
         started.context.events.clear()
         results = await asyncio.wait_for(GoogleSearcher()._search_camoufox("query", 5), HANG)
         assert len(results) == 1 and len(started.calls) == 2
+        await stealth.close_camoufox()
+
+    @pytest.mark.asyncio
+    async def test_a_page_that_hangs_on_googles_bot_check_is_a_wall(self, started: Start) -> None:
+        started.context.next_page = lambda: Page(
+            url="https://www.google.com/sorry/index?continue=https://www.google.com/search",
+            hang=True,
+        )
+
+        with pytest.raises(GoogleSearchBlocked, match="bot check") as refused:
+            await asyncio.wait_for(GoogleSearcher()._search_camoufox("query", 5), HANG)
+
+        assert refused.value.wall is True
+        assert (
+            stealth._CAMOUFOX_STATE["browser"] is None
+        )  # the browser that held it is shut down, as for any hang
         await stealth.close_camoufox()
 
     @pytest.mark.asyncio

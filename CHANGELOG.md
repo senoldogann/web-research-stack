@@ -4,6 +4,27 @@ The package is `dotagent-web-research`; the MCP server is `web-research-mcp`
 (`web_scraper.mcp_server`). Behavior, settings and measurements are described in
 [docs/web-tools.md](docs/web-tools.md); this file says what a version changed.
 
+## 1.4.9 (2026-10-25)
+
+A Google bot check that only headless Chrome or the HTTP search saw, and a search that failed with every fallback
+resting. Each fix has a test that fails before it.
+
+### Fixed
+
+- **A Google wall counts as the path that met it says** (a review of 1.4.8, low). Headless Chrome found Google's
+  CAPTCHA, kept its hour off and returned an empty list, and the HTTP search's 429 or `/sorry/` page was swallowed as
+  any error: on a Mac without Camoufox (an Intel Mac, or its browser not fetched) Google was asked twice more before the
+  third failure cooled it. A Camoufox page that hung on the `/sorry/` page was a slow page. Saying every such check a
+  wall would bring back 1.4.8's cascade, since Google turns headless Chrome away almost always: so a wall Camoufox or
+  the minimised Chrome met counts unless the other read Google clean, and one the HTTP search or headless Chrome met
+  counts only when neither of those could be asked and no browser read Google clean. A path the machine does not have
+  says so (`GoogleBackendMissing`) instead of an empty list.
+- **A cooldown no longer fails a search.** When the primary provider failed and every fallback was cooling, the search
+  failed with no call; with cooldowns of ten minutes to an hour, a burst of walls left searches failing that long. The
+  cooling fallback nearest the end of its cooldown is now asked once, and `tried` records it.
+
+Nothing a caller passes changed: no tool argument, no `WEB_TOOLS_*` setting, no dependency.
+
 ## 1.4.8 (2026-10-25)
 
 A search that lost Google for ten minutes after one empty answer, a DuckDuckGo date a site could pose as, and a way to

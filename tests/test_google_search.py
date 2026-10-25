@@ -5,10 +5,18 @@ jobs worth holding still: read the classic markup, read the modern markup, and
 say "blocked" instead of returning an empty list that looks like "no results".
 """
 
+import time
+
 import pytest
 
+import web_scraper.google_search as google_module
 from web_scraper.config import config
-from web_scraper.google_search import GoogleSearchBlocked, GoogleSearcher, get_best_sources
+from web_scraper.google_search import (
+    GoogleBackendMissing,
+    GoogleSearchBlocked,
+    GoogleSearcher,
+    get_best_sources,
+)
 
 LEGACY_HTML = """
 <html><body><div id="search">
@@ -390,3 +398,159 @@ async def test_an_empty_answer_is_a_wall_only_when_a_backend_saw_one(
     assert ("bot check" in str(refused.value)) is walled
     assert failed.value.detail == ("bot_detected" if walled else "no_results")
     assert failure_kind(failed.value) == (WALL if walled else ERROR)
+
+
+# --------------------------------------------------------------------------- which wall is Google's answer to this Mac
+
+
+def _clean():
+    async def path(query: str, num_results: int, **extra):
+        return []
+
+    return path
+
+
+def _wall():
+    async def path(query: str, num_results: int, **extra):
+        raise GoogleSearchBlocked("a bot check", wall=True)
+
+    return path
+
+
+def _slow():
+    async def path(query: str, num_results: int, **extra):
+        raise GoogleSearchBlocked("did not finish in time")
+
+    return path
+
+
+def _missing():
+    async def path(query: str, num_results: int, **extra):
+        raise GoogleBackendMissing("not on this Mac")
+
+    return path
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("http", "camoufox", "headless", "walled"),
+    [
+        # A Mac without Camoufox (an Intel Mac, or its browser not fetched): headless Chrome's bot check is all
+        # Google said, and it is a wall at once rather than after two more searches.
+        (_clean, _missing, _wall, True),
+        # Google refuses headless Chrome almost always: with Camoufox there, its refusal says nothing of this Mac,
+        # whether Camoufox read Google clean or was only slow (which, called a wall, cooled Google down after one
+        # slow page: the cascade of 1.4.8).
+        (_clean, _clean, _wall, False),
+        (_clean, _slow, _wall, False),
+        # The HTTP search's bot check (a 429, the /sorry/ page) likewise: a wall only when no browser was there.
+        (_wall, _missing, _missing, True),
+        (_wall, _clean, _clean, False),
+        (_wall, _slow, _missing, False),
+        # ... and not when headless Chrome, the only browser there, read Google clean.
+        (_wall, _missing, _clean, False),
+        # A wall Camoufox met is Google's answer to this Mac: headless Chrome, which Google refuses almost always,
+        # reading a clean page after it says little.
+        (_clean, _wall, _missing, True),
+        (_clean, _wall, _slow, True),
+        (_clean, _wall, _clean, True),
+        # Nothing on this Mac to ask, and no wall met.
+        (_clean, _missing, _missing, False),
+    ],
+)
+async def test_a_wall_is_googles_answer_to_this_mac_only_as_the_paths_that_met_it_say(
+    monkeypatch, http, camoufox, headless, walled: bool
+) -> None:
+    searcher = GoogleSearcher(headless=True, allow_visible_browser=False)
+    monkeypatch.setattr(config, "google_use_playwright", True)
+    monkeypatch.setattr(searcher, "_search_http", http())
+    monkeypatch.setattr(searcher, "_search_camoufox", camoufox())
+    monkeypatch.setattr(searcher, "_search_headless_chrome", headless())
+
+    with pytest.raises(GoogleSearchBlocked) as refused:
+        await searcher.search("anything")
+
+    assert refused.value.wall is walled
+    assert ("bot check" in str(refused.value).split(" (")[0]) is walled
+
+
+class _Answer:
+    """An answer of curl_cffi's, as far as the HTTP search reads it."""
+
+    def __init__(self, status_code: int, url: str) -> None:
+        self.status_code = status_code
+        self.url = url
+        self.text = "<html><body></body></html>"
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+def _session(answer: _Answer):
+    class Session:
+        def __init__(self, **options) -> None:
+            self.cookies: dict = {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc) -> bool:
+            return False
+
+        async def get(self, url: str, headers=None) -> _Answer:
+            return answer
+
+    return Session
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "url", "walled"),
+    [
+        (429, "https://www.google.com/search?q=x", True),
+        (200, "https://www.google.com/sorry/index?continue=https://www.google.com/search", True),
+        (200, "https://www.google.com/search?q=x", False),
+    ],
+)
+async def test_the_http_search_says_a_wall_when_google_answers_with_its_bot_check(
+    monkeypatch, status: int, url: str, walled: bool
+) -> None:
+    monkeypatch.setattr(
+        google_module,
+        "cffi_requests",
+        type("Requests", (), {"AsyncSession": _session(_Answer(status, url))}),
+    )
+
+    if walled:
+        with pytest.raises(GoogleSearchBlocked) as refused:
+            await GoogleSearcher()._search_http("anything", 5)
+        assert refused.value.wall is True
+    else:
+        assert await GoogleSearcher()._search_http("anything", 5) == []
+
+
+@pytest.mark.asyncio
+async def test_headless_chrome_refused_within_the_hour_is_not_asked_and_says_so(
+    monkeypatch,
+) -> None:
+    monkeypatch.setitem(google_module._HEADLESS_STATE, "blocked_until", time.monotonic() + 60)
+    started: list = []
+    monkeypatch.setattr(GoogleSearcher, "_start_chrome", lambda self, *a, **k: started.append(a))
+
+    with pytest.raises(GoogleSearchBlocked) as refused:
+        await GoogleSearcher()._search_headless_chrome("anything", 5)
+
+    assert refused.value.wall is True and not isinstance(refused.value, GoogleBackendMissing)
+    assert started == []
+
+
+@pytest.mark.asyncio
+async def test_a_mac_without_camoufox_says_so_and_asks_google_nothing(monkeypatch) -> None:
+    async def no_page():
+        return None
+
+    monkeypatch.setattr(google_module, "get_camoufox_page", no_page)
+
+    with pytest.raises(GoogleBackendMissing):
+        await GoogleSearcher()._search_camoufox("anything", 5)

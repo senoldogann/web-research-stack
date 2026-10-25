@@ -10,6 +10,7 @@ the guard refuses, and are skipped where there is no Chrome. Nothing reaches bey
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import pytest
@@ -17,7 +18,7 @@ from browser_support import LocalSite
 
 from web_scraper import google_search as google_module
 from web_scraper import stealth_camoufox as stealth
-from web_scraper.google_search import GoogleSearchBlocked, GoogleSearcher
+from web_scraper.google_search import GoogleBackendMissing, GoogleSearchBlocked, GoogleSearcher
 from web_scraper.web_tools import browser as browser_module
 
 
@@ -114,11 +115,37 @@ class TestTheHeadlessChrome:
 
         monkeypatch.setattr(google_module, "hold_context", cannot_hold)
         try:
-            results = await GoogleSearcher()._search_headless_chrome("query", 5)
+            # Said, not an empty list: an empty list is a page read clean, which would say Google walls nothing.
+            with pytest.raises(GoogleBackendMissing, match="address guard"):
+                await GoogleSearcher()._search_headless_chrome("query", 5)
         finally:
             google.close()
 
-        assert results == [] and google.seen == [] and private.seen == []
+        assert google.seen == [] and private.seen == []
+
+    @pytest.mark.asyncio
+    async def test_googles_bot_check_is_a_wall_and_is_remembered_for_the_hour(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 1.4.8 kept the hour and returned an empty list: a Mac whose only browser this is asked Google twice more.
+        check = (
+            "<html><body><h1>Our systems have detected unusual traffic</h1>"
+            "<form id='captcha-form'></form></body></html>"
+        )
+        site = LocalSite({"/search?q=query&num=5&hl=en&gl=us": check})
+        monkeypatch.setattr(GoogleSearcher, "BASE_URL", f"http://localhost:{site.port}/search")
+        allowed = f"http://localhost:{site.port}/"
+        monkeypatch.setattr(
+            browser_module, "browser_request_allowed", lambda url: url.startswith(allowed)
+        )
+        try:
+            with pytest.raises(GoogleSearchBlocked, match="bot check") as refused:
+                await GoogleSearcher()._search_headless_chrome("query", 5)
+        finally:
+            site.close()
+
+        assert refused.value.wall is True
+        assert google_module._HEADLESS_STATE["blocked_until"] > time.monotonic()
 
 
 class TestTheChromeTabOfEverySearch:

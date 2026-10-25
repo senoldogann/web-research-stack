@@ -949,9 +949,11 @@ class WebToolsService:
         adapter left out): each fallback is asked in turn, through its own gate and with
         its own cooldown, until one answers. A provider that is cooling down after a
         recent failure is skipped without a call, the primary too when a fallback is
-        healthy. If every fallback fails, the primary is still asked when it was skipped:
-        a cooldown only steers calls, it never fails a search. The angle's ``fallback``
-        record says who was asked, in order, and why each was left.
+        healthy. A cooldown only steers calls, it never fails a search: if every fallback
+        fails, the primary is still asked when it was skipped, and when the primary failed,
+        the skipped fallback nearest the end of its cooldown is asked once (until 1.4.9 a
+        failed primary with every fallback cooling failed the search with no call). The
+        angle's ``fallback`` record says who was asked, in order, and why each was left.
         """
         chain = self._fallback_chain(primary, fast=fast)
         if not chain:
@@ -971,8 +973,6 @@ class WebToolsService:
             reason = skipped.reason
             tried.append({"provider": primary, "status": "skipped", "reason": reason})
         except WebToolError as exc:
-            if all(self._provider_health_for(name).cooling_down() for name in chain):
-                return _AngleOutcome(primary, error=exc)
             primary_error, reason = exc, exc.detail or exc.code
             tried.append({"provider": primary, "status": "failed", "reason": reason})
         else:
@@ -985,9 +985,11 @@ class WebToolsService:
             "error": None,
             "tried": tried,
         }
+        cooling: list[str] = []
         for name in chain:
             if self._provider_health_for(name).cooling_down():
                 tried.append({"provider": name, "status": "skipped", "reason": "provider_cooldown"})
+                cooling.append(name)
                 continue
             record["to"] = name
             self.metrics.count("search_fallbacks_total", provider=name)
@@ -1012,7 +1014,30 @@ class WebToolsService:
             return _AngleOutcome(name, results, fallback=record)
 
         if primary_error is not None:
-            return _AngleOutcome(primary, error=primary_error, fallback=record)
+            if not cooling:
+                return _AngleOutcome(primary, error=primary_error, fallback=record)
+            # The last resort: the cooling fallback nearest the end of its cooldown, once.
+            last = min(cooling, key=lambda name: self._provider_health_for(name).retry_after())
+            record["to"] = last
+            self.metrics.count("search_fallbacks_total", provider=last)
+            try:
+                results = await self._call_provider(
+                    last,
+                    query,
+                    limit,
+                    date_filter,
+                    options=options,
+                    timeout=self.settings.search_fallback_timeout_seconds,
+                )
+            except WebToolError as exc:
+                record["error"] = exc.to_dict()
+                tried.append(
+                    {"provider": last, "status": "failed", "reason": exc.detail or exc.code}
+                )
+                return _AngleOutcome(primary, error=primary_error, fallback=record)
+            record["error"] = None
+            tried.append({"provider": last, "status": "answered", "reason": None})
+            return _AngleOutcome(last, results, fallback=record)
         try:
             results = await self._call_provider(primary, query, limit, date_filter, options=options)
         except WebToolError as last:

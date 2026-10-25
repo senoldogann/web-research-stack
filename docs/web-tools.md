@@ -1977,14 +1977,26 @@ September and updated on 21 October disagrees with nothing.
   (`..._PROVIDER_FAILURE_LIMIT`). It lasts 10 minutes (`..._PROVIDER_COOLDOWN_SECONDS`), twice as
   long for each time a provider that came back is refused again, up to an hour
   (`..._MAX_COOLDOWN_SECONDS`); a provider that cools is skipped in the chain (`tried` says
-  `skipped`, `provider_cooldown`) and asked only as a last resort. When the cooldown is over the
+  `skipped`, `provider_cooldown`) and asked only as a last resort: a skipped primary when every
+  fallback failed, and a failed primary's skipped fallback nearest the end of its cooldown, once
+  (since 1.4.9; until then a failed primary with every fallback cooling failed the search with no
+  call, a cooldown failing a search it was only to steer). When the cooldown is over the
   provider is on probation: its record of failures is cleared and the next call is the probe, an
   answer clears the rest. A cut angle (the search's own budget) is no failure.
-- **Google's walls (1.4.8).** Google is a wall only when a browser saw a bot check (a CAPTCHA, "unusual traffic");
-  any other empty answer (a slow page, a query that found nothing, a consent dialog left open, a browser that did
+- **Google's walls (1.4.8, 1.4.9).** Google is a wall only when a path saw a bot check (a CAPTCHA, "unusual
+  traffic", Google's `/sorry/` page, an HTTP 429), and only as the path that saw it counts:
+  - one that Camoufox or the minimised Chrome met is Google's answer to this Mac, unless the other read Google's page
+    clean; a Camoufox page that hung on the `/sorry/` page is a wall, not a slow page;
+  - one that the HTTP search or headless Chrome met (Google turns headless Chrome away almost always) is that path's,
+    unless neither Camoufox nor the minimised Chrome could be asked (an Intel Mac, Camoufox's browser not fetched)
+    and no browser read Google's page clean.
+
+  Any other empty answer (a slow page, a query that found nothing, a consent dialog left open, a browser that did
   not start) is `no_results`, a failure like another provider's. Until 1.4.8 every empty answer said "consent page,
   bot check or JavaScript-only page", and those words made it a wall: one slow page put Google in its cooldown, and on
   2026-10-25, with DuckDuckGo refusing and Yahoo answering HTTP 500, the next four searches of a run had no provider.
+  Until 1.4.9 a bot check seen only by headless Chrome or the HTTP search was no wall: a Mac without Camoufox asked
+  Google twice more before the third failure cooled it.
 - **Healthy first.** The providers that are not cooling are ordered by their recent calls (the
   last 20 within 30 minutes, and only a record of 4 calls or more counts): 4 of 5 answered is
   good, half shaky, fewer poor; the configured order breaks ties and a cooling provider keeps

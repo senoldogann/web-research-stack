@@ -147,10 +147,11 @@ and Camoufox 0.5.8, 1,896 pass and 4 are expected to fail (the gaps above).
 
 ### Not closed, and said so in [docs/web-tools.md](docs/web-tools.md)
 
-- A redirect the headless browser follows: the guard is asked about the first address of a request only, and Chrome
-  follows a `Location` without asking again, so an allowed address that redirects to the loopback is read from there
-  when the page is rendered in the browser (1.3.1 and 1.4.1 did the same; the pinned HTTP fetch refuses it). A shared
-  worker's requests and the browser's UDP (WebRTC, WebTransport) are not held either.
+- A redirect the headless browser follows: the guard is asked about the first address of a request only, and the
+  browser follows a `Location` without asking again, so an allowed address that redirects to the loopback is requested
+  from there (1.3.1 and 1.4.1 did the same; the pinned HTTP fetch refuses it). Since 1.4.3 the page a navigation was led
+  to is not returned; the request is still made, and a script's fetch that is redirected still reaches the host. A
+  shared worker's requests and the browser's UDP (WebRTC, WebTransport) are not held either.
 - A web socket opened inside a Web Worker (dedicated or shared) is not routed by Playwright and reaches the host the
   guard would have refused: measured with `route_web_socket` on, the handshake of a worker reached the server. What
   closes it is a pinning proxy for the browser, not a longer list.

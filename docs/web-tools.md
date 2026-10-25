@@ -416,7 +416,7 @@ visible window was opened.
     rendered only if its host resolves to public addresses only at the moment
     the render is asked for, and every request the page makes is held to the
     same rule (`RequestGuard`: the verdict on a host is kept 30 seconds if it is
-    a yes, 300 if it is a no). What the guard holds, since 1.4.2: it is put on
+    a yes, 300 if it is a no). What the guard holds, since 1.4.3: it is put on
     the browser *context*, before its first page exists, so it holds the
     requests of the page, of its frames and of its dedicated workers, and of a
     window the page opens (a popup is a page of the context; 1.4.1 routed the
@@ -435,8 +435,10 @@ visible window was opened.
     guard is asked about the first address of a request only, and Chrome
     follows a `Location` without asking it again, so a page or a subresource
     whose allowed address answers `302 Location: http://127.0.0.1/…` is
-    rendered from the refused host (as on 1.3.1 and 1.4.1; the pinned HTTP
-    fetch refuses the same `Location`); **a shared worker's requests** and
+    requested from the refused host (as on 1.3.1 and 1.4.1; the pinned HTTP
+    fetch refuses the same `Location`; since 1.4.3 the page a navigation led
+    to is not returned, a script's fetch that is redirected still reaches the
+    host); **a shared worker's requests** and
     the browser's own UDP (WebRTC, WebTransport); **and a web socket opened
     inside a Web Worker**, which Playwright does not route (it reaches the
     host the guard would have refused; the fix is a pinning proxy, not a
@@ -1977,7 +1979,7 @@ Two IPv6 forms passed the checks as well: `::127.0.0.1` and `::192.168.1.1` (IPv
 | `127.1`, `0177.0.0.1`, `2130706433` | accepted or resolved (libcurl reads `0177.0.0.1` as 127.0.0.1) | refused |
 | A result link with `/url?` in it (Google) | requested to find the real address | only Google's own wrappers are |
 | The headless browser | checked on the event loop, a yes kept 300 s | checked off the loop, a yes kept 30 s; what remains is its own name resolution |
-| The older Playwright scraper | the first address only | its page's requests go through the browser's guard (1.3.1); its web sockets and the windows its page opens too (1.4.2) |
+| The older Playwright scraper | the first address only | its page's requests go through the browser's guard (1.3.1); its web sockets and the windows its page opens too (1.4.3) |
 | `release.yml`, `ci.yml` | actions by tag, `pip install build twine` | actions by full commit with the release in a comment, `build==1.6.1`, `twine==7.0.0` |
 
 `SafeFetcher(transport=...)` keeps its meaning: a transport of the caller's connects as it likes (a test's
@@ -2062,12 +2064,12 @@ Text that shows up before the content and is long enough to be a page (a cookie 
 counts as text: a page that shows only that when the network goes quiet is read as that, and is not called a shell.
 
 Every request the browser makes is checked as in 1.3.1 (`RequestGuard`: the address of the host, a yes kept 30 s, a no
-300 s), and since 1.4.2 so are the web sockets and the windows of the page; what the browser's own name resolution does
+300 s), and since 1.4.3 so are the web sockets and the windows of the page; what the browser's own name resolution does
 is still what [Security boundaries](#security-boundaries) says.
 The wait is `timings.settle_ms` of the answer (`browser_ms` is the whole render), and the browser's own record says
 why it ended: `stable`, or `cap` (the time ran out first).
 
-**A page that blocks the browser (1.4.2).** A page whose script spins (`while (true) {}`) leaves `page.evaluate` and
+**A page that blocks the browser (1.4.3).** A page whose script spins (`while (true) {}`) leaves `page.evaluate` and
 `page.content` unanswered for ever. On 1.4.1 and before the render waited on them with nothing around it: with
 `BROWSER_TIMEOUT_SECONDS` at 10 it was still going after 40 s, it kept one of the manager's context slots and, above it,
 one of the MCP server's eight tool slots (eight such pages and the server answered nothing). Now the whole render is
@@ -2202,7 +2204,7 @@ the answer says `host` and, when the address moved, `redirected_from`. When no p
 sitemap does, the host they answered at is the site's. A crawl of the apex has the same scope: it follows the pages of
 `www` (and reads a `use_sitemap` crawl's sitemap there) instead of ending at the first.
 
-**A redirect does not decide which site is read (1.4.2).** 1.4.0 took whatever host the start page, robots.txt or a
+**A redirect does not decide which site is read (1.4.3).** 1.4.0 took whatever host the start page, robots.txt or a
 sitemap landed on as the site: an address that forwarded every path to another site made `web_map` return that site's
 addresses, a crawl read its pages (with `include_subdomains`, those of a host nothing had redirected to as well), and
 a page that stayed put while only its robots.txt or sitemap forwarded elsewhere did the same. The landing is the site
@@ -2386,10 +2388,14 @@ requests or a redirect hop, and those tests are written as the guard should hold
 
 - **A redirect the browser follows.** The guard is asked about the first address of each request; Chrome follows a
   redirect without asking it again. A page rendered in the browser (or a subresource of one) whose allowed address
-  answers a redirect to the loopback or the home network is read from there, as on 1.3.1 and 1.4.1, where the pinned
-  HTTP fetch refuses the same redirect. Closing it means answering each hop in the route (a redirect fetched without
-  following it, its `Location` judged, and handed to the browser as a redirect it asks for again) or a pinning proxy;
-  it is not in 1.4.2. A shared worker's requests and the browser's UDP (WebRTC, WebTransport) are not held either.
+  answers a redirect to the loopback or the home network is requested from there, as on 1.3.1 and 1.4.1, where the
+  pinned HTTP fetch refuses the same redirect. Since 1.4.3 what a navigation was led to is not returned (the read ends
+  with `unsafe_target`); the request is still made, and a script's fetch that is redirected still reaches the host (the
+  script reads what it answered only if that host allows it). Closing it means answering each hop in the route (a
+  redirect fetched without following it, its `Location` judged, and handed to the browser as a redirect it asks for
+  again, which Camoufox's Firefox cannot do and which would make the browser's requests Playwright's own) or a pinning
+  proxy; it is not in 1.4.3. A shared worker's requests and the browser's UDP (WebRTC, WebTransport) are not held
+  either.
 - **A web socket opened inside a Web Worker.** Playwright's `route_web_socket` routes the sockets of a page and its frames
   and not those of a dedicated or a shared worker: measured with the route on, a worker's handshake reached the local
   server it had been told to refuse. A page that wants to reach a refused host can do it from a worker. What closes it is

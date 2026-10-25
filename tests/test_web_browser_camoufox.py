@@ -34,7 +34,7 @@ from web_scraper.web_tools.browser import (
 
 NAMES = ("allowed.test", "refused.test", "live.test")
 # Camoufox calls out by itself (its ad blocker fetches filter lists from GitHub, jsDelivr and others within 15 s of
-# a start, and the application asked Mozilla and Google for updates before 1.4.3). A test reaches nothing outside
+# a start, and the application asked Mozilla and Google for updates before 1.4.5). A test reaches nothing outside
 # this Mac: every call that is not to a loopback address or to one of the test names goes to a proxy that is not
 # there. (Firefox does not proxy the loopback; the test names are listed so that it does not proxy them either.)
 NOWHERE = {"server": "http://127.0.0.1:9", "bypass": ",".join(NAMES)}

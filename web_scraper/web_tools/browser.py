@@ -514,6 +514,7 @@ class HeadlessBrowserManager:
         settled = await self._settle(page, least_ms, deadline)
         html = await self._content(page)
         final_url = page.url
+        await self._check_landing(final_url)
         status = response.status if response else 0
         return BrowserPage(
             html=html,
@@ -524,6 +525,20 @@ class HeadlessBrowserManager:
             text_chars=settled.chars,
             settle=settled.reason,
         )
+
+    async def _check_landing(self, final_url: str) -> None:
+        """A page is returned only if the address it ended at is one the guard allows.
+
+        The guard is asked about the first address of a request; a redirect the browser follows is not asked
+        about again, so an allowed address that answers ``302 Location: http://127.0.0.1/...`` would be read from
+        there. The request to the refused address is still made, but what it answered is not returned.
+        """
+        if urlsplit(final_url).scheme.lower() not in {"http", "https"}:
+            return  # about:blank, an error page: not a page of any host
+        if not await self._guard.allowed_now(final_url):
+            raise BrowserRenderError(
+                "unsafe_target", "The page ended at an address the guard refuses"
+            )
 
     async def _close_context(self, context: Any, browser: Any) -> None:
         """Close a context of *browser*, for at most ``_CLOSE_TIMEOUT_SECONDS``. A browser that does not

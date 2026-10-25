@@ -31,9 +31,11 @@ from web_scraper.config import config
 from web_scraper.stealth import HeaderFactory
 from web_scraper.stealth_camoufox import (
     camoufox_lock,
-    close_page,
+    close_windows_of,
     get_camoufox_page,
+    hold_context,
     landing_allowed,
+    release_page,
     warm_up_camoufox,
 )
 from web_scraper.stealth_camoufox import (
@@ -287,7 +289,8 @@ class GoogleSearcher:
 
         The page is one of a context that is held to the address guard, it is read only if it ended at an
         address the guard allows, and the whole read is bounded: a page that stops answering would keep the
-        one lock every search takes, so it ends the read and takes its browser with it.
+        one lock every search takes, so it ends the read and takes its browser with it. A page that served
+        the whole search is kept for the next one (a new page costs Camoufox about 3 s); any other is closed.
         """
         page = await get_camoufox_page()
         if page is None:
@@ -297,16 +300,18 @@ class GoogleSearcher:
         timeout_ms = int(config.google_playwright_timeout_seconds * 1000)
         limit = config.google_playwright_timeout_seconds + _CAMOUFOX_READ_MARGIN_S
 
+        served = False
         try:
             async with camoufox_lock():
                 raw, html = await asyncio.wait_for(
                     self._read_camoufox_page(page, url, timeout_ms), timeout=limit
                 )
+            served = True
         except asyncio.TimeoutError as exc:
             await close_shared_camoufox()
             raise GoogleSearchBlocked("Camoufox did not finish reading Google in time") from exc
         finally:
-            await close_page(page)
+            await release_page(page, reuse=served)
 
         results = await self._results_from_raw(raw)
         if not results:
@@ -397,6 +402,8 @@ class GoogleSearcher:
                 )
             except Exception:
                 pass
+            if not await landing_allowed(page):
+                raise GoogleSearchBlocked("Google's page ended at an address that is not allowed")
             raw = await page.evaluate(_EXTRACT_JS)
             html = await page.content() if not raw else ""
 
@@ -440,7 +447,16 @@ class GoogleSearcher:
             async with async_playwright() as pw:
                 browser = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
                 context = browser.contexts[0] if browser.contexts else await browser.new_context()
+                # Held to the address guard before the search's page exists, as the Camoufox path is
+                # (it was not: a script of the page reached any address); a context the guard cannot
+                # hold is not used.
+                try:
+                    await hold_context(context)
+                except Exception as exc:  # noqa: BLE001 - an unheld context is not searched in
+                    logger.warning("headless Chrome not held to the address guard: %s", exc)
+                    return []
                 page = await context.new_page()
+                close_windows_of(page)
                 try:
                     await page.goto(url, wait_until="commit", timeout=timeout_ms)
                     try:
@@ -450,6 +466,11 @@ class GoogleSearcher:
                         )
                     except Exception:
                         pass
+                    # A redirect the browser followed is not one the guard was asked about.
+                    if not await landing_allowed(page):
+                        raise GoogleSearchBlocked(
+                            "Google's page ended at an address that is not allowed"
+                        )
                     raw = await page.evaluate(_EXTRACT_JS)
                     if not raw:
                         html = await page.content()
@@ -509,7 +530,11 @@ class GoogleSearcher:
             await self._wait_for_cdp(port)
             browser = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
             context = browser.contexts[0] if browser.contexts else await browser.new_context()
+            # Held to the address guard before the tab every search uses exists; if it cannot be,
+            # this Chrome is not used (the except below stops it).
+            await hold_context(context)
             page = await context.new_page()
+            close_windows_of(page)
             if not config.google_allow_visible_browser:
                 await self._minimize(page)
         except Exception as exc:
@@ -633,6 +658,12 @@ class GoogleSearcher:
             "--no-default-browser-check",
             "--disable-background-networking",
             "--disable-sync",
+            # Chrome keeps the key of a profile's cookies and passwords in the login keychain ("Chrome Safe
+            # Storage"). A throwaway profile has no business there, and where no keychain is found macOS
+            # asks the owner on screen ("Keychain Not Found") with a button that resets their keychains.
+            # Playwright passes the same two to every Chrome it starts (the second is Linux's).
+            "--use-mock-keychain",
+            "--password-store=basic",
             "--window-size=400,300"
             if not config.google_allow_visible_browser
             else "--window-size=1366,900",

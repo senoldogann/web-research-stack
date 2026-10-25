@@ -50,12 +50,18 @@ class Page:
         self.visited: list[str] = []
         self.evaluated = 0
         self.popup_handlers: list[Any] = []
+        self.blank_fails = False
 
     def on(self, event: str, handler: Any) -> None:
         if event == "popup":
             self.popup_handlers.append(handler)
 
-    async def goto(self, url: str, wait_until: str, timeout: int) -> None:
+    def is_closed(self) -> bool:
+        return self.closed
+
+    async def goto(self, url: str, wait_until: str = "load", timeout: int = 0) -> None:
+        if url == "about:blank" and self.blank_fails:
+            raise RuntimeError("the page did not answer")
         self.visited.append(url)
 
     async def wait_for_selector(self, selector: str, timeout: int) -> None:
@@ -167,9 +173,10 @@ class Start:
 def _a_search_of_its_own(monkeypatch: pytest.MonkeyPatch) -> None:
     """The module keeps one browser for the process; a test starts from none, with a guard that refuses the
     loopback and allows what is public, and short limits."""
-    for key in ("browser", "manager", "context"):
+    for key in ("browser", "manager", "context", "spare", "idle"):
         monkeypatch.setitem(stealth._CAMOUFOX_STATE, key, None)
     monkeypatch.setitem(stealth._CAMOUFOX_STATE, "last", 0.0)
+    monkeypatch.setitem(stealth._CAMOUFOX_STATE, "held", set())
     for name in ("_CAMOUFOX_LOCK", "_START_LOCK", "_GUARD"):
         monkeypatch.setattr(stealth, name, None)
     monkeypatch.setattr(stealth, "_LAST_REASON", "")
@@ -341,15 +348,24 @@ class TestTheSearchIsBoundedAndChecked:
         monkeypatch.setattr(google_module, "_CAMOUFOX_READ_MARGIN_S", 0.3)
 
     @pytest.mark.asyncio
-    async def test_a_page_that_is_read_gives_its_results_and_is_closed(
+    async def test_a_page_that_is_read_gives_its_results_and_is_emptied_and_kept_for_the_next(
         self, started: Start
     ) -> None:
         results = await asyncio.wait_for(GoogleSearcher()._search_camoufox("query", 5), HANG)
 
         page = started.context.pages[0]
         assert [result["url"] for result in results] == ["https://example.test/one"]
-        assert page.closed is True and "q=query" in page.visited[0]
+        assert "q=query" in page.visited[0] and page.visited[-1] == "about:blank"
+        assert page.closed is False and stealth._CAMOUFOX_STATE["spare"] is page
+        assert not stealth._CAMOUFOX_STATE["held"]
+
+        # The next search is read in the same page: Camoufox makes no page for it (about 3 s each).
+        await asyncio.wait_for(GoogleSearcher()._search_camoufox("second", 5), HANG)
+
+        assert started.context.events.count("new_page") == 1
+        assert "q=second" in page.visited[-2] and page.visited[-1] == "about:blank"
         await stealth.close_camoufox()
+        assert stealth._CAMOUFOX_STATE["spare"] is None and started.context.closed is True
 
     @pytest.mark.asyncio
     async def test_a_page_that_ended_at_an_address_the_guard_refuses_is_not_read(
@@ -362,6 +378,7 @@ class TestTheSearchIsBoundedAndChecked:
 
         page = started.context.pages[0]
         assert page.evaluated == 0 and page.closed is True  # what the page held was never asked for
+        assert stealth._CAMOUFOX_STATE["spare"] is None  # and it is not the next search's page
         await stealth.close_camoufox()
 
     @pytest.mark.asyncio
@@ -386,6 +403,7 @@ class TestTheSearchIsBoundedAndChecked:
         assert time.monotonic() - began < 5
         assert started.managers[0].exited == 1  # the browser that held the page is shut down
         assert stealth._CAMOUFOX_STATE["browser"] is None
+        assert started.context.pages[0].closed is True and stealth._CAMOUFOX_STATE["spare"] is None
         # The lock every search takes is free, and the next search starts a browser of its own.
         started.context.next_page = Page
         started.context.events.clear()
@@ -418,3 +436,169 @@ class TestTheSearchIsBoundedAndChecked:
 
         assert "\nfrom web_scraper.web_tools" not in source and "\nimport playwright" not in source
         assert sys.modules["web_scraper.stealth_camoufox"] is stealth
+
+
+async def _until_the_watch_shut_it_down() -> None:
+    """Until the idle watch has shut the browser down and ended. Not until the state says no browser: the state is
+    cleared before the closes are awaited, so a test that looked at the state saw the browser before it was closed
+    (it failed so on the CI's slower machines)."""
+    watch = stealth._CAMOUFOX_STATE["idle"]
+    assert watch is not None
+    await asyncio.wait({watch}, timeout=HANG)
+    assert watch.done() and stealth._CAMOUFOX_STATE["browser"] is None
+
+
+class TestAPageIsKeptForTheNextSearch:
+    """A new page costs Camoufox about 3 s, and a search in a page kept from the last one about half a second
+    (measured on 1.4.5 with the real browser). The page that served a whole search is emptied and kept, one at a
+    time; any other is closed."""
+
+    @pytest.mark.asyncio
+    async def test_of_two_pages_handed_back_one_is_kept_and_the_other_closed(
+        self, started: Start
+    ) -> None:
+        first = await stealth.get_camoufox_page()
+        second = await stealth.get_camoufox_page()
+
+        await stealth.release_page(first)
+        await stealth.release_page(second)
+
+        assert stealth._CAMOUFOX_STATE["spare"] is first and first.closed is False
+        assert second.closed is True and not stealth._CAMOUFOX_STATE["held"]
+        assert await stealth.get_camoufox_page() is first  # the kept page, and no new one
+        assert started.context.events.count("new_page") == 2
+        await stealth.close_camoufox()
+
+    @pytest.mark.asyncio
+    async def test_a_page_that_cannot_be_emptied_is_closed(self, started: Start) -> None:
+        page = await stealth.get_camoufox_page()
+        page.blank_fails = True
+
+        await stealth.release_page(page)
+
+        assert page.closed is True and stealth._CAMOUFOX_STATE["spare"] is None
+        await stealth.close_camoufox()
+
+    @pytest.mark.asyncio
+    async def test_a_page_of_a_browser_shut_down_meanwhile_is_closed_and_not_kept(
+        self, started: Start
+    ) -> None:
+        page = await stealth.get_camoufox_page()
+        await stealth.close_camoufox()
+
+        await stealth.release_page(page)
+
+        assert page.closed is True and stealth._CAMOUFOX_STATE["spare"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_kept_page_that_was_closed_is_not_handed_out(self, started: Start) -> None:
+        page = await stealth.get_camoufox_page()
+        await stealth.release_page(page)
+        page.closed = True  # its process went
+
+        again = await stealth.get_camoufox_page()
+
+        assert again is not page and started.context.events.count("new_page") == 2
+        await stealth.close_camoufox()
+
+    @pytest.mark.asyncio
+    async def test_the_warm_up_leaves_its_page_for_the_first_search(self, started: Start) -> None:
+        await asyncio.wait_for(stealth.warm_up_camoufox(), HANG)
+        await asyncio.wait_for(GoogleSearcher()._search_camoufox("query", 5), HANG)
+
+        page = started.context.pages[0]
+        assert started.context.events.count("new_page") == 1
+        assert page.visited[0] == "https://www.google.com/ncr" and "q=query" in page.visited[2]
+        await stealth.close_camoufox()
+
+    @pytest.mark.asyncio
+    async def test_the_adapter_does_not_warm_up_before_its_first_search(self) -> None:
+        # The warm-up made a page of its own and closed it, so the search made a page again; and a warm-up past
+        # its time shut down the browser the search was about to use (77 and 80 s for a first search, measured).
+        from web_scraper.web_tools.search import GoogleSearchAdapter
+
+        class Searcher:
+            def __init__(self) -> None:
+                self.warmed = 0
+
+            async def warm_up(self) -> None:
+                self.warmed += 1
+
+            async def search(self, query: str, num_results: int = 10, **kwargs: Any) -> list[dict]:
+                return [{"title": "T", "url": "https://x.example/", "snippet": ""}]
+
+        searcher = Searcher()
+        results = await GoogleSearchAdapter(searcher).search("python", 5)  # type: ignore[arg-type]
+
+        assert len(results) == 1 and searcher.warmed == 0
+
+
+class TestAnIdleBrowserIsShutDown:
+    """The idle time was looked at only when the next search came, so a browser of about 2.5 GB stayed up for as
+    long as none came. A watch of its own shuts it down; never while a search holds one of its pages or reads."""
+
+    @pytest.fixture(autouse=True)
+    def _short(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(stealth, "_CAMOUFOX_IDLE_SECONDS", 0.2)
+        monkeypatch.setattr(stealth, "_IDLE_RECHECK_SECONDS", 0.05)
+
+    @pytest.mark.asyncio
+    async def test_a_browser_no_search_uses_is_shut_down_without_a_next_search(
+        self, started: Start
+    ) -> None:
+        page = await stealth.get_camoufox_page()
+        await stealth.release_page(page)
+
+        await _until_the_watch_shut_it_down()
+
+        assert started.managers[0].exited == 1 and started.context.closed is True
+        assert stealth._CAMOUFOX_STATE["spare"] is None and stealth._CAMOUFOX_STATE["idle"] is None
+
+    @pytest.mark.asyncio
+    async def test_it_is_not_shut_down_while_a_search_holds_a_page(self, started: Start) -> None:
+        page = await stealth.get_camoufox_page()
+
+        await asyncio.sleep(0.6)  # three idle times
+
+        assert stealth._CAMOUFOX_STATE["browser"] is not None and started.managers[0].exited == 0
+        await stealth.release_page(page)
+        await _until_the_watch_shut_it_down()
+        assert started.managers[0].exited == 1
+
+    @pytest.mark.asyncio
+    async def test_it_is_not_shut_down_while_a_read_holds_the_lock(self, started: Start) -> None:
+        await stealth.release_page(await stealth.get_camoufox_page())
+
+        async with stealth.camoufox_lock():
+            await asyncio.sleep(0.6)
+            assert stealth._CAMOUFOX_STATE["browser"] is not None
+
+        await _until_the_watch_shut_it_down()
+        assert started.managers[0].exited == 1
+
+    @pytest.mark.asyncio
+    async def test_a_search_restarts_the_idle_time(
+        self, started: Start, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(stealth, "_CAMOUFOX_IDLE_SECONDS", 2.0)
+        await stealth.release_page(await stealth.get_camoufox_page())
+        await asyncio.sleep(1.3)
+        await stealth.release_page(await stealth.get_camoufox_page())
+        await asyncio.sleep(1.3)  # 2.6 s since the first search, 1.3 s since the last
+
+        assert stealth._CAMOUFOX_STATE["browser"] is not None
+        await stealth.close_camoufox()
+
+    @pytest.mark.asyncio
+    async def test_closing_the_browser_stops_its_watch_and_the_next_one_is_watched_too(
+        self, started: Start
+    ) -> None:
+        await stealth.release_page(await stealth.get_camoufox_page())
+        watch = stealth._CAMOUFOX_STATE["idle"]
+
+        await stealth.close_camoufox()
+
+        assert watch is not None and watch.done() and stealth._CAMOUFOX_STATE["idle"] is None
+        await stealth.release_page(await stealth.get_camoufox_page())
+        await _until_the_watch_shut_it_down()
+        assert len(started.managers) == 2 and started.managers[1].exited == 1

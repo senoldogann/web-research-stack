@@ -322,6 +322,20 @@ its older minimise-window path for its own endpoints. The web tools never use it
 `GoogleSearchAdapter` constructs `GoogleSearcher(headless=True,
 allow_visible_browser=False)`, and the page fetcher does not call Google at all.
 
+The Chrome that `google_search.py` starts itself (its headless path, tried when the search's Camoufox cannot start, and
+the minimise-window path) is given `--use-mock-keychain` and `--password-store=basic` since 1.4.7, as Playwright gives
+every Chrome it starts. Without them its throwaway profile goes to the login keychain for the key of its cookies
+("Chrome Safe Storage"). On 2026-10-25 macOS showed the owner a "Keychain Not Found" dialog for "Chrome", whose
+other button resets the keychains, a minute before a security review's reproduction finished running this path's
+Chrome inside a sandbox profile that hides `~/Library/Keychains`; that the dialog came from it is likely, not proven
+(the dialog's process had gone and the system log had no entry). With the flag Chrome does not go to the keychain.
+
+Those two Chrome paths are held to the address guard since 1.4.7, as the search's Camoufox is: the context
+(Chrome's default one, over CDP) is held before the search's page exists, a window a page opens is closed, and the
+page is read only if it ended at an address the guard allows. A context the guard cannot hold is not searched in.
+Until then a script of the page reached any address: a security review of 1.4.6 had one fetch a private server on the
+loopback, and it was hit (`tests/test_google_chrome_guard.py` runs the installed Chrome against such a server).
+
 ### Verify that HTTP pages never start a browser
 
 The benchmark checks this directly:
@@ -516,6 +530,15 @@ that asked is returned as Chrome read it. A page that meets a wall after the fet
 `WEB_TOOLS_BROWSER_STEALTH_FETCH=false` leaves it to you: run that command yourself, once. The fetch is bounded (30
 minutes), is not tried again for 30 minutes after it failed, stops with the server, and the log says when it starts, when
 it ends and how. Nothing is fetched where the package is missing or too old to be asked (before 0.5.8).
+Since 1.4.7 the command is `python -P -m camoufox fetch` (`-I` on Python 3.10) and runs in an empty folder of its
+own: it ran with the server's working folder on its import path and as its folder, and Dot starts the server in a
+run's workspace, so a `camoufox.py` a run wrote there was what ran, outside Dot's sandbox (a security review of 1.4.6).
+Camoufox's own check of its folder (`camoufox_path`) deletes the whole folder (`~/Library/Caches/camoufox`) when it
+holds files but not the flag of the layout this camoufox uses (`.0.5_FLAG`), before it looks at whether it may
+download; the check this server makes at every walled page and every Google search called it, and so could wipe an
+install of another version, a list of sites set or not. Since 1.4.7 such a folder is looked at first: the reason says
+it holds an install this camoufox does not use, Camoufox is not started, nothing is deleted, and no fetch is started for
+it (the fetch deletes it too): `python -m camoufox fetch` is yours to run.
 
 **When it runs.** On a wall, and only then:
 
@@ -638,14 +661,14 @@ reading the page permitted. Whoever installs the extra decides.
 **What it is.** Since 1.4.4 a search whose first provider fails goes to Google first: `SEARCH_FALLBACK_PROVIDERS` is
 `google,yahoo,duckduckgo_lite` (it was `duckduckgo_lite,yahoo,google`, see [Yahoo before the headless
 browser](#yahoo-before-the-headless-browser)). Google is read in a Camoufox of its own, `web_scraper/stealth_camoufox.py`:
-one headless browser for the whole process with one browser context that every Google search reuses, and a new page for
-each search. It is a second Camoufox, apart from the one that reads a page after a bot check ([above](#reading-a-page-again-in-camoufox-142));
-the two share how Camoufox is started, the fetch of what it lacks, and the address guard. The browser is closed after three
-idle minutes, which is looked at when the next search comes, so it stays in memory (about 2 GB across its processes) until then
-or until the process ends. `GOOGLE_USE_PLAYWRIGHT=false` stops the Google search from using any browser. A search's
-`date_filter` of `day`, `week`, `month` or `year` goes to Google as `tbs=qdr:d|w|m|y`. The first search opens
-`https://www.google.com/ncr` once before it (the REST server does so in the background when it starts,
-`GOOGLE_WARMUP_ON_STARTUP`); the owner measured about 4 s for a cold Camoufox's first Google page and 0.8 s warm.
+one headless browser for the whole process with one browser context that every Google search reuses, and since 1.4.7 one
+page that the searches take in turn ([below](#what-147-changes-there)). It is a second Camoufox, apart from the one that
+reads a page after a bot check ([above](#reading-a-page-again-in-camoufox-142)); the two share how Camoufox is started, the
+fetch of what it lacks, and the address guard. The browser (about 2.5 GB across its processes, measured) is shut down after
+three minutes without a search, by a watch of its own since 1.4.7. `GOOGLE_USE_PLAYWRIGHT=false` stops the Google search
+from using any browser. A search's `date_filter` of `day`, `week`, `month` or `year` goes to Google as `tbs=qdr:d|w|m|y`.
+The REST server opens `https://www.google.com/ncr` once in the background when it starts (`GOOGLE_WARMUP_ON_STARTUP`);
+the MCP server does not, and until 1.4.7 its first Google search did so before it.
 
 **The cookies.** Google shows a consent dialog, or sends the visitor to `consent.google.com`, before its results. The
 search context is given two cookies when it is made, so that the dialog does not show:
@@ -684,6 +707,37 @@ search context is given two cookies when it is made, so that the dialog does not
 
 A second launcher in `GoogleSearcher` that nothing has called since 1.4.4 is removed: a Camoufox started there had no
 guard on its pages. The Google result links it resolves are only Google's own wrappers (`/url`, `/goto`), as before.
+
+### What 1.4.7 changes there
+
+Measured on this Mac (Apple silicon, the load average about 2.6) with the real Camoufox 0.5.8, the same queries through
+`GoogleSearchAdapter`, 1.4.5 and 1.4.7 run one after the other:
+
+| | 1.4.5 | 1.4.7 |
+|---|---|---|
+| a first search, the browser not started | 13.8 s | 3.3 s |
+| five searches in a row, the median | 3.72 s | 0.71 s |
+| three searches at once, until the last answered | 5.35 s | 2.33 s |
+| results of the five | 7, 6, 8, 8, 7 | 7, 6, 8, 8, 7 |
+| the browser, three idle minutes after the last search | up until the next search or the end of the process | shut down |
+
+- *A page for the next search.* Camoufox takes about 3 s to make a page (3.0 to 4.0 s, the same with or without the
+  address guard on the context), and a Google search in a page it already has takes 0.3 to 0.9 s. A page that served a
+  whole search is now emptied (`about:blank`, about 15 ms) and kept, one at a time, for the next search; a page that did
+  not (its read ran out of time, or it ended at an address the guard refuses) is closed, as is a page of a browser shut
+  down meanwhile. Its cookies were the context's already, so nothing more is kept between searches than before.
+- *No warm-up in the first search.* The first Google search of the MCP server opened `https://www.google.com/ncr` in a
+  page of its own, closed it and made another page for the search; and a warm-up that ran past its 30 s, as on a loaded
+  Mac, shut down the browser the search was about to start again (77 and 80 s for a first search, measured with the load
+  average at 12). The search now starts the browser and searches; the REST server's warm-up at start keeps its page for
+  the first search.
+- *The idle time is kept by a watch.* It was looked at only when the next search came, so a browser of about 2.5 GB stayed
+  up for as long as none came. A watch started with the browser shuts it down after `_CAMOUFOX_IDLE_SECONDS` (180 s)
+  without a search: never while a search holds one of its pages, and under the lock every read takes. Measured with the
+  idle time at 20 s: 2.6 GB in 9 processes 12 s after the last search, 22 MB in 2 at 35 s, and the next search started it
+  again and was answered.
+- *Not changed.* One read at a time (the lock); the plain-HTTP try before the browser, which answered none of five
+  queries and costs 0.15 to 0.24 s.
 
 ## Benchmarks
 
@@ -1835,7 +1889,7 @@ deserves alone, and weighs them together.
 | the address, a day or a month | `url` | 0.35, 0.20 |
 | the snippet: a day, "3 days ago" or "yesterday", a month | `snippet` | 0.35, 0.30, 0.20 |
 | the title: a day, a month | `title` | 0.25, 0.20 |
-| a date the provider gave as a field (Brave `page_age`, Serper `date`) | `provider` | 0.45 |
+| a date the provider gave as a field (Brave `page_age`, Serper `date`, and since 1.4.7 the date DuckDuckGo shows beside some results' addresses, html and lite) | `provider` | 0.45 |
 
 `dateModified`, `article:modified_time`, `og:updated_time` and the like are *modified* signals:
 they give `date_modified` and are never the published date, so a story published on 22

@@ -4,6 +4,55 @@ The package is `dotagent-web-research`; the MCP server is `web-research-mcp`
 (`web_scraper.mcp_server`). Behavior, settings and measurements are described in
 [docs/web-tools.md](docs/web-tools.md); this file says what a version changed.
 
+## 1.4.7 (2026-10-25)
+
+Three findings of an independent security review of Dot's pin of 1.4.6, a macOS dialog that a Chrome of the Google search
+could put in front of the owner, and the cost of the Google search's Camoufox, measured on this Mac. Each change has a
+test that fails before it.
+
+### Fixed
+
+- **Google's own Chrome paths are held to the address guard.** When the search's Camoufox cannot start, the Google search
+  reads Google in the installed Chrome, which it starts itself (`_search_headless_chrome`; `_search_chrome` for the
+  research endpoints that allow a window). Neither held its context to the address guard nor looked where the page
+  ended: the review had a script of the page fetch a private address, and the private server was hit. Both now hold the
+  context before the page exists, close a window a page opens, and read a page only if it ended at an address the guard
+  allows; a context the guard cannot hold is not searched in. `tests/test_google_chrome_guard.py` runs the installed
+  Chrome against such a server: asked for `/probe` and `/image` before, for nothing now.
+- **The Camoufox fetch runs no file of the server's working folder.** `python -m camoufox fetch` ran with the working
+  folder on its import path and as its folder; Dot starts the server in a run's workspace, so a `camoufox.py` a run
+  wrote there was what ran, outside Dot's sandbox. It is `python -P -m camoufox fetch` now (`-I` on Python 3.10), in an
+  empty folder of its own.
+- **The check of what Camoufox lacks never wipes Camoufox's folder.** camoufox 0.5.8's `camoufox_path()` deletes
+  `~/Library/Caches/camoufox` when it holds files but not the flag of its layout, before it looks at whether it may
+  download, and the check called it at every walled page and every Google search. Such a folder is now said ("holds an
+  install this camoufox does not use") and left alone, and no fetch is started for it.
+- **A Chrome the Google search starts itself stays off the owner's keychain.** It had no `--use-mock-keychain`, unlike
+  every Chrome Playwright starts, so its throwaway profile went to the login keychain ("Chrome Safe Storage"); a Chrome of
+  that path run inside a sandbox profile is the likely source of a "Keychain Not Found" dialog the owner was shown, next
+  to a button that resets the keychains. It gets `--use-mock-keychain` and `--password-store=basic` now.
+- **A DuckDuckGo result carries the date DuckDuckGo shows beside its address.** Both endpoints show one for some results
+  (`2026-09-12T00:00:00.0000000`); the parsers dropped it, so a DuckDuckGo result was undated where Yahoo's and Google's
+  were dated. It is the result's `provider` date now (0.45, as Brave's `page_age`).
+- **The Google search's Camoufox is shut down when it is idle.** The three idle minutes were looked at only when the next
+  search came, so the browser (2.6 GB across 9 processes, measured) stayed up for as long as none came. A watch started
+  with it shuts it down, never while a search holds one of its pages or reads.
+
+### Faster
+
+- **A Google search in Camoufox keeps its page for the next one, and the first search does no warm-up.** Camoufox takes
+  about 3 s to make a page, and a search in a page it has 0.3 to 0.9 s; the first search of the MCP server also opened
+  `google.com/ncr` in a page of its own first, and on a loaded Mac its warm-up ran out of time and shut down the browser
+  the search then started again (77 and 80 s, measured). The same queries through `GoogleSearchAdapter`, the code of 1.4.5
+  (1.4.6 changed none of it) then 1.4.7's, one after the other:
+
+  | | 1.4.6 | 1.4.7 |
+  |---|---|---|
+  | a first search, no browser up | 13.8 s | 3.3 s |
+  | five in a row, the median | 3.72 s | 0.71 s |
+  | three at once | 5.35 s | 2.33 s |
+  | results | 7, 6, 8, 8, 7 | the same |
+
 ## 1.4.6 (2026-10-25)
 
 ### Fixed

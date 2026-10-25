@@ -7,6 +7,7 @@ import contextlib
 import logging
 import os
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
@@ -55,7 +56,16 @@ _STEALTH_START_TIMEOUT_SECONDS = 60.0
 # are drawn from from GitHub, its ad blocker from addons.mozilla.org), once, in the background, the first time a page
 # needs it and it is not there: about 100 MB to download and 2.3 GB on disk, which can take longer than any read, so
 # no read waits for it. A fetch that failed is not tried again for ``_STEALTH_FETCH_RETRY_SECONDS``.
-_STEALTH_FETCH_COMMAND: tuple[str, ...] = (sys.executable, "-m", "camoufox", "fetch")
+# ``-P`` (Python 3.11 and later; ``-I`` before) keeps the working folder off the child's import path: Dot starts the
+# server in the run's workspace, where a ``camoufox.py`` that a run wrote was what ``-m camoufox`` ran, outside Dot's
+# sandbox (found by a security review of 1.4.6). The child also runs in a folder of its own (``run_command``).
+_STEALTH_FETCH_COMMAND: tuple[str, ...] = (
+    sys.executable,
+    "-P" if sys.version_info >= (3, 11) else "-I",
+    "-m",
+    "camoufox",
+    "fetch",
+)
 # How the command is named to a person (the one they can run themselves).
 _STEALTH_FETCH_HINT = "python -m camoufox fetch"
 _STEALTH_FETCH_TIMEOUT_SECONDS = 1800.0
@@ -233,10 +243,29 @@ def _camoufox_needs() -> tuple[str, bool]:
     try:
         from camoufox.addons import DefaultAddons, get_addon_path
         from camoufox.fpgen_model import is_pinned
-        from camoufox.pkgman import camoufox_path
+        from camoufox.multiversion import COMPAT_FLAG
+        from camoufox.pkgman import INSTALL_DIR, camoufox_path
     except ImportError:
         return (
             "this version of camoufox cannot be checked without starting it; install camoufox 0.5.8 or later",
+            False,
+        )
+    # camoufox_path() deletes its whole folder (~/Library/Caches/camoufox) when the folder holds files but not the
+    # flag of the layout this camoufox uses, before it looks at download_if_missing: the check that "downloads
+    # nothing" wiped an install of another version (a security review of 1.4.6). Such a folder is said and left as it
+    # is; the fetch, which deletes it too, is not started for it: it is the owner's to run.
+    try:
+        stale = (
+            os.path.isdir(INSTALL_DIR)
+            and bool(os.listdir(INSTALL_DIR))
+            and not COMPAT_FLAG.exists()
+        )
+    except Exception:  # noqa: BLE001 - a folder that cannot be looked at is not one to call the wipe on
+        return f"what it needs could not be checked ({fetch})", False
+    if stale:
+        return (
+            f"its folder ({INSTALL_DIR}) holds an install this camoufox does not use; "
+            "`python -m camoufox fetch` replaces it, deleting what is there",
             False,
         )
     try:
@@ -325,9 +354,15 @@ class CamoufoxFetch:
 
     async def run_command(self) -> tuple[bool, str]:
         """Run the command that fetches what Camoufox lacks, bounded; whether it succeeded, and the last line
-        it printed (or why it did not finish)."""
+        it printed (or why it did not finish). It runs in an empty folder of its own, not the server's working
+        folder (a run's workspace, under Dot)."""
+        with tempfile.TemporaryDirectory(prefix="camoufox-fetch-") as folder:
+            return await self._run_command_in(folder)
+
+    async def _run_command_in(self, folder: str) -> tuple[bool, str]:
         process = await asyncio.create_subprocess_exec(
             *_STEALTH_FETCH_COMMAND,
+            cwd=folder,
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,

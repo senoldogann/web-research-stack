@@ -123,6 +123,21 @@ class TestLiteParser:
         assert results == []
         assert next_payload is None
 
+    def test_the_date_shown_beside_a_result_s_address_is_its_published_date(self) -> None:
+        # Five of the ten show one (span.timestamp, 2025-07-30T00:00:00.0000000); it was dropped, so a result of
+        # DuckDuckGo had no date unless its address or snippet held one.
+        results, _ = DuckDuckGoLiteSearcher()._parse_results(_lite_page())
+
+        dated = {item["url"]: item["published"] for item in results if item["published"]}
+        assert dated == {
+            "https://realpython.com/async-io-python/": "2025-07-30",
+            "https://www.geeksforgeeks.org/python/asyncio-in-python/": "2025-07-23",
+            "https://codesamplez.com/programming/python-asyncio-tutorial": "2025-02-10",
+            "https://docs.python.org/3/howto/a-conceptual-overview-of-asyncio.html": "2026-10-21",
+            "https://www.datacamp.com/tutorial/python-async-programming": "2025-12-08",
+        }
+        assert all(item["published"] == "" for item in results if item["url"] not in dated)
+
 
 class TestTheRequest:
     @pytest.mark.asyncio

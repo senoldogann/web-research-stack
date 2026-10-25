@@ -29,6 +29,12 @@ from bs4 import BeautifulSoup
 
 from web_scraper.config import config
 from web_scraper.stealth import HeaderFactory
+from web_scraper.stealth_camoufox import (
+    camoufox_lock,
+    close_camoufox as close_shared_camoufox,
+    get_camoufox_page,
+    warm_up_camoufox,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +145,7 @@ class GoogleSearcher:
         *,
         gl: Optional[str] = None,
         hl: Optional[str] = None,
+        date_filter: Optional[str] = None,
         date_from: Optional[date] = None,
         date_to: Optional[date] = None,
     ) -> List[Dict]:
@@ -163,6 +170,7 @@ class GoogleSearcher:
             for name, value in (
                 ("gl", gl),
                 ("hl", hl),
+                ("date_filter", date_filter),
                 ("date_from", date_from),
                 ("date_to", date_to),
             )
@@ -216,8 +224,8 @@ class GoogleSearcher:
     async def warm_up(self) -> None:
         """Start the browser and open Google once, before the first query.
 
-        A cold Camoufox spends ~13 s on Google's first page (cookies, DNS,
-        first paint); the same page costs ~1 s once warmed.  The API calls
+        A cold Camoufox spends ~4 s on Google's first page (cookies, DNS,
+        first paint); the same page costs ~0.8 s once warmed.  The API calls
         this at start-up so the cost is not paid inside a request.
         """
         if not config.google_use_playwright:
@@ -227,18 +235,21 @@ class GoogleSearcher:
             if self.allow_visible_browser is None
             else self.allow_visible_browser
         )
-        page = await self._chrome_page() if allow_visible else await self._camoufox_page()
-        if page is None:
-            return
-        async with _browser_lock():
-            try:
-                await page.goto("https://www.google.com/ncr", wait_until="commit", timeout=20000)
+        if allow_visible:
+            page = await self._chrome_page()
+            if page is None:
+                return
+            async with _browser_lock():
                 try:
-                    await page.wait_for_selector("form, div#rso, #search", timeout=15000)
-                except Exception:
-                    pass
-            except Exception as exc:
-                logger.debug("google warm-up failed: %s", exc)
+                    await page.goto("https://www.google.com/ncr", wait_until="commit", timeout=20000)
+                    try:
+                        await page.wait_for_selector("form, div#rso, #search", timeout=15000)
+                    except Exception:
+                        pass
+                except Exception as exc:
+                    logger.debug("google warm-up failed: %s", exc)
+        else:
+            await warm_up_camoufox()
 
     # ------------------------------------------------------------------
     # HTTP path
@@ -250,7 +261,7 @@ class GoogleSearcher:
 
         url = self._build_url(query, num_results, **extra)
         async with cffi_requests.AsyncSession(
-            timeout=config.google_request_timeout_seconds, impersonate="chrome120"
+            timeout=min(config.google_request_timeout_seconds, 3.0), impersonate="chrome120"
         ) as client:
             client.cookies.update(self.CONSENT_COOKIE)
             response = await client.get(url, headers=HeaderFactory.get_headers(url))
@@ -269,29 +280,39 @@ class GoogleSearcher:
         spoofs the whole fingerprint (WebGL, fonts, screen, navigator), so the
         same query comes back with real results and no window on screen.
         """
-        page = await self._camoufox_page()
+        page = await get_camoufox_page()
         if page is None:
             return []
 
         url = self._build_url(query, num_results, **extra)
         timeout_ms = int(config.google_playwright_timeout_seconds * 1000)
 
-        async with _browser_lock():
-            await page.goto(url, wait_until="commit", timeout=timeout_ms)
-            try:
-                await page.wait_for_selector("div#rso, div#search", timeout=timeout_ms // 2)
-            except Exception:
-                pass
-            try:
-                await page.wait_for_function(
-                    "() => document.querySelectorAll('div#rso a h3, div#search a h3').length >= 5",
-                    timeout=3000,
-                )
-            except Exception:
-                pass
+        try:
+            async with camoufox_lock():
+                await page.goto(url, wait_until="commit", timeout=timeout_ms)
+                try:
+                    await page.wait_for_selector("div#rso, div#search", timeout=min(6000, timeout_ms // 2))
+                except Exception:
+                    await self._dismiss_consent(page)
+                    try:
+                        await page.wait_for_selector("div#rso, div#search", timeout=4000)
+                    except Exception:
+                        pass
+                try:
+                    await page.wait_for_function(
+                        "() => document.querySelectorAll('div#rso a h3, div#search a h3').length >= 3",
+                        timeout=3000,
+                    )
+                except Exception:
+                    pass
 
-            raw = await page.evaluate(_EXTRACT_JS)
-            html = await page.content() if not raw else ""
+                raw = await page.evaluate(_EXTRACT_JS)
+                html = await page.content() if not raw else ""
+        finally:
+            try:
+                await page.close()
+            except Exception:
+                pass
 
         results = await self._results_from_raw(raw)
         if not results:
@@ -340,17 +361,7 @@ class GoogleSearcher:
 
     async def close_camoufox(self) -> None:
         """Shut the shared Camoufox down (idle timeout, or at process end)."""
-        state = _CAMOUFOX_STATE
-        manager = state.get("manager")
-        state["browser"] = None
-        state["manager"] = None
-        state["page"] = None
-        state["last"] = 0.0
-        if manager is not None:
-            try:
-                await manager.__aexit__(None, None, None)
-            except Exception:
-                pass
+        await close_shared_camoufox()
 
     async def _results_from_raw(self, raw) -> List[Dict]:
         results: List[Dict] = []
@@ -746,6 +757,7 @@ class GoogleSearcher:
         *,
         gl: Optional[str] = None,
         hl: Optional[str] = None,
+        date_filter: Optional[str] = None,
         date_from: Optional[date] = None,
         date_to: Optional[date] = None,
     ) -> str:
@@ -759,6 +771,10 @@ class GoogleSearcher:
             if date_to:
                 bounds.append(f"cd_max:{date_to.month}/{date_to.day}/{date_to.year}")
             url += "&tbs=" + quote_plus(",".join(bounds))
+        elif date_filter:
+            qdr_map = {"day": "qdr:d", "week": "qdr:w", "month": "qdr:m", "year": "qdr:y"}
+            if date_filter in qdr_map:
+                url += f"&tbs={qdr_map[date_filter]}"
         return url
 
     def _parse_results(self, html: str) -> List[Dict]:

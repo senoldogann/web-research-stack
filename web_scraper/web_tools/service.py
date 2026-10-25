@@ -315,7 +315,7 @@ class WebToolsService:
         }
         # Brave and Serper exist only when their key is in the environment.
         adapters.update(build_paid_adapters(timeout=settings.search_timeout_seconds))
-        return cls(
+        service = cls(
             settings=settings,
             fetcher=fetcher,
             browser=browser,
@@ -325,6 +325,7 @@ class WebToolsService:
             metrics_registry=metrics_registry,
             archive_fetcher=build_archive_fetcher(settings),
         )
+        return service
 
     async def close(self) -> None:
         probes = list(self._fallback_probes.values())

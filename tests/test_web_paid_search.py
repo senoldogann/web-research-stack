@@ -123,7 +123,7 @@ class TestOnlyWithAKey:
         service = WebToolsService.from_env()
         try:
             assert service._primary_provider(None) == "duckduckgo"
-            assert service._fallback_chain("duckduckgo") == ["duckduckgo_lite", "yahoo", "google"]
+            assert service._fallback_chain("duckduckgo") == ["google", "yahoo", "duckduckgo_lite"]
         finally:
             await service.close()
 

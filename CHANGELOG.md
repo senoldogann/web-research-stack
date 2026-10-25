@@ -4,6 +4,26 @@ The package is `dotagent-web-research`; the MCP server is `web-research-mcp`
 (`web_scraper.mcp_server`). Behavior, settings and measurements are described in
 [docs/web-tools.md](docs/web-tools.md); this file says what a version changed.
 
+## 1.4.2 (2026-10-25)
+
+Bot evasion hardening and automatic challenge escalation.
+
+### Added
+
+- **Automatic stealth escalation for bot challenges & Turnstile.** `HeadlessBrowserManager`
+  now supports stealth browsing via Camoufox (`has_stealth`, `render_stealth()`). When the primary
+  engine (Chrome/Chromium) encounters a Cloudflare Turnstile, CAPTCHA, or challenge interstitial,
+  or times out while blocked, the render seamlessly escalates to Camoufox without failing the request.
+- **Bot challenge HTTP escalation.** In `service._fetch_document`, when an HTTP request receives a
+  bot challenge (`captcha`, `access_blocked`, or HTTP 401/403/429) and a stealth-capable browser is
+  available, `web_scrape` automatically escalates to headless browser rendering rather than
+  terminating prematurely.
+
+### Fixed
+
+- **Blink automation flag.** Added `--disable-blink-features=AutomationControlled` to standard
+  Chromium args, preventing the `navigator.webdriver = true` flag from triggering bot detection.
+
 ## 1.4.1 (2026-10-25)
 
 1.4.0 reached PyPI from the first complete state of round B (`8d26b4b`), before its review and before the notes

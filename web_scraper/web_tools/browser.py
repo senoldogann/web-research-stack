@@ -25,6 +25,7 @@ _CHROMIUM_ARGS = (
     "--mute-audio",
     "--no-default-browser-check",
     "--no-first-run",
+    "--disable-blink-features=AutomationControlled",
 )
 _DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -265,9 +266,12 @@ class HeadlessBrowserManager:
 
         self._playwright: Optional[Any] = None
         self._camoufox_manager: Optional[Any] = None
+        self._stealth_manager: Optional[Any] = None
+        self._stealth_browser: Optional[Any] = None
         self._browser: Optional[Any] = None
         self._engine: Optional[str] = None
         self._start_lock = asyncio.Lock()
+        self._stealth_lock = asyncio.Lock()
         self._context_gate = asyncio.Semaphore(self.max_contexts)
         self._active = 0
         self._last_used = 0.0
@@ -283,7 +287,42 @@ class HeadlessBrowserManager:
 
     @property
     def running(self) -> bool:
-        return bool(self._browser is not None and self._browser.is_connected())
+        browser_active = bool(self._browser is not None and self._browser.is_connected())
+        stealth_active = bool(self._stealth_browser is not None and self._stealth_browser.is_connected())
+        return browser_active or stealth_active
+
+    @property
+    def has_stealth(self) -> bool:
+        """Whether a stealth browser engine (Camoufox) is available."""
+        if self._engine == "camoufox" or self._stealth_browser is not None:
+            return True
+        try:
+            import camoufox  # noqa: F401
+            return True
+        except ImportError:
+            return False
+
+    async def _ensure_stealth_browser(self) -> Any:
+        async with self._stealth_lock:
+            if self._engine == "camoufox" and self._browser is not None and self._browser.is_connected():
+                return self._browser
+            if self._stealth_browser is not None and self._stealth_browser.is_connected():
+                return self._stealth_browser
+            try:
+                from camoufox.async_api import AsyncCamoufox
+
+                manager = AsyncCamoufox(headless=True, humanize=True, geoip=False)
+                browser = await manager.__aenter__()
+                self._stealth_manager = manager
+                self._stealth_browser = browser
+                self._last_used = time.monotonic()
+                if self._idle_task is None:
+                    self._idle_task = asyncio.create_task(self._idle_loop())
+                logger.info("Web tools stealth browser (Camoufox) started")
+                return self._stealth_browser
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not start stealth browser (Camoufox): %s", type(exc).__name__)
+                return None
 
     async def start(self) -> None:
         """Start the first available headless engine, reusing a live browser."""
@@ -339,25 +378,20 @@ class HeadlessBrowserManager:
         self._camoufox_manager = manager
         self._browser = browser
 
-    async def render(self, url: str, *, post_load_wait_ms: Optional[int] = None) -> BrowserPage:
-        """Render *url* in a fresh context with every network request guarded.
-
-        The page is read once it has settled (``_settle``), not after a fixed wait: a page whose
-        script draws its content a second or three after the load is read with its content.
-        """
-        if not await self._guard.allowed_now(url):
-            raise BrowserRenderError("unsafe_target", "Blocked unsafe browser target")
-        await self.start()
-        if self._browser is None:
-            raise BrowserRenderError("browser_unavailable", "Headless browser is not running")
-
+    async def _render_with_browser(
+        self,
+        browser: Any,
+        engine_name: str,
+        url: str,
+        post_load_wait_ms: Optional[int] = None,
+    ) -> BrowserPage:
         least_ms = self.post_load_wait_ms if post_load_wait_ms is None else post_load_wait_ms
         async with self._context_gate:
             self._active += 1
             context = None
             try:
                 deadline = self._clock() + self.timeout_seconds
-                context = await self._create_context()
+                context = await self._create_context_for(browser, engine_name)
                 page = await context.new_page()
                 await page.route("**/*", self._guard.route)
                 try:
@@ -379,7 +413,7 @@ class HeadlessBrowserManager:
                     html=html,
                     final_url=final_url,
                     status_code=status,
-                    engine=self._engine or "unknown",
+                    engine=engine_name,
                     settled_ms=round(settled.waited_ms, 2),
                     text_chars=settled.chars,
                     settle=settled.reason,
@@ -390,6 +424,94 @@ class HeadlessBrowserManager:
                         await context.close()
                 self._active -= 1
                 self._last_used = time.monotonic()
+
+    async def render(
+        self,
+        url: str,
+        *,
+        post_load_wait_ms: Optional[int] = None,
+        stealth: bool = False,
+    ) -> BrowserPage:
+        """Render *url* in a fresh context with every network request guarded.
+
+        The page is read once it has settled (``_settle``), not after a fixed wait: a page whose
+        script draws its content a second or three after the load is read with its content.
+        If stealth is True or the primary browser times out on a challenge or meets an interstitial,
+        it automatically falls back to the stealth engine (Camoufox) when available.
+        """
+        if not await self._guard.allowed_now(url):
+            raise BrowserRenderError("unsafe_target", "Blocked unsafe browser target")
+
+        if stealth:
+            return await self.render_stealth(url, post_load_wait_ms=post_load_wait_ms)
+
+        await self.start()
+        if self._browser is None:
+            raise BrowserRenderError("browser_unavailable", "Headless browser is not running")
+
+        primary_failed: Optional[BrowserRenderError] = None
+        rendered_page: Optional[BrowserPage] = None
+        try:
+            rendered_page = await self._render_with_browser(
+                self._browser,
+                self._engine or "unknown",
+                url,
+                post_load_wait_ms=post_load_wait_ms,
+            )
+        except BrowserRenderError as exc:
+            if exc.code in {"timeout", "navigation_failed"} and self.has_stealth and self._engine != "camoufox":
+                primary_failed = exc
+            else:
+                raise
+
+        is_challenge = False
+        if rendered_page is not None and self.has_stealth and self._engine != "camoufox":
+            from web_scraper.web_tools.content import detect_interstitial
+
+            challenge_type = detect_interstitial(
+                rendered_page.html, rendered_page.final_url, rendered_page.status_code
+            )
+            if challenge_type in {"captcha", "access_blocked"}:
+                is_challenge = True
+
+        if (primary_failed is not None or is_challenge) and self.has_stealth and self._engine != "camoufox":
+            logger.info(
+                "Primary engine %s encountered challenge or timeout on %s; escalating to stealth engine",
+                self._engine,
+                url,
+            )
+            try:
+                return await self.render_stealth(url, post_load_wait_ms=post_load_wait_ms)
+            except Exception:
+                if primary_failed is not None:
+                    raise primary_failed
+                if rendered_page is not None:
+                    return rendered_page
+                raise
+
+        if primary_failed is not None:
+            raise primary_failed
+        assert rendered_page is not None
+        return rendered_page
+
+    async def render_stealth(
+        self,
+        url: str,
+        *,
+        post_load_wait_ms: Optional[int] = None,
+    ) -> BrowserPage:
+        """Render *url* directly using the stealth browser engine (Camoufox)."""
+        if not await self._guard.allowed_now(url):
+            raise BrowserRenderError("unsafe_target", "Blocked unsafe browser target")
+        browser = await self._ensure_stealth_browser()
+        if browser is None:
+            raise BrowserUnavailableError("Stealth browser engine (Camoufox) is not available")
+        return await self._render_with_browser(
+            browser,
+            "camoufox",
+            url,
+            post_load_wait_ms=post_load_wait_ms,
+        )
 
     async def _settle(self, page: Any, least_ms: int, deadline: float) -> _Settled:
         """Wait for a page that has reached DOMContentLoaded to finish drawing itself.
@@ -457,19 +579,21 @@ class HeadlessBrowserManager:
                 await self._sleep(0.2)
         raise BrowserRenderError("navigation_failed", "Browser could not read the page") from last
 
-    async def _create_context(self) -> Any:
-        if self._browser is None:
-            raise BrowserRenderError("browser_unavailable", "Headless browser is not running")
-
+    async def _create_context_for(self, browser: Any, engine_name: str) -> Any:
         options: dict[str, Any] = {
             "viewport": {"width": self.viewport_width, "height": self.viewport_height},
             "locale": "en-US",
             "java_script_enabled": True,
             "service_workers": "block",
         }
-        if self._engine in {"chrome", "chromium"}:
+        if engine_name in {"chrome", "chromium"}:
             options["user_agent"] = _DEFAULT_USER_AGENT
-        return await self._browser.new_context(**options)
+        return await browser.new_context(**options)
+
+    async def _create_context(self) -> Any:
+        if self._browser is None:
+            raise BrowserRenderError("browser_unavailable", "Headless browser is not running")
+        return await self._create_context_for(self._browser, self._engine or "unknown")
 
     async def _idle_loop(self) -> None:
         interval = max(5.0, self.idle_seconds / 2)
@@ -493,6 +617,15 @@ class HeadlessBrowserManager:
             await self._shutdown_locked()
 
     async def _shutdown_locked(self) -> None:
+        if self._stealth_browser is not None and self._stealth_browser is not self._browser:
+            with contextlib.suppress(Exception):
+                await self._stealth_browser.close()
+        if self._stealth_manager is not None and self._stealth_manager is not self._camoufox_manager:
+            with contextlib.suppress(Exception):
+                await self._stealth_manager.__aexit__(None, None, None)
+        self._stealth_browser = None
+        self._stealth_manager = None
+
         if self._browser is not None:
             with contextlib.suppress(Exception):
                 await self._browser.close()
@@ -512,6 +645,8 @@ class HeadlessBrowserManager:
         return {
             "running": self.running,
             "engine": self._engine,
+            "has_stealth": self.has_stealth,
+            "stealth_active": bool(self._stealth_browser is not None and self._stealth_browser.is_connected()),
             "active_contexts": self._active,
             "idle_seconds": self.idle_seconds,
         }

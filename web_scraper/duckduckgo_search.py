@@ -312,7 +312,7 @@ class DuckDuckGoSearcher:
                 "url": url,
                 "snippet": snippet[:300] if snippet else "",
                 "source": self._get_source_name(url),
-                "published": _stamp(container.find(class_="result__extras__url")),
+                "published": _shown_date(container),
             }
 
         except Exception:
@@ -437,15 +437,36 @@ class DuckDuckGoLiteSearcher(DuckDuckGoSearcher):
 
 # The date DuckDuckGo shows beside a result's address, for some results: ``2026-09-12T00:00:00.0000000`` in a span
 # after the address (the html endpoint) or in ``span.timestamp`` (the lite one).
-_STAMP_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})T\d{2}:\d{2}:\d{2}")
+_STAMP_RE = re.compile(r"(\d{4}-\d{2}-\d{2})T\d{2}:\d{2}:\d{2}(?:\.\d+)?")
 
 
 def _stamp(element: Any) -> str:
-    """The day of the date DuckDuckGo shows in *element* (``2026-09-12``), or ``""``."""
+    """The day of the date DuckDuckGo shows in *element* (``2026-09-12``), or ``""``: the element's whole text is the
+    stamp, and nothing else (a space or two around it). A stamp in other words is not one."""
     if element is None:
         return ""
-    match = _STAMP_RE.search(element.get_text(" ", strip=True))
+    match = _STAMP_RE.fullmatch(element.get_text(" ", strip=True))
     return match.group(1) if match else ""
+
+
+def _shown_date(container: Any) -> str:
+    """The date the html endpoint shows beside a result's address: a span of its own after ``a.result__url``. Never
+    the address itself, whose words are the site's (an address with ``2026-10-24T00:00:00`` in it posed as a date
+    DuckDuckGo gave, a security review of 1.4.7 found)."""
+    extras = container.find(class_="result__extras__url")
+    if extras is None:
+        return ""
+    address = extras.find("a", class_="result__url")
+    spans = (
+        address.find_next_siblings("span")
+        if address is not None
+        else extras.find_all("span", recursive=False)
+    )
+    for span in spans:
+        found = _stamp(span)
+        if found:
+            return found
+    return ""
 
 
 async def get_best_sources_ddg(

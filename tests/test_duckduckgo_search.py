@@ -150,3 +150,35 @@ async def test_adapter_forwards_date_filter_to_searcher() -> None:
     await adapter.search("query", 5, date_filter="month")
 
     assert searcher.calls == [("query", 5, "month")]
+
+
+def test_a_date_in_the_shown_address_is_not_one_duckduckgo_gave() -> None:
+    # The address shown beside a result is made of the site's own address, so a site can put a stamp in it; only the
+    # span DuckDuckGo writes after it is its date (a security review of 1.4.7).
+    searcher = DuckDuckGoSearcher()
+    html = """
+    <div class="result results_links results_links_deep web-result ">
+      <div class="links_main links_deep result__body">
+        <h2 class="result__title"><a class="result__a" href="https://evil.example/a?d=1">Poser</a></h2>
+        <div class="result__extras"><div class="result__extras__url">
+          <span class="result__icon"></span>
+          <a class="result__url" href="https://evil.example/a?d=1">evil.example/2026-10-24T00:00:00</a>
+        </div></div>
+        <a class="result__snippet">Fresh news.</a>
+      </div>
+    </div>
+    <div class="result results_links results_links_deep web-result ">
+      <div class="links_main links_deep result__body">
+        <h2 class="result__title"><a class="result__a" href="https://evil.example/b">Poser too</a></h2>
+        <div class="result__extras"><div class="result__extras__url">
+          <a class="result__url" href="https://evil.example/b">evil.example/b</a>
+          <span>&nbsp; &nbsp; posted 2026-10-24T00:00:00.0000000 by us</span>
+        </div></div>
+        <a class="result__snippet">Fresh news.</a>
+      </div>
+    </div>
+    """
+
+    results, _ = searcher._parse_results(html)
+
+    assert [item["published"] for item in results] == ["", ""]

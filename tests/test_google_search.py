@@ -353,3 +353,40 @@ def test_a_chrome_the_search_starts_never_reaches_the_owner_s_keychain(
     GoogleSearcher()._start_chrome(9222, "/tmp/profile", headless=headless)
 
     assert "--use-mock-keychain" in started[0] and "--password-store=basic" in started[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("seen", ["nothing", "a bot check"])
+async def test_an_empty_answer_is_a_wall_only_when_a_backend_saw_one(
+    monkeypatch, seen: str
+) -> None:
+    # Every empty answer said "bot check", and the adapter cooled Google down for it (see
+    # tests/test_web_search_chain.py, TestGoogleIsAWallOnlyWhenItSaysSo).
+    from web_scraper.web_tools.errors import WebToolError
+    from web_scraper.web_tools.providers import ERROR, WALL, failure_kind
+    from web_scraper.web_tools.search import GoogleSearchAdapter
+
+    searcher = GoogleSearcher(headless=True, allow_visible_browser=False)
+
+    async def no_results(query: str, num_results: int):
+        return []
+
+    async def camoufox(query: str, num_results: int):
+        if seen == "a bot check":
+            raise GoogleSearchBlocked("Google served a bot check to Camoufox", wall=True)
+        return []
+
+    monkeypatch.setattr(searcher, "_search_http", no_results)
+    monkeypatch.setattr(searcher, "_search_camoufox", camoufox)
+    monkeypatch.setattr(searcher, "_search_headless_chrome", no_results)
+
+    with pytest.raises(GoogleSearchBlocked) as refused:
+        await searcher.search("anything")
+    with pytest.raises(WebToolError) as failed:
+        await GoogleSearchAdapter(searcher).search("anything", 5)
+
+    walled = seen == "a bot check"
+    assert refused.value.wall is walled
+    assert ("bot check" in str(refused.value)) is walled
+    assert failed.value.detail == ("bot_detected" if walled else "no_results")
+    assert failure_kind(failed.value) == (WALL if walled else ERROR)

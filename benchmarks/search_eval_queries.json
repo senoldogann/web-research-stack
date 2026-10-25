@@ -1,0 +1,57 @@
+[
+  {"query": "python asyncio TaskGroup", "kind": "docs", "expected_domains": ["python.org"], "freshness": false},
+  {"query": "FastAPI lifespan events", "kind": "docs", "expected_domains": ["fastapi.tiangolo.com"], "freshness": false},
+  {"query": "MDN AbortController", "kind": "docs", "expected_domains": ["developer.mozilla.org"], "freshness": false},
+  {"query": "sqlite fts5 bm25", "kind": "docs", "expected_domains": ["sqlite.org"], "freshness": false},
+  {"query": "rust tokio select cancellation", "kind": "docs", "expected_domains": ["tokio.rs", "docs.rs"], "freshness": false},
+  {"query": "postgresql full text search tsvector", "kind": "docs", "expected_domains": ["postgresql.org"], "freshness": false},
+  {
+    "query": "Israel election",
+    "kind": "news",
+    "expected_domains": ["reuters.com", "apnews.com", "bbc.com", "bbc.co.uk", "aljazeera.com", "timesofisrael.com", "haaretz.com", "jpost.com", "nytimes.com", "theguardian.com", "ynetnews.com", "cnn.com", "euronews.com"],
+    "freshness": true,
+    "fresh_days": 7
+  },
+  {
+    "query": "Israel election polls",
+    "kind": "news",
+    "options": {"date_from": "2026-10-01", "depth": "deep"},
+    "expected_domains": ["reuters.com", "apnews.com", "bbc.com", "bbc.co.uk", "aljazeera.com", "timesofisrael.com", "haaretz.com", "jpost.com", "nytimes.com", "theguardian.com", "ynetnews.com", "cnn.com", "euronews.com"],
+    "freshness": true,
+    "fresh_days": 7
+  },
+  {
+    "query": "TÜİK eylül 2026 enflasyon",
+    "kind": "news",
+    "expected_domains": ["tuik.gov.tr", "bbc.com", "aa.com.tr", "sozcu.com.tr", "ntv.com.tr", "hurriyet.com.tr", "bloomberght.com", "sabah.com.tr", "cnnturk.com", "trthaber.com", "dunya.com", "sbb.gov.tr"],
+    "freshness": true,
+    "fresh_days": 30
+  },
+  {
+    "query": "Finland daylight saving time change",
+    "kind": "news",
+    "expected_domains": ["timeanddate.com", "yle.fi", "helsinkitimes.fi", "euronews.com"],
+    "freshness": true,
+    "fresh_days": 14
+  },
+  {
+    "query": "syysmyrsky",
+    "kind": "news",
+    "options": {"sites": ["yle.fi"]},
+    "expected_domains": ["yle.fi"],
+    "freshness": true,
+    "fresh_days": 7
+  },
+  {"query": "EU AI Act general purpose AI obligations", "kind": "official", "expected_domains": ["europa.eu", "artificialintelligenceact.eu"], "freshness": false},
+  {"query": "Python 3.14 release", "kind": "official", "expected_domains": ["python.org"], "freshness": true},
+  {"query": "Türkiye yapay zeka eylem planı 2026", "kind": "tr", "expected_domains": ["turkiye.ai", "tbb.gov.tr", "cbddo.gov.tr", "mevzuat.gov.tr", "sanayi.gov.tr"], "freshness": true},
+  {"query": "e-Devlet şifre nasıl alınır", "kind": "tr", "expected_domains": ["turkiye.gov.tr"], "freshness": false},
+  {"query": "asgari ücret 2026", "kind": "tr", "expected_domains": ["csgb.gov.tr", "resmigazete.gov.tr", "sgk.gov.tr", "aa.com.tr"], "freshness": true},
+  {"query": "İstanbul metro hatları", "kind": "tr", "expected_domains": ["metro.istanbul", "ibb.istanbul"], "freshness": false},
+  {"query": "Kela asumistuki hakemus", "kind": "fi", "expected_domains": ["kela.fi"], "freshness": false},
+  {"query": "verokortti muutos", "kind": "fi", "expected_domains": ["vero.fi"], "freshness": false},
+  {"query": "Oulun yliopisto hakeminen", "kind": "fi", "expected_domains": ["oulu.fi"], "freshness": false},
+  {"query": "Helsingin sää huomenna", "kind": "fi", "expected_domains": ["ilmatieteenlaitos.fi", "foreca.fi", "yle.fi", "hs.fi"], "freshness": false},
+  {"query": "Oulu technology companies hiring", "kind": "local", "expected_domains": ["duunitori.fi", "businessoulu.com", "oulu.fi", "linkedin.com", "jobly.fi", "tyomarkkinatori.fi"], "freshness": false},
+  {"query": "Finnish citizenship application", "kind": "local", "expected_domains": ["migri.fi"], "freshness": false}
+]

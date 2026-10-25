@@ -845,6 +845,36 @@ budget.
 
 ### Search relevance evaluation
 
+**Providers side by side (1.4.8).** `--provider` measures providers one beside the other, each alone (its
+fallback chain off), and `chain` the server as it runs; `benchmarks/search_eval_queries.json` holds 23 queries: docs,
+news (Israel's election, also `deep` from 2026-10-01; TÜİK's inflation; Finland's clock change; `syysmyrsky` on
+yle.fi), official pages, Turkish and Finnish services, and two local ones. A row may carry the search's `options` and
+`fresh_days`: the query is about now, and a result dated that many days back at most is wanted among the first three
+(`fresh_at_3`), where `freshness_hit_at_5` goes by the year (a story three weeks old is current in October).
+`dated_at_5` is the share of the first five that carry a date.
+
+```bash
+.venv/bin/python scripts/evaluate_web_search.py --queries benchmarks/search_eval_queries.json \
+  --depth fast --provider google --provider yahoo --provider duckduckgo --provider duckduckgo_lite --no-write
+.venv/bin/python scripts/evaluate_web_search.py --queries benchmarks/search_eval_queries.json \
+  --depth discover --provider chain --no-write
+```
+
+Measured on 2026-10-25 (this Mac, 1.4.7, three seconds between queries):
+
+| provider | answered | median | p95 | nDCG@5 | MRR | fresh@3 | dated@5 |
+|---|---|---|---|---|---|---|---|
+| google, alone, `fast` | 23/23 | 1.3 s | 5.3 s | 0.956 | 0.978 | 0.80 | 0.41 |
+| yahoo, alone, `fast` | 15/23 (8 × HTTP 500) | 1.4 s | 2.8 s | 0.945 | 0.956 | 0.67 | 0.49 |
+| duckduckgo, duckduckgo_lite, alone | 0/23 (refused: 202, then 403) | 0.14 s | 0.26 s | | | | |
+| the chain, `discover` | 19/23 | 4.7 s | 25.3 s | 0.894 | 0.912 | 0.60 | 0.74 |
+
+The chain's four failures were its last four queries, each in 2.4 to 4 s: DuckDuckGo refused, and every fallback was in
+its cooldown. Google's was not earned: every empty answer of Google was taken for a wall (see [Providers that
+heal](#providers-that-heal), 1.4.8). `syysmyrsky` on yle.fi had no story of the last seven days among the first three,
+from Google alone or from the chain.
+
+
 `scripts/evaluate_web_search.py` scores a live `web_search` against
 `benchmarks/search_relevance_queries.json`: ten labelled queries whose expected
 hosts (or subdomains) mark a result relevant. It measures the whole ranked list,
@@ -1950,6 +1980,11 @@ September and updated on 21 October disagrees with nothing.
   `skipped`, `provider_cooldown`) and asked only as a last resort. When the cooldown is over the
   provider is on probation: its record of failures is cleared and the next call is the probe, an
   answer clears the rest. A cut angle (the search's own budget) is no failure.
+- **Google's walls (1.4.8).** Google is a wall only when a browser saw a bot check (a CAPTCHA, "unusual traffic");
+  any other empty answer (a slow page, a query that found nothing, a consent dialog left open, a browser that did
+  not start) is `no_results`, a failure like another provider's. Until 1.4.8 every empty answer said "consent page,
+  bot check or JavaScript-only page", and those words made it a wall: one slow page put Google in its cooldown, and on
+  2026-10-25, with DuckDuckGo refusing and Yahoo answering HTTP 500, the next four searches of a run had no provider.
 - **Healthy first.** The providers that are not cooling are ordered by their recent calls (the
   last 20 within 30 minutes, and only a record of 4 calls or more counts): 4 of 5 answered is
   good, half shaky, fewer poor; the configured order breaks ties and a cooling provider keeps

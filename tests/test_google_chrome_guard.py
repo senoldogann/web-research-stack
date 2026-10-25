@@ -25,6 +25,14 @@ from web_scraper.web_tools import browser as browser_module
 def _a_guard_of_its_own(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(stealth, "_GUARD", None)
     monkeypatch.setitem(google_module._HEADLESS_STATE, "blocked_until", 0.0)
+    # A CI runner's first Chrome can take longer than the 15 s the search gives it ("Chrome did not start in time" on
+    # one job of three, 2026-10-25): the test gives it a minute, which says nothing of the search's own wait.
+    waits = GoogleSearcher._wait_for_cdp
+
+    async def patient(port: int, timeout_s: float = 60.0) -> None:
+        await waits(port, timeout_s=60.0)
+
+    monkeypatch.setattr(GoogleSearcher, "_wait_for_cdp", staticmethod(patient))
     if GoogleSearcher()._chrome_binary() is None:
         pytest.skip("no installed Chrome here")
 

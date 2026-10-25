@@ -291,15 +291,17 @@ class GoogleSearchAdapter:
         try:
             raw = await self._searcher.search(query, num_results=limit, **extra)
         except GoogleSearchBlocked as exc:
+            # A wall (its cooldown starts at once) only when Google served a bot check; any other empty
+            # answer is a failure like another provider's (three in a row start one). The words of the
+            # message decided it, and every empty answer said "bot check".
             said = str(exc)
-            wall = any(
-                mark in said.lower()
-                for mark in ("bot check", "captcha", "unusual traffic", "consent")
-            )
+            wall = bool(getattr(exc, "wall", False))
             raise WebToolError(
                 "search_failed",
-                f"Google refused the search: {said[:160]}",
-                detail="bot_detected" if wall else said[:160],
+                f"Google refused the search: {said[:160]}"
+                if wall
+                else f"Google gave no results it could read: {said[:160]}",
+                detail="bot_detected" if wall else "no_results",
             ) from exc
         except Exception as exc:  # noqa: BLE001 - surface a stable error
             raise WebToolError(

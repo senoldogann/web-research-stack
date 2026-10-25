@@ -281,3 +281,72 @@ class TestFast:
         assert response["provider"] == "duckduckgo_lite"
         assert ddg.calls == ["first search"]
         assert google.calls == []
+
+
+class TestGoogleIsAWallOnlyWhenItSaysSo:
+    """Every empty Google answer said "consent page, bot check or JavaScript-only page", and the adapter took those
+    words for a wall: one slow page or one query that found nothing put Google in its cooldown (10 minutes, up to
+    an hour). With DuckDuckGo refusing and Yahoo answering HTTP 500 (both measured on 2026-10-25), the next
+    searches then had no provider at all: four of 23 failed that way in a row."""
+
+    class EmptyOnce:
+        """Google as GoogleSearchAdapter finds it: no results it could read once (a bot check if *wall*)."""
+
+        def __init__(self, *, wall: bool) -> None:
+            self.wall = wall
+            self.calls = 0
+
+        async def search(self, query: str, num_results: int = 10, **kwargs: object) -> list[dict]:
+            from web_scraper.google_search import GoogleSearchBlocked
+
+            self.calls += 1
+            if self.calls == 1:
+                # Made as 1.4.7's searcher made it (the message said "bot check" every time), and marked a wall
+                # the way a backend that saw one marks it now.
+                refusal = GoogleSearchBlocked(
+                    "Google returned no parseable results (consent page, bot check or JavaScript-only page)"
+                )
+                refusal.wall = self.wall
+                raise refusal
+            return [
+                {"title": f"{query} guide", "url": "https://google.example/r", "snippet": query}
+            ]
+
+    @staticmethod
+    def _google(searcher: object) -> object:
+        from web_scraper.web_tools.search import GoogleSearchAdapter
+
+        return GoogleSearchAdapter(searcher)  # type: ignore[arg-type]
+
+    @pytest.mark.asyncio
+    async def test_an_empty_answer_leaves_google_for_the_next_search(self) -> None:
+        searcher = self.EmptyOnce(wall=False)
+        service = _service(
+            Scripted("duckduckgo", refuse="bot_detected"),
+            Scripted("duckduckgo_lite", refuse="bot_detected"),
+            self._google(searcher),  # type: ignore[arg-type]
+        )
+
+        with pytest.raises(WebToolError):
+            await service.search("first query", depth="fast")
+        second = await service.search("second query", depth="fast")
+
+        assert searcher.calls == 2 and second["provider"] == "google"
+        assert service._provider_health_for("google").cooling_down() is False
+
+    @pytest.mark.asyncio
+    async def test_a_bot_check_still_cools_google_down(self) -> None:
+        searcher = self.EmptyOnce(wall=True)
+        service = _service(
+            Scripted("duckduckgo", refuse="bot_detected"),
+            Scripted("duckduckgo_lite", refuse="bot_detected"),
+            self._google(searcher),  # type: ignore[arg-type]
+        )
+
+        with pytest.raises(WebToolError):
+            await service.search("first query", depth="fast")
+        with pytest.raises(WebToolError):
+            await service.search("second query", depth="fast")
+
+        assert searcher.calls == 1  # skipped in its cooldown
+        assert service._provider_health_for("google").cooling_down() is True

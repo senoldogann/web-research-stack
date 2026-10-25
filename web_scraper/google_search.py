@@ -51,7 +51,13 @@ except ImportError:  # pragma: no cover - optional at import time
 
 
 class GoogleSearchBlocked(Exception):
-    """Google answered with a consent page, a CAPTCHA or a JavaScript shell."""
+    """Google gave no results the search could read. ``wall`` when it was a bot check (a CAPTCHA, "unusual
+    traffic"); otherwise a page that held none: slow, empty, a consent dialog left open, a JavaScript shell, a
+    browser that did not start or answer in time."""
+
+    def __init__(self, message: str = "", *, wall: bool = False) -> None:
+        super().__init__(message)
+        self.wall = wall
 
 
 # One Chrome at a time: the research pipeline asks Google for several query
@@ -204,6 +210,7 @@ class GoogleSearcher:
             paths += ((self._search_headless_chrome, "chrome-headless", "none"),)
 
         blocked: List[str] = []
+        walled = False
         for path, backend, window in paths:
             if results or not config.google_use_playwright:
                 break
@@ -212,16 +219,21 @@ class GoogleSearcher:
             except GoogleSearchBlocked as exc:
                 # A refused backend must not end the search: the next may pass.
                 blocked.append(f"{backend}: {exc}")
+                walled = walled or exc.wall
                 continue
             if results and not _BACKEND_LOGGED:
                 logger.info("google search backend=%s window=%s", backend, window)
                 _BACKEND_LOGGED = True
 
         if not results:
+            # A wall only when a backend saw one. Said of every empty answer, it put Google in its
+            # cooldown (10 minutes, up to an hour) after one slow page or one query that found
+            # nothing, and a search with DuckDuckGo and Yahoo refusing then had no provider at all.
             detail = f" ({'; '.join(blocked)})" if blocked else ""
             raise GoogleSearchBlocked(
-                "Google returned no parseable results (consent page, bot check or JavaScript-only page)"
-                + detail
+                ("Google served a bot check" if walled else "Google gave no results it could read")
+                + detail,
+                wall=walled,
             )
 
         return results[:num_results]
@@ -317,7 +329,7 @@ class GoogleSearcher:
         if not results:
             lowered = html.lower()
             if "unusual traffic" in lowered or "captcha" in lowered:
-                raise GoogleSearchBlocked("Google served a bot check to Camoufox")
+                raise GoogleSearchBlocked("Google served a bot check to Camoufox", wall=True)
         return results
 
     async def _read_camoufox_page(self, page, url: str, timeout_ms: int) -> tuple:
@@ -411,7 +423,7 @@ class GoogleSearcher:
         if not results:
             lowered = html.lower()
             if "unusual traffic" in lowered or "captcha" in lowered or "enablejs" in lowered:
-                raise GoogleSearchBlocked("Google served a bot check to Chrome")
+                raise GoogleSearchBlocked("Google served a bot check to Chrome", wall=True)
         return results
 
     async def _search_headless_chrome(self, query: str, num_results: int, **extra) -> List[Dict]:

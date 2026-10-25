@@ -14,6 +14,7 @@ from rebinding_support import LOOPBACK, PUBLIC_A, World
 from web_scraper.playwright_scrapers import PlaywrightScraper
 from web_scraper.web_tools import browser as browser_module
 from web_scraper.web_tools.browser import (
+    BrowserPage,
     BrowserRenderError,
     HeadlessBrowserManager,
     RequestGuard,
@@ -290,12 +291,25 @@ class TestTheOlderPlaywrightScraper:
             assert result.error is not None and "unsafe" in result.error.lower()
 
 
+@pytest.fixture
+def camoufox_importable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``import camoufox`` works (the package is an extra, and the CI job does not install it)."""
+    monkeypatch.setitem(sys.modules, "camoufox", types.ModuleType("camoufox"))
+
+
 class TestStealthEvasion:
-    def test_manager_has_stealth_when_camoufox_is_installed(self) -> None:
+    def test_manager_has_stealth_when_camoufox_is_installed(
+        self, camoufox_importable: None
+    ) -> None:
         manager = HeadlessBrowserManager()
         assert manager.has_stealth is True
 
-    def test_manager_snapshot_reports_stealth_capabilities(self) -> None:
+    def test_manager_has_no_stealth_without_camoufox(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setitem(sys.modules, "camoufox", None)  # an import of it fails
+        manager = HeadlessBrowserManager()
+        assert manager.has_stealth is False
+
+    def test_manager_snapshot_reports_stealth_capabilities(self, camoufox_importable: None) -> None:
         manager = HeadlessBrowserManager()
         snap = manager.snapshot()
         assert "has_stealth" in snap
@@ -312,12 +326,14 @@ class TestStealthEvasion:
 
     @pytest.mark.asyncio
     async def test_primary_engine_escalates_to_stealth_on_interstitial_challenge(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, camoufox_importable: None
     ) -> None:
         manager = HeadlessBrowserManager()
         manager._engine = "chrome"
         manager._browser = types.SimpleNamespace(is_connected=lambda: True)
-        monkeypatch.setattr(manager._guard, "allowed_now", lambda url: asyncio.sleep(0, result=True))
+        monkeypatch.setattr(
+            manager._guard, "allowed_now", lambda url: asyncio.sleep(0, result=True)
+        )
 
         stealth_called = False
 
@@ -331,9 +347,11 @@ class TestStealthEvasion:
                 engine="camoufox",
             )
 
-        async def fake_render_with_browser(browser: Any, engine: str, url: str, **kwargs: Any) -> BrowserPage:
+        async def fake_render_with_browser(
+            browser: Any, engine: str, url: str, **kwargs: Any
+        ) -> BrowserPage:
             return browser_module.BrowserPage(
-                html="<html><body><div class=\"cf-turnstile\">Verify you are human</div></body></html>",
+                html='<html><body><div class="cf-turnstile">Verify you are human</div></body></html>',
                 final_url=url,
                 status_code=403,
                 engine="chrome",

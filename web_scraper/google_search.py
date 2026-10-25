@@ -31,9 +31,11 @@ from web_scraper.config import config
 from web_scraper.stealth import HeaderFactory
 from web_scraper.stealth_camoufox import (
     camoufox_lock,
-    close_camoufox as close_shared_camoufox,
     get_camoufox_page,
     warm_up_camoufox,
+)
+from web_scraper.stealth_camoufox import (
+    close_camoufox as close_shared_camoufox,
 )
 
 logger = logging.getLogger(__name__)
@@ -241,7 +243,9 @@ class GoogleSearcher:
                 return
             async with _browser_lock():
                 try:
-                    await page.goto("https://www.google.com/ncr", wait_until="commit", timeout=20000)
+                    await page.goto(
+                        "https://www.google.com/ncr", wait_until="commit", timeout=20000
+                    )
                     try:
                         await page.wait_for_selector("form, div#rso, #search", timeout=15000)
                     except Exception:
@@ -291,7 +295,9 @@ class GoogleSearcher:
             async with camoufox_lock():
                 await page.goto(url, wait_until="commit", timeout=timeout_ms)
                 try:
-                    await page.wait_for_selector("div#rso, div#search", timeout=min(6000, timeout_ms // 2))
+                    await page.wait_for_selector(
+                        "div#rso, div#search", timeout=min(6000, timeout_ms // 2)
+                    )
                 except Exception:
                     await self._dismiss_consent(page)
                     try:

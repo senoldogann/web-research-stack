@@ -288,7 +288,9 @@ class HeadlessBrowserManager:
     @property
     def running(self) -> bool:
         browser_active = bool(self._browser is not None and self._browser.is_connected())
-        stealth_active = bool(self._stealth_browser is not None and self._stealth_browser.is_connected())
+        stealth_active = bool(
+            self._stealth_browser is not None and self._stealth_browser.is_connected()
+        )
         return browser_active or stealth_active
 
     @property
@@ -298,13 +300,18 @@ class HeadlessBrowserManager:
             return True
         try:
             import camoufox  # noqa: F401
+
             return True
         except ImportError:
             return False
 
     async def _ensure_stealth_browser(self) -> Any:
         async with self._stealth_lock:
-            if self._engine == "camoufox" and self._browser is not None and self._browser.is_connected():
+            if (
+                self._engine == "camoufox"
+                and self._browser is not None
+                and self._browser.is_connected()
+            ):
                 return self._browser
             if self._stealth_browser is not None and self._stealth_browser.is_connected():
                 return self._stealth_browser
@@ -459,7 +466,11 @@ class HeadlessBrowserManager:
                 post_load_wait_ms=post_load_wait_ms,
             )
         except BrowserRenderError as exc:
-            if exc.code in {"timeout", "navigation_failed"} and self.has_stealth and self._engine != "camoufox":
+            if (
+                exc.code in {"timeout", "navigation_failed"}
+                and self.has_stealth
+                and self._engine != "camoufox"
+            ):
                 primary_failed = exc
             else:
                 raise
@@ -474,7 +485,11 @@ class HeadlessBrowserManager:
             if challenge_type in {"captcha", "access_blocked"}:
                 is_challenge = True
 
-        if (primary_failed is not None or is_challenge) and self.has_stealth and self._engine != "camoufox":
+        if (
+            (primary_failed is not None or is_challenge)
+            and self.has_stealth
+            and self._engine != "camoufox"
+        ):
             logger.info(
                 "Primary engine %s encountered challenge or timeout on %s; escalating to stealth engine",
                 self._engine,
@@ -484,7 +499,7 @@ class HeadlessBrowserManager:
                 return await self.render_stealth(url, post_load_wait_ms=post_load_wait_ms)
             except Exception:
                 if primary_failed is not None:
-                    raise primary_failed
+                    raise primary_failed from None
                 if rendered_page is not None:
                     return rendered_page
                 raise
@@ -620,7 +635,10 @@ class HeadlessBrowserManager:
         if self._stealth_browser is not None and self._stealth_browser is not self._browser:
             with contextlib.suppress(Exception):
                 await self._stealth_browser.close()
-        if self._stealth_manager is not None and self._stealth_manager is not self._camoufox_manager:
+        if (
+            self._stealth_manager is not None
+            and self._stealth_manager is not self._camoufox_manager
+        ):
             with contextlib.suppress(Exception):
                 await self._stealth_manager.__aexit__(None, None, None)
         self._stealth_browser = None
@@ -646,7 +664,9 @@ class HeadlessBrowserManager:
             "running": self.running,
             "engine": self._engine,
             "has_stealth": self.has_stealth,
-            "stealth_active": bool(self._stealth_browser is not None and self._stealth_browser.is_connected()),
+            "stealth_active": bool(
+                self._stealth_browser is not None and self._stealth_browser.is_connected()
+            ),
             "active_contexts": self._active,
             "idle_seconds": self.idle_seconds,
         }

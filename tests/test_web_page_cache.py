@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -251,6 +252,28 @@ class TestBounds:
 
         assert kept is False and cache.get("big") is None
         assert cache.get("a") is not None  # and it did not push the others out
+
+    def test_a_revised_document_keeps_the_time_the_page_has_left(self) -> None:
+        clock = Clock()
+        cache = PageCache(ttl_seconds=300, max_entries=50, max_bytes=1_000_000, clock=clock)
+        cache.put("a", self._doc(10))
+        content_id = cache.id_for("a")
+        clock.now += 299
+
+        cache.revise("a", replace(self._doc(10), warnings=("soft_404",), judged=False))
+        revised, id_after = cache.get("a"), cache.id_for("a")
+        clock.now += 2  # 301 s after the page was kept: the revision did not start the time again
+
+        assert revised is not None and revised.warnings == ("soft_404",)
+        assert content_id is not None and id_after == content_id  # the same page, the same id
+        assert cache.get("a") is None and cache.id_for("a") is None
+
+    def test_a_revision_of_a_page_that_is_gone_keeps_nothing(self) -> None:
+        cache = PageCache(ttl_seconds=300, max_entries=50, max_bytes=1_000_000, clock=Clock())
+
+        cache.revise("gone", self._doc(10))
+
+        assert cache.get("gone") is None and cache.snapshot()["entries"] == 0
 
     def test_the_bounds_are_settings(self, monkeypatch: pytest.MonkeyPatch) -> None:
         settings = WebToolsSettings()
